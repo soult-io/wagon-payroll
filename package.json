@@ -4,7 +4,7 @@
   "version": "1.26.0",
   "description": "Wagon Payroll webapp \u2014 stable, deterministic payroll for small business (see plan/).",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.5"
   },
   "packageManager": "pnpm@11.17.0",
   "scripts": {
@@ -15,7 +15,9 @@
     "lint": "biome check",
     "e2e": "pnpm -r run build && pnpm --filter @payroll/e2e e2e",
     "mutation:engine": "pnpm --filter @payroll/engine exec stryker run",
-    "mutation:server": "pnpm --filter \"@payroll/server^...\" run build && pnpm --filter @payroll/server exec stryker run",
+    "mutation:server-deposits": "pnpm --filter \"@payroll/server^...\" run build && pnpm --filter @payroll/server exec stryker run stryker.deposits.config.mjs",
+    "mutation:server-filings": "pnpm --filter \"@payroll/server^...\" run build && pnpm --filter @payroll/server exec stryker run stryker.filings.config.mjs",
+    "check:mutation-globs": "node scripts/check-mutation-test-globs.mjs",
     "format": "biome format --write",
     "db:generate": "pnpm --filter @payroll/db run generate",
     "db:migrate": "pnpm --filter @payroll/db run migrate",

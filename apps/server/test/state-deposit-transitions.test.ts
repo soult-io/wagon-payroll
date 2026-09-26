@@ -25,7 +25,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { InjectOptions } from "fastify";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as schema from "@payroll/db";
@@ -41,7 +41,21 @@ import { createTestApp, type TestContext } from "./helpers.js";
 import { inviteAndOnboard, login, sessionHeader, TEST_PASSWORD } from "./flow-helpers.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const REPO = resolve(HERE, "../../..");
+/**
+ * Walk up to the workspace root (the dir holding pnpm-workspace.yaml), as
+ * test/helpers.ts does — a fixed "../../.." misses inside Stryker's sandbox
+ * copy under apps/server/.stryker-tmp/ (PAY-108).
+ */
+function workspaceRoot(from: string): string {
+  let dir = from;
+  while (!existsSync(resolve(dir, "pnpm-workspace.yaml"))) {
+    const parent = dirname(dir);
+    if (parent === dir) throw new Error(`pnpm-workspace.yaml not found above ${from}`);
+    dir = parent;
+  }
+  return dir;
+}
+const REPO = workspaceRoot(HERE);
 const DRIZZLE_DIR = resolve(REPO, "packages/db/drizzle");
 const SEED_DIR = resolve(REPO, "packages/db/src/seeds/state-taxes");
 

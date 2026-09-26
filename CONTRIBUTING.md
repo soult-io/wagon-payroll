@@ -55,18 +55,26 @@ pin down. It covers the withholding engine and the server's `deposits/` and
 `filings/` modules:
 
 ```sh
-pnpm mutation:engine    # packages/engine/src — seconds
-pnpm mutation:server    # apps/server/src/{deposits,filings} — tens of minutes
+pnpm mutation:engine            # packages/engine/src — seconds
+pnpm mutation:server-deposits   # apps/server/src/deposits — tens of minutes
+pnpm mutation:server-filings    # apps/server/src/filings — tens of minutes
 ```
+
+The server targets are defined in `apps/server/stryker.targets.mjs`: per module,
+the `mutate` glob, the test suites to run (`testFiles`, as globs) and the
+thresholds. Name a new suite after its module (`*deposit*`, `*filing*`,
+`*940*`, …) and it is picked up. A suite that imports `src/deposits` or
+`src/filings` but matches no glob fails CI (`pnpm check:mutation-globs`, verify
+job) — add a glob for it rather than letting the score drop silently.
 
 Extra flags pass through to `stryker run`, e.g. `pnpm mutation:engine --force`
 (re-test every mutant) or `--mutate "src/filings/service.ts"` (one file).
-Runs are incremental: `reports/stryker-incremental.json` in each package holds
-the last result, and only mutants whose code or covering tests changed are
-re-tested.
+Runs are incremental: `reports/stryker-incremental*.json` in each package
+(one per server target) holds the last result, and only mutants whose code or
+covering tests changed are re-tested.
 
-Reading the report — open `reports/mutation/index.html` in the package
-(`packages/engine/` or `apps/server/`):
+Reading the report — open `reports/mutation/index.html` in `packages/engine/`,
+or `reports/mutation-deposits/` / `reports/mutation-filings/` in `apps/server/`:
 
 - **Killed** — a test failed with the mutant in place. Good.
 - **Survived** — every covering test still passed. A test gap, unless the
@@ -76,7 +84,7 @@ Reading the report — open `reports/mutation/index.html` in the package
   detected.
 - **Mutation score** = (killed + timeout) / all valid mutants.
 
-Each config sets `thresholds.break` a little below the recorded baseline
+Each target sets `thresholds.break` a little below its recorded baseline
 (`plan/mutation-baseline-2026-09.md`); a score below it fails the run. The
 `mutation` workflow runs weekly and on demand (Actions → mutation → Run
 workflow), not on PRs, and uploads the HTML report as an artifact.

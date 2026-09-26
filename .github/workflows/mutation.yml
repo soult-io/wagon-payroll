@@ -4,14 +4,18 @@ name: mutation
 # that a test fails for each change. The score measures test strength, not
 # coverage. Too slow for every PR, so it runs weekly and on demand.
 #
-#   engine — packages/engine/src (pure withholding math), seconds.
-#   server — apps/server/src/deposits + src/filings against the PGlite
-#            integration suites, tens of minutes.
+#   engine          — packages/engine/src (pure withholding math), seconds.
+#   server-deposits — apps/server/src/deposits against the PGlite suites.
+#   server-filings  — apps/server/src/filings against the PGlite suites.
 #
-# Each package's stryker.config.mjs sets thresholds.break a little below the
-# 2026-09 baseline (plan/mutation-baseline-2026-09.md): a score drop fails the
-# job. Runs are incremental: the previous result file is restored from the
-# actions cache, so only mutants whose code or tests changed are re-tested.
+# The server is split per module (PAY-108) so each fits its own timeout. Its
+# test suites are chosen by glob (apps/server/stryker.targets.mjs); the CI
+# verify job fails if a suite importing a module matches no glob.
+#
+# Each target sets thresholds.break a little below its baseline
+# (plan/mutation-baseline-2026-09.md): a score drop fails the job. Runs are
+# incremental: each target's previous result file is restored from the actions
+# cache, so only mutants whose code or tests changed are re-tested.
 #
 # Public repo: the uploaded report holds only source code, test names and
 # mutant diffs. No secrets are used and no env reaches the report.
@@ -44,10 +48,23 @@ jobs:
             package: "@payroll/engine"
             dir: packages/engine
             timeout: 20
-          - target: server
+            config: stryker.config.mjs
+            incremental: reports/stryker-incremental.json
+            report: reports/mutation/
+          - target: server-deposits
             package: "@payroll/server"
             dir: apps/server
-            timeout: 150
+            timeout: 90
+            config: stryker.deposits.config.mjs
+            incremental: reports/stryker-incremental-deposits.json
+            report: reports/mutation-deposits/
+          - target: server-filings
+            package: "@payroll/server"
+            dir: apps/server
+            timeout: 120
+            config: stryker.filings.config.mjs
+            incremental: reports/stryker-incremental-filings.json
+            report: reports/mutation-filings/
     timeout-minutes: ${{ matrix.timeout }}
     steps:
       - uses: actions/checkout@v4
@@ -66,7 +83,7 @@ jobs:
 
       # The server imports @payroll/* from their dist/.
       - name: Build workspace dependencies
-        if: matrix.target == 'server'
+        if: matrix.package == '@payroll/server'
         run: pnpm --filter "@payroll/server^..." run build
 
       # Keyed per run so each run saves a fresh file; restore-keys picks the
@@ -74,26 +91,27 @@ jobs:
       - name: Restore incremental results
         uses: actions/cache/restore@v4
         with:
-          path: ${{ matrix.dir }}/reports/stryker-incremental.json
-          key: stryker-incremental-${{ matrix.target }}-${{ github.run_id }}
+          path: ${{ matrix.dir }}/${{ matrix.incremental }}
+          key: stryker-incremental-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: stryker-incremental-${{ matrix.target }}-
 
       - name: Stryker (${{ matrix.target }})
         env:
           PACKAGE: ${{ matrix.package }}
+          CONFIG: ${{ matrix.config }}
           FORCE: ${{ inputs.force && 'true' || 'false' }}
         run: |
           args=()
           if [ "$FORCE" = "true" ]; then args+=(--force); fi
-          pnpm --filter "$PACKAGE" exec stryker run "${args[@]}"
+          pnpm --filter "$PACKAGE" exec stryker run "$CONFIG" "${args[@]}"
 
       # Save even when the threshold failed the run: the results are still
       # valid and the next run re-tests only what changed.
       - name: Save incremental results
-        if: always() && hashFiles(format('{0}/reports/stryker-incremental.json', matrix.dir)) != ''
+        if: always() && hashFiles(format('{0}/{1}', matrix.dir, matrix.incremental)) != ''
         uses: actions/cache/save@v4
         with:
-          path: ${{ matrix.dir }}/reports/stryker-incremental.json
+          path: ${{ matrix.dir }}/${{ matrix.incremental }}
           key: stryker-incremental-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       # Upload on pass AND fail: a failed threshold is when the report matters.
@@ -102,6 +120,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: mutation-report-${{ matrix.target }}
-          path: ${{ matrix.dir }}/reports/mutation/
+          path: ${{ matrix.dir }}/${{ matrix.report }}
           if-no-files-found: warn
           retention-days: 30

@@ -34,7 +34,41 @@ Run notes:
 - Server: 41 static mutants (module-level constants) are ignored
   (`ignoreStatic`) — each would force a full module reload per mutant.
 - Server tests: only the 13 suites that exercise deposits/filings
-  (`testFiles` in `apps/server/stryker.config.mjs`).
+  (`testFiles` in the then single `apps/server/stryker.config.mjs`). Superseded
+  by the per-module targets below.
+
+## 2026-09-26 re-baseline after PAY-91 (PAY-108)
+
+The 13-suite list above was hard-coded, and the seven suites PAY-91 added
+(`state-deposit-transitions`, `deposit-transition`,
+`deposit-transition-coverage`, `deposit-sync-robustness`,
+`deposit-period-boundaries`, `deposit-calendar-zero`, `pay-91-revert`) were
+never added to it. Deposits read 53% on CI instead of the score those suites
+earn, and the combined server job took 1 h 41 m against a 150-minute timeout;
+adding the suites roughly doubles the deposits half.
+
+Changes:
+
+- The server run is split into two targets, `server-deposits` and
+  `server-filings` (`apps/server/stryker.targets.mjs`, one config file each),
+  each with its own CI timeout (90 / 120 min; engine 20), incremental file and
+  cache key.
+- Test suites are chosen by glob, not by list. `scripts/check-mutation-test-globs.mjs`
+  (CI verify job) fails when a suite importing `src/deposits` or `src/filings`
+  matches none of its target's globs.
+
+Local results, full run:
+
+| Target | Score | Suites | Break |
+|---|---:|---|---:|
+| `apps/server/src/deposits` | **77.24%** | every deposit suite, including the 7 PAY-91 suites | 72 |
+| `apps/server/src/filings` | **69.26%** | every filing suite | 65 |
+| `packages/engine/src` | 88.14% (unchanged) | — | 86 (unchanged) |
+
+Spot check with the new deposits config, `--mutate src/deposits/transition.ts`:
+**79.89%** (373 mutants: 295 killed, 3 timeout, 63 survived, 12 no coverage;
+10 test files matched, 5 m 12 s local). The 10 are the deposit suites present
+at the time of the run, before `state-deposit-transitions-gaps` was added.
 
 ## Runner patch, and a finding about the tests themselves
 
@@ -101,5 +135,7 @@ low-income exemption `annualGross <= lowIncome` → `<`, and the
 ## Raw data
 
 The full list (all survived and no-coverage mutants) is in the HTML report:
-`pnpm mutation:server` → `apps/server/reports/mutation/index.html`, or the
-`mutation-report-server` artifact of the `mutation` workflow.
+`pnpm mutation:server-deposits` / `pnpm mutation:server-filings` →
+`apps/server/reports/mutation-deposits/index.html` /
+`reports/mutation-filings/index.html`, or the `mutation-report-server-deposits`
+/ `mutation-report-server-filings` artifacts of the `mutation` workflow.

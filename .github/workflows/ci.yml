@@ -42,6 +42,11 @@ jobs:
       - name: Lint + format (biome)
         run: pnpm lint
 
+      # PAY-108: every server suite importing src/deposits or src/filings must
+      # match its mutation target's testFiles globs (apps/server/stryker.targets.mjs).
+      - name: Mutation test globs cover every importing suite
+        run: pnpm check:mutation-globs
+
       # Build BEFORE typecheck: cross-package imports resolve to dist/*.d.ts,
       # which must exist first (locally, stale dist dirs mask this).
       - name: Build web + server + packages

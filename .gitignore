@@ -52,5 +52,5 @@ _data/
 _incoming/
 
 # Mutation testing (PAY-93) — Stryker sandbox + reports
-.stryker-tmp/
+.stryker-tmp*/
 reports/
