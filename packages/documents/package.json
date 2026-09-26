@@ -1,6 +1,6 @@
 {
   "name": "@payroll/documents",
-  "version": "1.25.0",
+  "version": "1.26.0",
   "private": true,
   "description": "Payslip PDF renderer (spec documents): pdfmake, renders EXCLUSIVELY from the frozen run_snapshot. Pure, no I/O beyond Buffer output.",
   "type": "module",

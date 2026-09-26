@@ -1,6 +1,6 @@
 {
   "name": "@payroll/server",
-  "version": "1.25.0",
+  "version": "1.26.0",
   "private": true,
   "description": "Fastify API server (Node 22 LTS) \u2014 serves the built SPA in production.",
   "type": "module",

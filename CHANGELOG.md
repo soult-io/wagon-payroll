@@ -6,12 +6,86 @@ All notable changes to this project will be documented here. Format follows
 
 ## [Unreleased]
 
+## [1.26.0] - 2026-09-26
+
+### Fixed
+
+- **State tax deposits no longer count months twice when a state's schedule
+  changes (PAY-91, spec 23)** — when a state moved between monthly and
+  quarterly deposits (for example after loading the 2026 schedules for CA,
+  NC, NY or MD), months 2 and 3 of the quarter stayed open next to the
+  quarter row, and if month 1 was already paid the quarter amount was never
+  updated. The deposit sync now rebuilds each state's quarter from what was
+  withheld and what was already paid: unpaid months merge into one quarter
+  row, the quarter row shows only what is left to pay, and a move back to
+  monthly splits the quarter into months. Deposits already marked as paid
+  are never changed. Rows that were replaced get the new status "Replaced"
+  and drop out of lists, totals, reminders, the calendar and the overdue
+  check. Federal deposits and 941 line 13 are unchanged.
+
+### Added
+
+- **Clearer state deposit screens (PAY-91)** — a replaced row shows
+  "Replaced · nothing to pay here" and links to the row to pay; open rows
+  show "Already paid · Left to pay"; one "Overpaid" chip marks a
+  state-quarter where more was paid than owed; "Check with {State}" notes
+  appear where the state's crediting of earlier payments is unclear.
+  Prose uses state names, and the jurisdiction column shows
+  "California (CA)".
+- **New admin email (PAY-91)** — "{State} tax deposits for {Q} need
+  checking" is sent at most once a day per state and quarter when the
+  deposit sync cannot settle that state's rows. It carries no amounts. The
+  other states and federal rows still update.
+
 ### Changed
 
-- Images are published only as ghcr.io/soult-io/wagon-payroll and
-  ghcr.io/soult-io/wagon-payroll-verify. The old names (payroll-app,
-  payroll-app-verify) stopped at v1.25.0; existing tags remain pullable.
-  Operators still on the old name must switch their image: lines.
+- **Calendar labels for state deposits (PAY-91)** — state rows read
+  "California deposit due — Q3 2026" (monthly states "Illinois deposit due
+  — July 2026") instead of the "941" label, under one "Tax deposits" legend
+  entry. Federal rows keep "941 deposit due — August 2026".
+- **Only the new image names are published (PAY-68 step 3)** — images are
+  published only as `ghcr.io/soult-io/wagon-payroll` and
+  `ghcr.io/soult-io/wagon-payroll-verify`. The old names (`payroll-app`,
+  `payroll-app-verify`) got their last release tag at v1.25.0; existing
+  tags remain pullable. Operators still on the old name must switch their
+  `image:` lines.
+- **Developer tooling (PAY-92, PAY-93)** — a money-path test-gap audit
+  (`plan/test-gap-audit-2026-09.md`, docs only); StrykerJS mutation testing
+  for the engine and the server's deposits and filings code, run weekly by
+  `.github/workflows/mutation.yml` with a baseline in
+  `plan/mutation-baseline-2026-09.md`; a pnpm patch for Stryker's vitest
+  runner, and the Dockerfile now copies `patches/` into the build stage so
+  the image install applies it. No change to the app.
+
+### Upgrade notes
+
+- **One migration:** `packages/db/drizzle/0022_gorgeous_omega_sentinel.sql`
+  adds `period_kind` (month | quarter, default month), the status
+  `superseded` with `superseded_at`, a partial unique index on
+  (jurisdiction, period_start, period_kind) over rows that are not
+  superseded, and CHECK constraints including `amount >= 0`. Existing rows
+  become `period_kind = 'month'` with no value change. Checked against
+  previous-release data by test T16 in
+  `apps/server/test/state-deposit-transitions.test.ts`: v1.24-shape rows
+  migrated from 0021 are byte-identical after 0022. **Preflight before
+  deploy:** `SELECT count(*) FROM tax_deposits WHERE amount < 0` must
+  return 0 (QA: 0, checked 2026-09-26). Apply it only through
+  `drizzle-kit migrate` (the `app-migrate` one-shot), which runs it in one
+  transaction.
+- **The deposit sync now rewrites existing state rows:** it recomputes the
+  amount, due date and status of pending and overdue STATE rows (spec 23
+  D4). Deposited rows and federal rows are unchanged. Checked against
+  previous-release data by T17 (v1.24 rows + 0022 + seed + sync give the
+  correct Q3 rows; federal rows identical) and T28 (941 Q3 line 13 is
+  unchanged at 1,721.28 with replaced rows present).
+- **Loading the 2026 state schedules (`seed.js`)** no longer causes the
+  double count. But state deposit rows still tell owners to pay on
+  eftps.gov (PAY-105). **Do not run `seed.js` on prod until PAY-105
+  ships.**
+- **Image names:** from this release, images are published only as
+  `ghcr.io/soult-io/wagon-payroll` and `ghcr.io/soult-io/wagon-payroll-verify`.
+- **Authenticator apps:** enrollments made before v1.25.0 keep the label
+  "Payroll". No action needed.
 
 ## [1.25.0] - 2026-09-26
 

@@ -1,6 +1,6 @@
 {
   "name": "@payroll/db",
-  "version": "1.25.0",
+  "version": "1.26.0",
   "private": true,
   "description": "Drizzle ORM schema + migrations for the payroll database (spec 1).",
   "type": "module",
