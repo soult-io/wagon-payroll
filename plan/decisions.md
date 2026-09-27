@@ -177,6 +177,30 @@ Per `specs/plane-pm.md` (Spec 15):
 - **D34** — `plane.example.com` via the reverse proxy; no SSO (CE limitation); invite-only
 - **D35** — Agent access via service-account API key (REST first, MCP optional later)
 
+## D36 — W-2 state boxes 15–17 are filled  `CONFIRMED by owner 2026-09-27 (PAY-104 F25)`
+
+Per `specs/w2-state-boxes.md` (Spec 24), ticket PAY-116:
+
+- W-2 boxes 15 (state + employer state ID), 16 (state wages) and 17 (state income tax) are
+  filled from issued-run entries grouped by the run snapshot's work state, for tax years
+  2026 and later. NY box 16 = box 1, all wages for the year, when the employee worked in NY
+  at any time in the year (NYS TSB-M-02(3)I). More than two states → an additional W-2 with
+  boxes 1–14 blank. The W-3 carries boxes 15–17 (one state + ID, or "X") and box c counts
+  W-2 forms, not employees.
+- Maryland county tax belongs in box 17 with state tax; the app does not withhold it yet
+  (PAY-120), so MD box 17 shows state tax only, with a warning.
+- Supersedes the unrecorded PAY-19 rule "blank boxes stay blank (D5: boxes 7–14,
+  state/local)" in `packages/documents/src/w2.ts`. That "D5" was a PAY-19 ticket-local
+  number (PAY-19 shipped in 1.9.0, see `CHANGELOG.md`), not master D5 above. Boxes 7–14 stay
+  blank.
+- Employer state IDs are stored per state, encrypted at rest and write-only, like the EIN
+  (D19).
+- A W-2 whose state line has tax withheld and no employer state ID is blocked; with no tax
+  withheld it only warns (owner 2026-09-27, Spec 24 S24-D3).
+- Still pending in Spec 24: local boxes 18–20 (proposed out of scope, S24-D8), the 2026
+  W-2/W-3 templates (proposed in scope, S24-D6), and holding the "W-2 ready" email while a
+  W-2 is blocked (S24-D11).
+
 ---
 
 ## After sign-off
