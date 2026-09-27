@@ -8,7 +8,7 @@
 // (CI verify job), so a missing suite fails CI instead of lowering the score.
 //
 // `break` sits a little below the measured score
-// (plan/mutation-baseline-2026-09.md): a drop fails the run.
+// (recorded 2026-09): a drop fails the run.
 
 export const TARGETS = {
   deposits: {

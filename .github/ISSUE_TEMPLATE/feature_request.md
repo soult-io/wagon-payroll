@@ -19,5 +19,5 @@ labels: enhancement
 
 **Additional context**
 
-<!-- Big behavioral or architectural changes typically start as a short spec
-     in plan/specs/ — see CONTRIBUTING.md. -->
+<!-- Big behavioral or architectural changes start with a discussion in an
+     issue — see CONTRIBUTING.md. -->

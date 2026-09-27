@@ -3,7 +3,7 @@
  * input guards, anchor). Auditor-owned (payroll-calc-auditor).
  *
  * Every expected value was computed by hand in integer cents from spec 23
- * (plan/specs/state-deposit-period-transitions.md) §3 D6, §6 and §7, not by
+ * (PAY-91) §3 D6, §6 and §7, not by
  * running the planner. Where the spec is silent (which deposit row a month's
  * excess is attributed to), the file header comment of the function is the
  * rule under test and says so. Synthetic data only.

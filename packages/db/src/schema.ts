@@ -1,7 +1,7 @@
 /**
  * Payroll app schema — Drizzle ORM (Postgres 16).
  *
- * Implements EVERY app-owned table from plan/specs/data-model.md (spec 1).
+ * Implements EVERY app-owned table of the data model (spec 1).
  *
  * Auth-owned tables (`user`, `session`, `account`, `verification`, `twoFactor`)
  * are intentionally NOT here — they are created by the Better Auth CLI migration

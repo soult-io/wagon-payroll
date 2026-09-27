@@ -13,7 +13,7 @@ name: mutation
 # verify job fails if a suite importing a module matches no glob.
 #
 # Each target sets thresholds.break a little below its baseline
-# (plan/mutation-baseline-2026-09.md): a score drop fails the job. Runs are
+# (recorded 2026-09): a score drop fails the job. Runs are
 # incremental: each target's previous result file is restored from the actions
 # cache, so only mutants whose code or tests changed are re-tested.
 #

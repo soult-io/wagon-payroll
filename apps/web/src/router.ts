@@ -4,7 +4,7 @@ import { useAuthStore } from "./stores/auth";
 import LoginView from "./views/LoginView.vue";
 
 /**
- * Route inventory per plan/specs/frontend.md. Auth screens load eagerly
+ * Route inventory. Auth screens load eagerly
  * (they ARE the entry); every business screen is a lazy chunk (bundle-size
  * discipline: route-level code-splitting).
  */

@@ -1,6 +1,5 @@
 /**
- * PAY-91 — state deposit period transitions (spec 23,
- * plan/specs/state-deposit-period-transitions.md §3 D3/D6, §6).
+ * PAY-91 — state deposit period transitions (spec 23 §3 D3/D6, §6).
  *
  * `planStateQuarter` decides, for ONE (state, year, quarter) unit, which live
  * deposit rows to supersede, update and insert so the unit matches the

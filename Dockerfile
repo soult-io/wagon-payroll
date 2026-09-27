@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# Multi-stage build per plan/specs/deployment.md (spec 8):
+# Multi-stage build:
 #   build web → build server → node:22-alpine runtime.
 # The same image serves the app and runs the app-migrate one-shot.
 

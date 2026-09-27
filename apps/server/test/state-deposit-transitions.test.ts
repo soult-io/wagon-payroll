@@ -1,5 +1,5 @@
 /**
- * PAY-91 / spec 23 (plan/specs/state-deposit-period-transitions.md) — scenario
+ * PAY-91 / spec 23 — scenario
  * tests T01–T35 for state deposit period transitions (monthly <-> quarterly).
  *
  * Auditor-owned (payroll-calc-auditor). Every expected value below was
