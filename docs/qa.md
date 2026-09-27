@@ -147,8 +147,10 @@ deployment, install the Playwright system dependencies once, and run the
 runner as a service.
 
 **Security rule:** the `qa-e2e` runner accepts `schedule` and
-`workflow_dispatch` jobs only — never a `pull_request*` trigger, since a fork
-PR would run its code on the QA network. CI enforces this; the full rule is in
+`workflow_dispatch` jobs only — never a `pull_request*` (or any other)
+trigger, since a fork PR would run its code on the QA network. CI blocks such a
+change from merging, and the fork-approval repo setting stops a fork PR's
+workflows from running unreviewed; the full rule is in
 [CONTRIBUTING.md → CI workflows and the self-hosted runner](../CONTRIBUTING.md#ci-workflows-and-the-self-hosted-runner).
 
 To run the suite against live QA by hand:

@@ -25,6 +25,7 @@
     "migrate:legacy": "pnpm --filter @payroll/server run migrate:legacy"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.14"
+    "@biomejs/biome": "2.5.14",
+    "yaml": "2.9.0"
   }
 }

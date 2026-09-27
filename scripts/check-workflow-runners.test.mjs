@@ -4,59 +4,92 @@ import { test } from "node:test";
 import { findViolations } from "./check-workflow-runners.mjs";
 
 const job = (runsOn) => `jobs:\n  e2e:\n    runs-on: ${runsOn}\n    steps:\n      - run: echo hi\n`;
+const LAN = "[self-hosted, qa-e2e]";
+const fails = (wf) => assert.ok(findViolations("wf.yml", wf).length > 0, "expected a violation");
+const passes = (wf) => assert.deepEqual(findViolations("wf.yml", wf), []);
 
 test("self-hosted on schedule + workflow_dispatch passes", () => {
-  const wf = `on:\n  schedule:\n    - cron: "17 5 * * *"\n  workflow_dispatch:\n\n${job("[self-hosted, qa-e2e]")}`;
-  assert.deepEqual(findViolations("wf.yml", wf), []);
+  passes(`on:\n  schedule:\n    - cron: "17 5 * * *"\n  workflow_dispatch:\n\n${job(LAN)}`);
 });
 
-test("GitHub-hosted on pull_request passes", () => {
-  const wf = `on:\n  pull_request:\n  push:\n    branches: [main]\n\n${job("ubuntu-latest")}`;
-  assert.deepEqual(findViolations("wf.yml", wf), []);
+test("GitHub-hosted on pull_request + push passes", () => {
+  passes(`on:\n  pull_request:\n  push:\n    branches: [main]\n\n${job("ubuntu-latest")}`);
+  passes(`on: [pull_request]\n${job("macos-15")}`);
 });
 
+// Every trigger form, with the LAN runner.
 for (const [name, on] of [
   ["block pull_request", "on:\n  pull_request:\n  schedule:\n    - cron: '0 0 * * *'\n"],
   ["block pull_request_target", "on:\n  pull_request_target:\n    types: [opened]\n"],
   ["inline scalar", "on: pull_request\n"],
   ["inline list", "on: [push, pull_request_target]\n"],
-  ["list form", "on:\n  - push\n  - pull_request\n"],
+  ["block list", "on:\n  - push\n  - pull_request\n"],
   ["quoted key", '"on":\n  pull_request:\n'],
   ["pull_request_review", "on:\n  pull_request_review:\n"],
+  ["workflow_run", "on:\n  workflow_run:\n    workflows: [ci]\n"],
+  ["workflow_call", "on: workflow_call\n"],
+  ["push", "on: push\n"],
+  [
+    "flow mapping with a quoted #",
+    'on: {workflow_dispatch: {inputs: {x: {description: "see #1"}}}, pull_request: {}}\n',
+  ],
+  ["anchor + alias", "name: &ev pull_request_target\non: [*ev]\n"],
+  ["escaped event name", 'on: ["pull\\u005frequest"]\n'],
 ]) {
-  test(`self-hosted + ${name} fails`, () => {
-    assert.equal(findViolations("wf.yml", `${on}\n${job("[self-hosted, qa-e2e]")}`).length, 1);
-  });
+  test(`self-hosted + ${name} fails`, () => fails(`${on}${job(LAN)}`));
 }
 
-test("qa-e2e label alone counts as self-hosted", () => {
-  assert.equal(findViolations("wf.yml", `on: pull_request\n${job("qa-e2e")}`).length, 1);
+// Every runner form, on a PR trigger.
+for (const [name, runsOn] of [
+  ["qa-e2e alone", "qa-e2e"],
+  ["mixed case", "[Self-Hosted, QA-E2E]"],
+  ["default self-hosted labels", "[linux, x64]"],
+  ["quoted escapes", '["self\\u002dhosted"]'],
+  ["expression", `\${{ vars.RUNNER }}`],
+  ["runner group", "{group: lan}"],
+  ["hosted label in a list", "[ubuntu-latest]"],
+]) {
+  test(`pull_request + runs-on ${name} fails`, () => fails(`on: pull_request\n${job(runsOn)}`));
+}
+
+test("multi-line runs-on list fails", () => {
+  fails("on: pull_request\njobs:\n  e2e:\n    runs-on:\n      - self-hosted\n      - qa-e2e\n");
 });
 
-test("multi-line runs-on list counts", () => {
-  const wf = "on: pull_request\njobs:\n  e2e:\n    runs-on:\n      - self-hosted\n      - qa-e2e\n";
-  assert.equal(findViolations("wf.yml", wf).length, 1);
+test("expression on the next line fails", () => {
+  fails(`on: pull_request\njobs:\n  e2e:\n    runs-on: >-\n      \${{ vars.R }}\n`);
 });
 
-test("runs-on from an expression on a PR trigger fails", () => {
-  assert.equal(findViolations("wf.yml", `on: pull_request\n${job(`\${{ matrix.os }}`)}`).length, 1);
+test("runs-on merged in through << is checked", () => {
+  fails(
+    "on: pull_request\nx: &lan {runs-on: [self-hosted, qa-e2e]}\njobs:\n  e2e:\n    <<: *lan\n",
+  );
 });
 
-test("self-hosted in a comment only does not count", () => {
-  const wf = `# never use self-hosted here\non: pull_request\n${job("ubuntu-latest  # not qa-e2e")}`;
-  assert.deepEqual(findViolations("wf.yml", wf), []);
+test("missing runs-on fails", () => fails("on: pull_request\njobs:\n  e2e:\n    steps: []\n"));
+
+test("reusable workflow call from a PR workflow fails", () => {
+  fails("on: pull_request\njobs:\n  lan:\n    uses: ./.github/workflows/lan.yml\n");
 });
 
-test("pull_request outside the on: block does not count as a trigger", () => {
-  const wf = `on:\n  schedule:\n    - cron: "0 0 * * *"\n\n${job("[self-hosted, qa-e2e]")}      - run: echo "\${{ github.event.pull_request.number }}"\n`;
-  assert.deepEqual(findViolations("wf.yml", wf), []);
+test("words in comments and strings do not count", () => {
+  passes(
+    `# never use self-hosted / qa-e2e here\non: pull_request\n${job("ubuntu-latest  # not qa-e2e")}` +
+      '      - name: "self-hosted is banned"\n        run: echo qa-e2e\n',
+  );
 });
 
-test("pull_request in a commented-out trigger does not count", () => {
-  const wf = `on:\n  # pull_request:\n  workflow_dispatch:\n${job("[self-hosted, qa-e2e]")}`;
-  assert.deepEqual(findViolations("wf.yml", wf), []);
+test("pull_request outside on: does not count as a trigger", () => {
+  passes(`on: workflow_dispatch\nenv:\n  E: pull_request\n${job(LAN)}`);
 });
 
-test("no top-level on: fails closed", () => {
-  assert.equal(findViolations("wf.yml", job("ubuntu-latest")).length, 1);
+test("no on:, bad YAML and duplicate keys fail closed", () => {
+  fails(job("ubuntu-latest"));
+  fails("on: [pull_request\n");
+  fails(`on: workflow_dispatch\non: pull_request\n${job(LAN)}`);
+});
+
+test("CRLF line endings parse", () => {
+  fails(`on: pull_request\n${job(LAN)}`.replaceAll("\n", "\r\n"));
+  passes(`on: pull_request\n${job("ubuntu-latest")}`.replaceAll("\n", "\r\n"));
 });
