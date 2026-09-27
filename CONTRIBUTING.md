@@ -138,11 +138,13 @@ code must never reach that runner. The rules:
   start at once. The check stops such a change from being **merged**; the
   approval setting below stops it from **running**.
 - **Fork workflows need approval.** The repository setting *Settings →
-  Actions → General → Fork pull request workflows from outside collaborators*
-  stays on **Require approval for all outside collaborators**. A maintainer
-  reads a fork PR's changes — every file under `.github/` and
-  `scripts/check-workflow-runners.*` first — before approving its workflows
-  to run.
+  Actions → General → Approval for running fork pull request workflows from
+  contributors* stays on **Require approval for all external contributors**
+  (older GitHub versions label it *Fork pull request workflows from outside
+  collaborators → Require approval for all outside collaborators*). A
+  maintainer reads a fork PR's changes — every file under `.github/`,
+  `scripts/check-workflow-runners.*` and the `package.json` scripts first —
+  before approving its workflows to run.
 - **Workflow changes get extra review.** In any PR that edits
   `.github/workflows/` or the check, a reviewer reads every `on:` and
   `runs-on:` line, and any job that checks out a PR's head commit while it
