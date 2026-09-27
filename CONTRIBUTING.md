@@ -110,6 +110,38 @@ the mutant. Revisit when upgrading Stryker.
 - Money handling rules are strict (NUMERIC to the cent, rounding defined once
   in `packages/engine`) — follow the existing patterns.
 
+## CI workflows and the self-hosted runner
+
+This repo is public, and one workflow (`e2e-nightly.yml`) runs on a
+**self-hosted runner** on the maintainers' private network, label `qa-e2e`.
+Code that runs on that runner runs on a machine inside that network. A pull
+request from a fork carries code the maintainers have not reviewed, so fork
+code must never reach that runner. The rules:
+
+- **No PR triggers on self-hosted jobs.** A workflow with
+  `runs-on: [self-hosted, qa-e2e]` (or any `self-hosted` label) may only be
+  triggered by `schedule` or `workflow_dispatch`. Never add `pull_request`,
+  `pull_request_target`, or any other `pull_request_*` event to it. If a
+  change needs a PR check, put that job in a separate workflow on a
+  GitHub-hosted runner (`ubuntu-latest`).
+- **CI enforces this.** `pnpm check:workflow-runners` (CI verify job, script
+  `scripts/check-workflow-runners.mjs`) fails when a workflow file mentions
+  `self-hosted` or `qa-e2e` outside a comment — or picks its runner from a
+  `${{ }}` expression — and has a `pull_request*` trigger. Keep those words
+  out of step names and strings in PR-triggered workflows; the check reads
+  the text, not the meaning.
+- **Fork workflows need approval.** The repository setting *Settings →
+  Actions → General → Fork pull request workflows from outside collaborators*
+  stays on **Require approval for all outside collaborators**. A maintainer
+  reads a fork PR's changes before any of its workflows run.
+- **Workflow changes get extra review.** In any PR that edits
+  `.github/workflows/`, a reviewer checks every `on:` and `runs-on:` line, and
+  any `workflow_run` trigger or `actions/checkout` of a PR's head commit in a
+  job that has repository write access or runs self-hosted.
+
+The runner itself (host, service, one-time setup) is described in
+[`docs/qa.md`](docs/qa.md#nightly-e2e).
+
 ## License
 
 By contributing, you agree that your contributions are licensed under the

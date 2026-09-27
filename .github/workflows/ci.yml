@@ -47,6 +47,11 @@ jobs:
       - name: Mutation test globs cover every importing suite
         run: pnpm check:mutation-globs
 
+      # PAY-112: no self-hosted (qa-e2e) job on a pull_request* trigger — the
+      # repo is public and a fork PR would run its code on the LAN runner.
+      - name: Workflow runner guard (PR triggers never reach the LAN runner)
+        run: pnpm check:workflow-runners
+
       # Build BEFORE typecheck: cross-package imports resolve to dist/*.d.ts,
       # which must exist first (locally, stale dist dirs mask this).
       - name: Build web + server + packages
