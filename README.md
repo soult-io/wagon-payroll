@@ -17,9 +17,7 @@ Node 22) that owns a dedicated Postgres 16 database via Drizzle migrations
 pure and deterministic, with their original unit tests as the regression oracle.
 Shared Zod schemas live in `packages/shared`. Deployment is a single
 self-contained container image published to ghcr (`compose.example.yml` shows
-a reference deployment: app + one-shot migrate + postgres); the full design —
-twelve locked decisions (D1–D12) and nine signed-off specs —
-lives in [plan/](plan/README.md).
+a reference deployment: app + one-shot migrate + postgres).
 
 ## Quickstart
 
@@ -119,7 +117,6 @@ apps/web/           Vue 3 + Vite SPA (PrimeVue 4.x, Material preset)
 packages/engine/    vendored payroll.ts + money.ts + tests (from an internal accounting codebase)
 packages/db/        Drizzle schema + migrations
 packages/shared/    Zod schemas, types shared by server+web
-plan/               approved plan: decisions.md + specs/ (docs, not code)
 docs/               operations docs (deployment, QA, export API)
 Dockerfile          multi-stage: build web → build server → runtime
 compose.example.yml reference deployment: app + migrate one-shot + postgres

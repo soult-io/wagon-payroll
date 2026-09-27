@@ -84,8 +84,8 @@ or `reports/mutation-deposits/` / `reports/mutation-filings/` in `apps/server/`:
   detected.
 - **Mutation score** = (killed + timeout) / all valid mutants.
 
-Each target sets `thresholds.break` a little below its recorded baseline
-(`plan/mutation-baseline-2026-09.md`); a score below it fails the run. The
+Each target sets `thresholds.break` a little below its recorded baseline;
+a score below it fails the run. The
 `mutation` workflow runs weekly and on demand (Actions → mutation → Run
 workflow), not on PRs, and uploads the HTML report as an artifact.
 
@@ -101,10 +101,9 @@ the mutant. Revisit when upgrading Stryker.
 - Green CI is required: Biome 0 errors, typecheck clean, unit tests and
   ephemeral e2e passing.
 - Keep changes focused; one logical change per PR.
-- **Big changes start as a spec.** The `plan/` directory holds the approved
-  design history (`plan/decisions.md` + `plan/specs/`). If your change alters
-  behavior, data model, or architecture, open an issue first to discuss, and
-  be ready to write a short spec in that style.
+- **Big changes start as an issue.** If your change alters behavior, data
+  model, or architecture, open an issue first to discuss the design before
+  writing code.
 - Don't commit secrets, real personal data, or environment-specific
   configuration — the repo is deliberately deployable by anyone.
 - Money handling rules are strict (NUMERIC to the cent, rounding defined once

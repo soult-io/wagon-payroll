@@ -26,7 +26,7 @@ export default {
   timeoutMS: 10_000,
   tempDirName: ".stryker-tmp",
   cleanTempDir: "always",
-  // Baseline 2026-09 (plan/mutation-baseline-2026-09.md): break sits a little
+  // Baseline 2026-09: break sits a little
   // below the measured score so a drop fails the run.
   thresholds: { high: 90, low: 80, break: 86 },
 };
