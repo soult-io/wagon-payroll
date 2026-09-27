@@ -179,7 +179,7 @@ Per `specs/plane-pm.md` (Spec 15):
 
 ## D36 — W-2 state boxes 15–17 are filled  `CONFIRMED by owner 2026-09-27 (PAY-104 F25)`
 
-Per `specs/w2-state-boxes.md` (Spec 24), ticket PAY-116:
+Per Spec 24 in Plane ticket PAY-116 (specs live in Plane, owner 2026-09-27):
 
 - W-2 boxes 15 (state + employer state ID), 16 (state wages) and 17 (state income tax) are
   filled from issued-run entries grouped by the run snapshot's work state, for tax years
@@ -196,8 +196,8 @@ Per `specs/w2-state-boxes.md` (Spec 24), ticket PAY-116:
 - Employer state IDs are stored per state, encrypted at rest and write-only, like the EIN
   (D19).
 - A W-2 whose state line has tax withheld and no employer state ID is blocked; with no tax
-  withheld it only warns (owner 2026-09-27, Spec 24 S24-D3).
-- Still pending in Spec 24: local boxes 18–20 (proposed out of scope, S24-D8), the 2026
+  withheld it only warns (owner 2026-09-27, PAY-116 S24-D3).
+- Still pending in PAY-116: local boxes 18–20 (proposed out of scope, S24-D8), the 2026
   W-2/W-3 templates (proposed in scope, S24-D6), and holding the "W-2 ready" email while a
   W-2 is blocked (S24-D11).
 
