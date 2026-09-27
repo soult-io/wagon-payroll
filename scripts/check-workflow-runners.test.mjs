@@ -60,10 +60,15 @@ test("expression on the next line fails", () => {
   fails(`on: pull_request\njobs:\n  e2e:\n    runs-on: >-\n      \${{ vars.R }}\n`);
 });
 
-test("runs-on merged in through << is checked", () => {
+test("<< merge keys fail, even under an explicit hosted runs-on", () => {
   fails(
     "on: pull_request\nx: &lan {runs-on: [self-hosted, qa-e2e]}\njobs:\n  e2e:\n    <<: *lan\n",
   );
+  fails(
+    "on: pull_request\nx: &lan {runs-on: [self-hosted, qa-e2e]}\njobs:\n  e2e:\n" +
+      "    runs-on: ubuntu-latest\n    <<: *lan\n    steps: [{run: id}]\n",
+  );
+  fails(`on: workflow_dispatch\nx: &a {k: v}\ny:\n  <<: *a\n${job(LAN)}`);
 });
 
 test("missing runs-on fails", () => fails("on: pull_request\njobs:\n  e2e:\n    steps: []\n"));

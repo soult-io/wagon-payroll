@@ -124,19 +124,20 @@ code must never reach that runner. The rules:
   any other `pull_request_*` event, `workflow_run`, `workflow_call` or `push`
   to it. If a change needs a PR check, put that job in a separate workflow on
   a GitHub-hosted runner (`ubuntu-latest`).
-- **CI blocks a bad change from merging.**
+- **CI fails a PR that breaks this.**
   `pnpm check:workflow-runners` (CI verify job, script
   `scripts/check-workflow-runners.mjs`) parses each workflow file. If a
   workflow has any trigger other than `schedule` / `workflow_dispatch`, every
   job in it must use one literal GitHub-hosted label (`ubuntu-*`,
   `windows-*`, `macos-*`). It fails on a self-hosted label, a label list, a
-  runner group, a `${{ }}` expression, or a job-level `uses:` (a reusable
-  workflow picks its own runner).
+  runner group, a `${{ }}` expression, a job-level `uses:` (a reusable
+  workflow picks its own runner), or a YAML `<<` merge key. A PR with a red
+  check is never merged.
 - **The check does not stop a fork PR on its own.** On a `pull_request`
   event GitHub runs the workflow files from the PR itself, so a fork PR can
   add a trigger to `e2e-nightly.yml`, or edit the check, and that run would
-  start at once. The check stops such a change from being **merged**; the
-  approval setting below stops it from **running**.
+  start at once. The check turns such a change red so it is not **merged**;
+  the approval setting below stops it from **running**.
 - **Fork workflows need approval.** The repository setting *Settings →
   Actions → General → Approval for running fork pull request workflows from
   contributors* stays on **Require approval for all external contributors**

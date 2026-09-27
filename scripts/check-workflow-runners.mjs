@@ -10,7 +10,9 @@
 // (ubuntu-*, windows-*, macos-*). Anything else fails — self-hosted labels,
 // label lists, runner groups, `${{ }}` expressions, and job-level `uses:`
 // (a reusable workflow picks its own runner). The file is parsed as YAML, so
-// anchors, flow mappings and quoting cannot hide a trigger or a runner.
+// anchors, flow mappings and quoting cannot hide a trigger or a runner. `<<`
+// merge keys are rejected outright: their override rules may differ between
+// this parser and GitHub's.
 //
 // Usage: node scripts/check-workflow-runners.mjs   (exit 1 on any failure)
 
@@ -28,6 +30,13 @@ function isObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** True if any mapping in the document has a `<<` key. */
+function hasMergeKey(node) {
+  if (Array.isArray(node)) return node.some(hasMergeKey);
+  if (!isObject(node)) return false;
+  return Object.hasOwn(node, "<<") || Object.values(node).some(hasMergeKey);
+}
+
 /** Event names from `on:` in any of its forms, or null if it is malformed. */
 function triggerNames(on) {
   if (typeof on === "string") return [on];
@@ -36,14 +45,33 @@ function triggerNames(on) {
   return null;
 }
 
+/** Why one job of an exposed workflow is not allowed, or null if it is fine. */
+function jobViolation(file, id, job, why) {
+  if (!isObject(job)) return `${file}: job "${id}" is not a mapping — cannot check its runner.`;
+  if (job.uses !== undefined) {
+    return (
+      `${file}: job "${id}" calls a reusable workflow (uses:) — ${why}; call it only ` +
+      "from a schedule / workflow_dispatch workflow, or inline the job."
+    );
+  }
+  if (typeof job["runs-on"] === "string" && HOSTED_RE.test(job["runs-on"])) return null;
+  return (
+    `${file}: job "${id}" runs-on ${JSON.stringify(job["runs-on"] ?? null)} — ${why} ` +
+    "(a literal ubuntu-*, windows-* or macos-* label). Self-hosted jobs " +
+    "(qa-e2e) belong in a schedule / workflow_dispatch-only workflow."
+  );
+}
+
 /** Violations for one workflow file's text; empty when it is fine. */
 export function findViolations(file, text) {
   let doc;
   try {
-    // merge: resolve `<<` keys so a merged-in runs-on is checked too.
-    doc = parse(text, { merge: true });
+    doc = parse(text, { merge: false });
   } catch (err) {
     return [`${file}: not valid YAML (${err.message.split("\n")[0]}) — cannot check it.`];
+  }
+  if (hasMergeKey(doc)) {
+    return [`${file}: uses a "<<" merge key — not allowed in workflows (cannot check it).`];
   }
   const triggers = isObject(doc) ? triggerNames(doc.on) : null;
   if (!triggers || triggers.length === 0) {
@@ -54,29 +82,14 @@ export function findViolations(file, text) {
   if (!isObject(doc.jobs)) return [`${file}: no "jobs:" mapping — cannot check its runners.`];
 
   const why = `it has a "${exposed[0]}" trigger, so every job must run on a GitHub-hosted runner`;
-  const violations = [];
-  for (const [id, job] of Object.entries(doc.jobs)) {
-    if (!isObject(job)) {
-      violations.push(`${file}: job "${id}" is not a mapping — cannot check its runner.`);
-    } else if (job.uses !== undefined) {
-      violations.push(
-        `${file}: job "${id}" calls a reusable workflow (uses:) — ${why}; call it only ` +
-          "from a schedule / workflow_dispatch workflow, or inline the job.",
-      );
-    } else if (typeof job["runs-on"] !== "string" || !HOSTED_RE.test(job["runs-on"])) {
-      violations.push(
-        `${file}: job "${id}" runs-on ${JSON.stringify(job["runs-on"] ?? null)} — ${why} ` +
-          "(a literal ubuntu-*, windows-* or macos-* label). Self-hosted jobs " +
-          "(qa-e2e) belong in a schedule / workflow_dispatch-only workflow.",
-      );
-    }
-  }
-  return violations;
+  return Object.entries(doc.jobs)
+    .map(([id, job]) => jobViolation(file, id, job, why))
+    .filter((v) => v !== null);
 }
 
 function main() {
   const files = readdirSync(WORKFLOWS)
-    .filter((f) => /\.ya?ml$/.test(f))
+    .filter((f) => /\.ya?ml$/i.test(f))
     .sort();
   if (files.length === 0) {
     console.error(`✗ no workflow files in ${WORKFLOWS} — the guard would check nothing.`);
