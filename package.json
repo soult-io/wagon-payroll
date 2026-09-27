@@ -18,12 +18,14 @@
     "mutation:server-deposits": "pnpm --filter \"@payroll/server^...\" run build && pnpm --filter @payroll/server exec stryker run stryker.deposits.config.mjs",
     "mutation:server-filings": "pnpm --filter \"@payroll/server^...\" run build && pnpm --filter @payroll/server exec stryker run stryker.filings.config.mjs",
     "check:mutation-globs": "node scripts/check-mutation-test-globs.mjs",
+    "check:workflow-runners": "node --test scripts/check-workflow-runners.test.mjs && node scripts/check-workflow-runners.mjs",
     "format": "biome format --write",
     "db:generate": "pnpm --filter @payroll/db run generate",
     "db:migrate": "pnpm --filter @payroll/db run migrate",
     "migrate:legacy": "pnpm --filter @payroll/server run migrate:legacy"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.14"
+    "@biomejs/biome": "2.5.14",
+    "yaml": "2.9.0"
   }
 }

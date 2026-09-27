@@ -110,6 +110,53 @@ the mutant. Revisit when upgrading Stryker.
 - Money handling rules are strict (NUMERIC to the cent, rounding defined once
   in `packages/engine`) — follow the existing patterns.
 
+## CI workflows and the self-hosted runner
+
+This repo is public, and one workflow (`e2e-nightly.yml`) runs on a
+**self-hosted runner** on the maintainers' private network, label `qa-e2e`.
+Code that runs on that runner runs on a machine inside that network. A pull
+request from a fork carries code the maintainers have not reviewed, so fork
+code must never reach that runner. The rules:
+
+- **Self-hosted jobs run only on `schedule` or `workflow_dispatch`.** A
+  workflow with `runs-on: [self-hosted, qa-e2e]` (or any self-hosted runner)
+  may have no other trigger. Never add `pull_request`, `pull_request_target`,
+  any other `pull_request_*` event, `workflow_run`, `workflow_call` or `push`
+  to it. If a change needs a PR check, put that job in a separate workflow on
+  a GitHub-hosted runner (`ubuntu-latest`).
+- **CI fails a PR that breaks this.**
+  `pnpm check:workflow-runners` (CI verify job, script
+  `scripts/check-workflow-runners.mjs`) parses each workflow file. If a
+  workflow has any trigger other than `schedule` / `workflow_dispatch`, every
+  job in it must use one literal GitHub-hosted label (`ubuntu-*`,
+  `windows-*`, `macos-*`). It fails on a self-hosted label, a label list, a
+  runner group, a `${{ }}` expression, a job-level `uses:` (a reusable
+  workflow picks its own runner), or a YAML `<<` merge key. A PR with a red
+  check is never merged.
+- **The check does not stop a fork PR on its own.** On a `pull_request`
+  event GitHub runs the workflow files from the PR itself, so a fork PR can
+  add a trigger to `e2e-nightly.yml`, or edit the check, and that run would
+  start at once. The check turns such a change red so it is not **merged**;
+  the approval setting below stops it from **running**.
+- **Fork workflows need approval.** The repository setting *Settings →
+  Actions → General → Approval for running fork pull request workflows from
+  contributors* stays on **Require approval for all external contributors**
+  (older GitHub versions label it *Fork pull request workflows from outside
+  collaborators → Require approval for all outside collaborators*). A
+  maintainer reads a fork PR's changes — every file under `.github/`,
+  `scripts/check-workflow-runners.*` and the `package.json` scripts first —
+  before approving its workflows to run.
+- **Workflow changes get extra review.** In any PR that edits
+  `.github/workflows/` or the check, a reviewer reads every `on:` and
+  `runs-on:` line, and any job that checks out a PR's head commit while it
+  has repository write access.
+- **The runner keeps only its own labels.** Never give the self-hosted runner
+  a label that looks like a GitHub-hosted one (`ubuntu-latest` and similar);
+  the check trusts those names.
+
+The runner itself (host, service, one-time setup) is described in
+[`docs/qa.md`](docs/qa.md#nightly-e2e).
+
 ## License
 
 By contributing, you agree that your contributions are licensed under the

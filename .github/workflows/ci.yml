@@ -47,6 +47,12 @@ jobs:
       - name: Mutation test globs cover every importing suite
         run: pnpm check:mutation-globs
 
+      # PAY-112: a workflow with any trigger other than schedule /
+      # workflow_dispatch runs only on GitHub-hosted labels — the repo is
+      # public and a fork PR must never reach the LAN (qa-e2e) runner.
+      - name: Workflow runner guard (PR triggers never reach the LAN runner)
+        run: pnpm check:workflow-runners
+
       # Build BEFORE typecheck: cross-package imports resolve to dist/*.d.ts,
       # which must exist first (locally, stale dist dirs mask this).
       - name: Build web + server + packages
