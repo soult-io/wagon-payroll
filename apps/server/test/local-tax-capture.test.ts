@@ -31,6 +31,7 @@ import {
 } from "@payroll/db";
 import { LOCALITY_CODES, WORK_LOCALITY_CODES } from "@payroll/shared";
 import { encryptAddress } from "../src/crypto/address-encryption.js";
+import { correctOpenResidence } from "../src/payroll/local-tax-writes.js";
 import { createTestApp, ORIGIN, type TestContext } from "./helpers.js";
 import { inviteAndOnboard, login, sessionHeader, TEST_PASSWORD } from "./flow-helpers.js";
 
@@ -546,6 +547,63 @@ describe("PUT /api/admin/employees/:employeeId/residence", () => {
     expect(await auditRows(id, "employee_residence.assign")).toHaveLength(1);
   });
 
+  it("a correction keeps the row's source (only the place changes)", async () => {
+    const id = await createEmployee();
+    await t.db.insert(employeeResidences).values({
+      employeeId: id,
+      country: "US",
+      stateCode: "NY",
+      localityCode: "NY-NYC",
+      effectiveFrom: "2026-02-01",
+      source: "certificate",
+      createdBy: "test",
+    });
+    const res = await api("PUT", residenceUrl(id), {
+      country: "US",
+      stateCode: "NY",
+      localityCode: "NY-YONKERS",
+      effectiveFrom: "2026-02-01",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().residence).toMatchObject({
+      localityCode: "NY-YONKERS",
+      source: "certificate",
+    });
+  });
+
+  it("a correction against a row that stopped being open writes nothing (stale read)", async () => {
+    const id = await createEmployee();
+    const [row] = await t.db
+      .insert(employeeResidences)
+      .values({
+        employeeId: id,
+        country: "US",
+        stateCode: "TX",
+        effectiveFrom: "2026-02-01",
+        createdBy: "test",
+      })
+      .returning();
+    const stale = must(row, "residence row");
+    // Another request closes the row between the read and the correction.
+    await t.db
+      .update(employeeResidences)
+      .set({ effectiveTo: "2026-05-01" })
+      .where(eq(employeeResidences.id, stale.id));
+    const result = await correctOpenResidence(
+      t.db,
+      stale,
+      { country: "US", stateCode: "NJ", localityCode: null, effectiveFrom: "2026-02-01" },
+      adminId,
+    );
+    expect(result).toBeNull();
+    const [after] = await t.db
+      .select()
+      .from(employeeResidences)
+      .where(eq(employeeResidences.id, stale.id));
+    expect(must(after, "row").stateCode).toBe("TX");
+    expect(await auditRows(id, "employee_residence.correct")).toHaveLength(0);
+  });
+
   it("S1: an impossible date is a 400 that does not echo it (residence and work-state PUT)", async () => {
     const id = await createEmployee();
     const res = await api("PUT", residenceUrl(id), {
@@ -825,6 +883,21 @@ describe("PUT /api/admin/employees/:employeeId/work-state/locality (backfill)", 
     });
     expect(bad.statusCode).toBe(400);
     expect(bad.body).not.toContain("02-30");
+  });
+
+  it("refuses a row that ended before today (409 work_state_ended), audits nothing", async () => {
+    const id = await createEmployee();
+    await t.db.insert(employeeWorkStates).values([
+      { employeeId: id, stateCode: "NY", effectiveFrom: "2024-01-01", effectiveTo: "2025-01-01" },
+      { employeeId: id, stateCode: "IL", effectiveFrom: "2025-01-01" },
+    ]);
+    const res = await api("PUT", workLocalityUrl(id), {
+      localityCode: "NY-YONKERS",
+      effectiveOn: "2024-06-01",
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toBe("work_state_ended");
+    expect(await auditRows(id, "employee_work_state.locality")).toHaveLength(0);
   });
 
   it("409 when there is no open work-state row", async () => {

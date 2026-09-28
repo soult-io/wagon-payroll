@@ -12,7 +12,10 @@
  *   `sameAsBefore` re-confirms it from today (audit employee_residence.confirm).
  * - PUT /api/admin/employees/:employeeId/work-state/locality — answer the
  *   work-locality question on the work-state row in force on `effectiveOn`
- *   (default today). Rows written before PAY-163 are unconfirmed.
+ *   (default today); a row that ended before today is refused
+ *   (work_state_ended). Rows written before PAY-163 are unconfirmed.
+ * - Writes live in payroll/local-tax-writes.ts: each reads its row inside
+ *   the transaction (FOR UPDATE) and audits from that read.
  * - GET /api/admin/local-tax/check?payDate= — per active W-2 employee: ok or
  *   the reason codes a pay run would be held for, the place code behind a
  *   hold and the work state code. `enforced` is false in G1.
@@ -21,17 +24,15 @@
  */
 
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { and, asc, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import { z } from "zod";
-import { auditEvents, employeeResidences, employeeWorkStates, employees } from "@payroll/db";
+import { employeeResidences, employees } from "@payroll/db";
 import {
   type AddressPayload,
   isoDate,
   normalizeUsState,
-  type ResidenceInput,
   residenceInput,
   workLocalityInput,
-  workLocalityProblem,
 } from "@payroll/shared";
 import type { AppConfig } from "../config.js";
 import { decryptAddress } from "../crypto/address-encryption.js";
@@ -43,7 +44,8 @@ import {
   loadLocalCoverage,
   localGuardInputFor,
 } from "../payroll/local-guard-inputs.js";
-import { type ResidenceRow, resolveWorkState } from "../payroll/resolve.js";
+import { answerWorkLocality, writeResidence } from "../payroll/local-tax-writes.js";
+import type { ResidenceRow } from "../payroll/resolve.js";
 import type { Guards } from "../plugins/guards.js";
 import { NOT_FOUND, parseEmployeeId, safeIssues } from "./params.js";
 
@@ -52,9 +54,6 @@ interface AdminLocalTaxDeps {
   config: AppConfig;
   guards: Guards;
 }
-
-type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
-type WorkStateRow = typeof employeeWorkStates.$inferSelect;
 
 /** API view of a residence row (no created_by). */
 function residenceView(row: ResidenceRow) {
@@ -68,28 +67,6 @@ function residenceView(row: ResidenceRow) {
     effectiveTo: row.effectiveTo,
     source: row.source,
     createdAt: row.createdAt,
-  };
-}
-
-/** Audit payload for a residence: codes and dates only. */
-function residenceAudit(row: ResidenceRow) {
-  return {
-    country: row.country,
-    stateCode: row.stateCode,
-    localityCode: row.localityCode,
-    effectiveFrom: row.effectiveFrom,
-    effectiveTo: row.effectiveTo,
-    source: row.source,
-  };
-}
-
-/** Audit payload for a work-state locality: codes and dates only. */
-function workLocalityAudit(row: WorkStateRow) {
-  return {
-    stateCode: row.stateCode,
-    localityCode: row.localityCode,
-    localityConfirmed: row.localityConfirmedAt !== null,
-    effectiveFrom: row.effectiveFrom,
   };
 }
 
@@ -109,32 +86,6 @@ function effectiveOn(row: ResidenceRow, day: string): boolean {
   return row.effectiveFrom <= day && (row.effectiveTo === null || row.effectiveTo > day);
 }
 
-/**
- * Why a residence cannot be written against the open row, or null. "Still
- * the same" must repeat the open row's place; a new row must not start before
- * the open row (the same start date corrects the open row instead).
- */
-function residenceConflict(
-  previous: ResidenceRow | undefined,
-  input: ResidenceInput,
-): "not_same_as_before" | "invalid_effective_from" | null {
-  if (input.sameAsBefore) {
-    const same =
-      previous !== undefined &&
-      previous.country === input.country &&
-      previous.stateCode === input.stateCode &&
-      previous.localityCode === input.localityCode;
-    if (!same) return "not_same_as_before";
-  }
-  if (!previous) return null;
-  if (input.effectiveFrom < previous.effectiveFrom) return "invalid_effective_from";
-  // Confirming "still the same" on the day the open row starts has nothing to confirm.
-  if (input.sameAsBefore && input.effectiveFrom === previous.effectiveFrom) {
-    return "invalid_effective_from";
-  }
-  return null;
-}
-
 /** The admin behind a request (requireRole guarantees a session). */
 function actorOf(req: FastifyRequest): string {
   const user = req.authUser;
@@ -142,42 +93,9 @@ function actorOf(req: FastifyRequest): string {
   return user.id;
 }
 
-/** The single row an INSERT/UPDATE … RETURNING must produce. */
-function one<T>(rows: T[]): T {
-  const [row] = rows;
-  if (row === undefined) throw new Error("expected one row");
-  return row;
-}
-
-/** Postgres unique / exclusion violations → the caller's 409. */
-function isWindowConflict(err: unknown): boolean {
-  const code =
-    (err as { code?: string; cause?: { code?: string } })?.cause?.code ??
-    (err as { code?: string })?.code;
-  return code === "23505" || code === "23P01";
-}
-
 export function registerAdminLocalTaxRoutes(app: FastifyInstance, deps: AdminLocalTaxDeps): void {
   const { db, config, guards } = deps;
   const admin = guards.requireRole("admin");
-
-  async function audit(
-    tx: Tx | Db,
-    actorId: string,
-    action: string,
-    employeeId: number,
-    before: unknown,
-    after: unknown,
-  ) {
-    await tx.insert(auditEvents).values({
-      actorId,
-      action,
-      entity: "employee",
-      entityId: String(employeeId),
-      before,
-      after,
-    });
-  }
 
   async function findEmployee(employeeId: number) {
     const rows = await db
@@ -231,111 +149,11 @@ export function registerAdminLocalTaxRoutes(app: FastifyInstance, deps: AdminLoc
         return reply.code(400).send({ error: "invalid_body", details: safeIssues(body.error) });
       }
       if (!(await findEmployee(employeeId))) return reply.code(404).send(NOT_FOUND);
-      const result = await writeResidence(employeeId, body.data, actorOf(req));
-      return reply.code(result.status).send(result.body);
+      const result = await writeResidence(db, employeeId, body.data, actorOf(req), todayIso());
+      if (result.status === 409) return reply.code(409).send({ error: result.error });
+      return reply.code(result.status).send({ residence: residenceView(result.row) });
     },
   );
-
-  /** Correct, confirm or add a residence; returns the HTTP status and body. */
-  async function writeResidence(
-    employeeId: number,
-    input: ResidenceInput,
-    actorId: string,
-  ): Promise<{ status: number; body: unknown }> {
-    const open = await db
-      .select()
-      .from(employeeResidences)
-      .where(
-        and(eq(employeeResidences.employeeId, employeeId), isNull(employeeResidences.effectiveTo)),
-      )
-      .orderBy(desc(employeeResidences.effectiveFrom))
-      .limit(1);
-    const previous = open[0];
-    // "Still the same" is always a confirmation from today (server clock).
-    const request = input.sameAsBefore ? { ...input, effectiveFrom: todayIso() } : input;
-    const conflict = residenceConflict(previous, request);
-    if (conflict) return { status: 409, body: { error: conflict } };
-    try {
-      if (previous && previous.effectiveFrom === request.effectiveFrom) {
-        const corrected = await correctResidence(previous, request, actorId);
-        return { status: 200, body: { residence: residenceView(corrected) } };
-      }
-      const inserted = await addResidence(employeeId, previous, request, actorId);
-      return { status: 201, body: { residence: residenceView(inserted) } };
-    } catch (err) {
-      if (isWindowConflict(err)) return { status: 409, body: { error: "invalid_effective_from" } };
-      throw err;
-    }
-  }
-
-  /** New residence from `request.effectiveFrom`; closes the open row there. */
-  async function addResidence(
-    employeeId: number,
-    previous: ResidenceRow | undefined,
-    request: ResidenceInput,
-    actorId: string,
-  ): Promise<ResidenceRow> {
-    return db.transaction(async (tx) => {
-      if (previous) {
-        await tx
-          .update(employeeResidences)
-          .set({ effectiveTo: request.effectiveFrom })
-          .where(eq(employeeResidences.id, previous.id));
-      }
-      const rows = await tx
-        .insert(employeeResidences)
-        .values({
-          employeeId,
-          country: request.country,
-          stateCode: request.stateCode,
-          localityCode: request.localityCode,
-          effectiveFrom: request.effectiveFrom,
-          source: "admin",
-          createdBy: actorId,
-        })
-        .returning();
-      const row = one(rows);
-      await audit(
-        tx,
-        actorId,
-        request.sameAsBefore ? "employee_residence.confirm" : "employee_residence.assign",
-        employeeId,
-        previous ? residenceAudit(previous) : null,
-        residenceAudit(row),
-      );
-      return row;
-    });
-  }
-
-  /** Same start date as the open row: fix that row's place in place (a data-entry correction). */
-  async function correctResidence(
-    previous: ResidenceRow,
-    request: ResidenceInput,
-    actorId: string,
-  ): Promise<ResidenceRow> {
-    return db.transaction(async (tx) => {
-      const rows = await tx
-        .update(employeeResidences)
-        .set({
-          country: request.country,
-          stateCode: request.stateCode,
-          localityCode: request.localityCode,
-          source: "admin",
-        })
-        .where(eq(employeeResidences.id, previous.id))
-        .returning();
-      const row = one(rows);
-      await audit(
-        tx,
-        actorId,
-        "employee_residence.correct",
-        previous.employeeId,
-        residenceAudit(previous),
-        residenceAudit(row),
-      );
-      return row;
-    });
-  }
 
   // --------------------------------------------------- work-state locality
 
@@ -353,39 +171,22 @@ export function registerAdminLocalTaxRoutes(app: FastifyInstance, deps: AdminLoc
 
       // The row in force on the given day (default today) — not only the open
       // row: a future-dated row can close the row that applies today.
-      const row = await resolveWorkState(db, employeeId, body.data.effectiveOn ?? todayIso());
-      if (!row) return reply.code(409).send({ error: "no_open_work_state" });
-      const problem = workLocalityProblem(row.stateCode, body.data.localityCode);
-      if (problem) {
+      const today = todayIso();
+      const result = await answerWorkLocality(
+        db,
+        employeeId,
+        { localityCode: body.data.localityCode, effectiveOn: body.data.effectiveOn ?? today },
+        actorOf(req),
+        today,
+      );
+      if (result.status === 409) return reply.code(409).send({ error: result.error });
+      if (result.status === 400) {
         return reply.code(400).send({
           error: "invalid_body",
-          details: [{ path: ["localityCode"], code: "custom", message: problem }],
+          details: [{ path: ["localityCode"], code: "custom", message: result.problem }],
         });
       }
-
-      const actorId = actorOf(req);
-      const updated = await db.transaction(async (tx) => {
-        const rows = await tx
-          .update(employeeWorkStates)
-          .set({
-            localityCode: body.data.localityCode,
-            localityConfirmedAt: new Date(),
-            localityConfirmedBy: actorId,
-          })
-          .where(eq(employeeWorkStates.id, row.id))
-          .returning();
-        const after = one(rows);
-        await audit(
-          tx,
-          actorId,
-          "employee_work_state.locality",
-          employeeId,
-          workLocalityAudit(row),
-          workLocalityAudit(after),
-        );
-        return after;
-      });
-      return { workState: updated };
+      return { workState: result.row };
     },
   );
 
