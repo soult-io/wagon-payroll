@@ -10,7 +10,7 @@
 import { and, desc, eq, isNull } from "drizzle-orm";
 import { auditEvents, employeeResidences, employeeWorkStates } from "@payroll/db";
 import { type ResidenceInput, workLocalityProblem } from "@payroll/shared";
-import type { Db } from "../db.js";
+import { type Db, hasPgErrorCode } from "../db.js";
 import { type ResidenceRow, resolveWorkState } from "./resolve.js";
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -19,7 +19,7 @@ type Writer = Db | Tx;
 type WorkStateRow = typeof employeeWorkStates.$inferSelect;
 
 /** Audit payload for a residence: codes and dates only. */
-export function residenceAudit(row: ResidenceRow) {
+function residenceAudit(row: ResidenceRow) {
   return {
     country: row.country,
     stateCode: row.stateCode,
@@ -86,10 +86,7 @@ function residenceConflict(
 
 /** Postgres unique / exclusion violations → the caller's 409. */
 function isWindowConflict(err: unknown): boolean {
-  const code =
-    (err as { code?: string; cause?: { code?: string } })?.cause?.code ??
-    (err as { code?: string })?.code;
-  return code === "23505" || code === "23P01";
+  return hasPgErrorCode(err, ["23505", "23P01"]);
 }
 
 /** The first row RETURNING produced (an INSERT always produces one). */

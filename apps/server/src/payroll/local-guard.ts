@@ -18,6 +18,8 @@
  * 'NY-YONKERS-NR' / 'MD-NONRES' for nonresidents working there.
  */
 
+import { localityState, WORK_LOCALITY_STATES } from "@payroll/shared";
+
 export type LocalGuardReason =
   | "local_coverage_missing"
   | "residence_missing"
@@ -63,8 +65,6 @@ export interface LocalGuardInput {
 
 export type LocalGuardResult = { ok: true } | { ok: false; reasons: LocalGuardReason[] };
 
-/** Work states whose rows must carry a confirmed work locality. */
-const WORK_LOCALITY_STATES = new Set(["NY", "MD"]);
 /** Work states where "confirmed, no locality" is not an answer (a county is required). */
 const WORK_LOCALITY_REQUIRED = new Set(["MD"]);
 
@@ -77,10 +77,6 @@ const NONRESIDENT_JURISDICTION: Readonly<Record<string, string>> = {
   "NY-YONKERS": "NY-YONKERS-NR",
   MD: "MD-NONRES",
 };
-
-function stateOf(code: string): string {
-  return code.slice(0, 2);
-}
 
 /** Coverage row of `handling` for `basis` whose code is one of `codes`. */
 function findRow(
@@ -95,7 +91,7 @@ function findRow(
 }
 
 function workLocalityUnconfirmed(workState: NonNullable<LocalGuardInput["workState"]>): boolean {
-  if (!WORK_LOCALITY_STATES.has(workState.stateCode)) return false;
+  if (!WORK_LOCALITY_STATES.includes(workState.stateCode)) return false;
   if (!workState.localityConfirmed) return true;
   return WORK_LOCALITY_REQUIRED.has(workState.stateCode) && workState.localityCode === null;
 }
@@ -115,7 +111,8 @@ function stateHasResidentLocals(
   return (
     stateCode !== null &&
     coverage.some(
-      (r) => r.basis === "residence" && r.handling === "engine" && stateOf(r.code) === stateCode,
+      (r) =>
+        r.basis === "residence" && r.handling === "engine" && localityState(r.code) === stateCode,
     )
   );
 }

@@ -29,7 +29,7 @@ import StatusChip from "../../components/StatusChip.vue";
 import EmployeeResidenceCard from "../../components/EmployeeResidenceCard.vue";
 import SelectButton from "primevue/selectbutton";
 import Message from "primevue/message";
-import { localityName, workLocalityOptions } from "@payroll/shared";
+import { localityName, WORK_LOCALITY_STATES, workLocalityOptions } from "@payroll/shared";
 import {
   adminEmployeesApi,
   adminPayrollApi,
@@ -201,11 +201,9 @@ watch(
   },
 );
 
-function countyOptions() {
-  return workLocalityOptions("MD")
-    .map((o) => ({ label: o.name, value: o.code as string }))
-    .sort((a, b) => (a.label < b.label ? -1 : 1));
-}
+const COUNTY_OPTIONS = workLocalityOptions("MD")
+  .map((o) => ({ label: o.name, value: o.code as string }))
+  .sort((a, b) => (a.label < b.label ? -1 : 1));
 
 function stateLabel(stateCode: string): string {
   return stateCode === "MD" ? "Maryland" : "New York";
@@ -219,7 +217,7 @@ const wsNeedsAnswer = computed(() => {
 
 function workLocalityLabel(row: WorkStateRow): string {
   if (row.localityCode) return localityName(row.localityCode);
-  if (row.stateCode !== "NY" && row.stateCode !== "MD") return "—";
+  if (!WORK_LOCALITY_STATES.includes(row.stateCode)) return "—";
   return row.localityConfirmedAt ? "Not in Yonkers" : "Not answered yet";
 }
 
@@ -227,7 +225,7 @@ function workLocalityLabel(row: WorkStateRow): string {
 function needsLocalityAnswer(row: WorkStateRow): boolean {
   const today = toIso(new Date()) ?? "";
   return (
-    (row.stateCode === "NY" || row.stateCode === "MD") &&
+    WORK_LOCALITY_STATES.includes(row.stateCode) &&
     (row.effectiveTo === null || row.effectiveTo > today) &&
     row.localityConfirmedAt === null
   );
@@ -462,7 +460,7 @@ async function addWorkState() {
     await adminPayrollApi.assignWorkState(employeeId, {
       stateCode,
       effectiveFrom,
-      ...(stateCode === "NY" || stateCode === "MD" ? { localityCode } : {}),
+      ...(WORK_LOCALITY_STATES.includes(stateCode) ? { localityCode } : {}),
     });
     notify.success("Work state assigned", `${stateCode} from ${date(effectiveFrom)}.`);
     wsDialog.value = false;
@@ -924,7 +922,7 @@ onMounted(load);
           <Select
             input-id="wsCounty"
             v-model="wsForm.locality"
-            :options="countyOptions()"
+            :options="COUNTY_OPTIONS"
             option-label="label"
             option-value="value"
             filter
@@ -968,7 +966,7 @@ onMounted(load);
           <Select
             input-id="wlCounty"
             v-model="wlForm.locality"
-            :options="countyOptions()"
+            :options="COUNTY_OPTIONS"
             option-label="label"
             option-value="value"
             filter
