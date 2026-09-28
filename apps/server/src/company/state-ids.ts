@@ -113,11 +113,10 @@ export async function resolveStateId(
 // Writes
 // ---------------------------------------------------------------------------
 
-export type StateIdWriteResult =
-  | { status: 200; idMasked: string }
-  | { status: 204 }
-  | { status: 404 }
-  | { status: 409; error: "state_id_year_filed"; firstOpenYear: number };
+type YearFiled = { status: 409; error: "state_id_year_filed"; firstOpenYear: number };
+
+export type StateIdSetResult = { status: 200; idMasked: string } | YearFiled;
+export type StateIdDeleteResult = { status: 204 } | { status: 404 } | YearFiled;
 
 interface WriteTarget {
   companyId: number;
@@ -221,7 +220,7 @@ export async function writeStateId(
   target: WriteTarget,
   normalized: string,
   actorId: string,
-): Promise<StateIdWriteResult> {
+): Promise<StateIdSetResult> {
   return db.transaction(async (tx) => {
     const firstOpenYear = await filedYearConflict(tx, target);
     if (firstOpenYear !== null) {
@@ -247,7 +246,7 @@ export async function deleteStateId(
   key: string,
   target: WriteTarget,
   actorId: string,
-): Promise<StateIdWriteResult> {
+): Promise<StateIdDeleteResult> {
   return db.transaction(async (tx) => {
     const firstOpenYear = await filedYearConflict(tx, target);
     const previous = await lockedRow(tx, target);

@@ -58,7 +58,6 @@ export {
   MONEY_RE,
   type TaxAdjustmentRow,
   type TaxFilingRow,
-  W2W3_FILING_LOCK,
   worksheetHash,
 } from "./shared.js";
 

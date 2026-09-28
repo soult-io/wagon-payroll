@@ -179,7 +179,6 @@ export function registerAdminStateIdRoutes(app: FastifyInstance, deps: Deps): vo
     if (result.status === 409) {
       return reply.code(409).send({ error: result.error, firstOpenYear: result.firstOpenYear });
     }
-    if (result.status !== 200) throw new Error("unexpected state ID write result");
     return {
       stateId: {
         stateCode,
