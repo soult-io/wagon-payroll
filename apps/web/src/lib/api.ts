@@ -504,6 +504,8 @@ export class ApiError extends Error {
     public code: string,
     message: string,
     public details?: unknown,
+    /** The whole JSON error body (e.g. firstOpenYear on state_id_year_filed). */
+    public body?: Record<string, unknown>,
   ) {
     super(message);
   }
@@ -527,15 +529,17 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     let code = "request_failed";
     let message = `Request failed (${res.status})`;
     let details: unknown;
+    let body: Record<string, unknown> | undefined;
     try {
       const data = (await res.json()) as { error?: string; message?: string; details?: unknown };
       if (data.error) code = data.error;
       if (data.message) message = data.message;
       details = data.details;
+      body = data as Record<string, unknown>;
     } catch {
       // non-JSON error body — keep defaults
     }
-    throw new ApiError(res.status, code, message, details);
+    throw new ApiError(res.status, code, message, details, body);
   }
   // 204 No Content (e.g. DELETE of a state ID) has no body to parse.
   if (res.status === 204) return undefined as T;

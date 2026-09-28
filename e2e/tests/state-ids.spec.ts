@@ -30,6 +30,15 @@ test("ephemeral only: save a state account number and see only its mask", async 
     await card.locator(".p-select").first().click();
     await page.locator(".p-select-filter").fill("Califor");
     await page.getByRole("option", { name: "California", exact: true }).click();
+    // A format error is caught in the browser: shown under the field, value kept.
+    await card.locator("#stateIdValue").fill("1234567");
+    await card.getByRole("button", { name: "Save account number" }).click();
+    await expect(card.locator("#stateIdValueError")).toContainText(
+      "California account numbers have 8 digits",
+    );
+    await expect(card.locator("#stateIdValue")).toHaveAttribute("aria-invalid", "true");
+    await expect(card.locator("#stateIdValue")).toHaveValue("1234567");
+
     await card.locator("#stateIdValue").fill(SYNTHETIC_CA_ID);
     await card.getByRole("button", { name: "Save account number" }).click();
 
@@ -47,6 +56,16 @@ test("ephemeral only: save a state account number and see only its mask", async 
       return `${dump(window.localStorage)}\n${dump(window.sessionStorage)}`;
     });
     expect(stored).not.toContain(SYNTHETIC_CA_ID);
+
+    // Removing asks first; "Keep it" leaves the number, "Remove number" removes it.
+    await card.getByRole("button", { name: /Remove California number/ }).click();
+    const dialog = page.getByRole("alertdialog");
+    await expect(dialog.getByText("Remove California account number?")).toBeVisible();
+    await dialog.getByRole("button", { name: "Keep it" }).click();
+    await expect(card.getByRole("cell", { name: "••••0417" })).toBeVisible();
+    await card.getByRole("button", { name: /Remove California number/ }).click();
+    await page.getByRole("alertdialog").getByRole("button", { name: "Remove number" }).click();
+    await expect(card.getByRole("cell", { name: "••••0417" })).toHaveCount(0);
   } finally {
     await page.close();
   }

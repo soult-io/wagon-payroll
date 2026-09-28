@@ -179,7 +179,7 @@ async function logout() {
 
     <RouterView />
     <Toast position="bottom-right" />
-    <ConfirmDialog />
+    <ConfirmDialog :style="{ width: '30rem' }" :breakpoints="{ '575px': '92vw' }" />
   </div>
 </template>
 

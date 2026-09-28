@@ -24,28 +24,50 @@ interface StateIdRule {
  * (Central Registration number); IL IL-941 instructions; NY NYS-45-I (1/26).
  */
 export const STATE_ID_RULES: Readonly<Record<string, StateIdRule>> = {
-  CA: { pattern: /^\d{8}$/, message: "California account numbers are 8 digits" },
-  NC: { pattern: /^\d{9}$/, message: "North Carolina withholding account IDs are 9 digits" },
-  MD: { pattern: /^\d{8}$/, message: "Maryland Central Registration numbers are 8 digits" },
+  CA: {
+    pattern: /^\d{8}$/,
+    message:
+      "California account numbers have 8 digits. Use the employer payroll tax account number from EDD (California's Employment Development Department)",
+  },
+  NC: {
+    pattern: /^\d{9}$/,
+    message:
+      'North Carolina withholding account IDs have 9 digits. "APPLIEDFOR" can\'t go on a W-2, so add the number once North Carolina sends it',
+  },
+  MD: {
+    pattern: /^\d{8}$/,
+    message:
+      "Maryland Central Registration (CR) numbers have 8 digits. Don't use your 10-digit unemployment insurance number or your EIN",
+  },
   IL: {
     pattern: /^\d{9}(\d{3})?$/,
-    message: "Illinois account IDs are your 9-digit EIN, optionally followed by 3 digits",
+    message:
+      "Illinois account IDs are your 9-digit EIN, or your EIN followed by the 3-digit number Illinois gave you",
   },
   NY: {
     pattern: /^\d{9}(\d{2})?\d?$/,
-    message: "New York withholding IDs are your 9-digit EIN, plus any suffix New York gave you",
+    message:
+      "New York withholding IDs are your 9-digit EIN plus any suffix New York gave you. Don't use your 7-digit unemployment insurance (UI) number",
   },
 };
 
 /** States whose ID defaults to the company EIN when none is entered (S24-D2). */
 export const EIN_DEFAULT_STATES = ["IL", "NY"] as const;
 
-/** Input hint shown next to the New York field (Spec 24 §9). */
-export const NY_STATE_ID_HINT =
-  "Use your New York withholding ID (your EIN, plus any suffix New York gave you) — not your 7-digit UI employer registration number.";
+/** Input hints per state shown next to the account number field (Spec 24 §9). */
+export const STATE_ID_HINTS: Readonly<Record<string, string>> = {
+  NY: "Use your New York withholding ID: your 9-digit EIN, plus any suffix New York gave you. Don't use your 7-digit unemployment insurance (UI) employer registration number.",
+  IL: "Use your Illinois withholding account ID: your EIN, plus the 3-digit number if Illinois gave you one.",
+  MD: "Use your 8-digit Maryland Central Registration (CR) number. Don't use your unemployment insurance number or your EIN.",
+};
+
+/** True when the state's ID is digits only (format-checked). */
+export function isCheckedStateIdState(stateCode: string): boolean {
+  return Object.hasOwn(STATE_ID_RULES, stateCode);
+}
 
 const FREE_TEXT = /^[A-Za-z0-9 -]{1,20}$/;
-const FREE_TEXT_MESSAGE = "Use 1 to 20 letters, digits, spaces or dashes";
+const FREE_TEXT_MESSAGE = "Account numbers can use 1 to 20 letters, digits, spaces or dashes";
 
 export type StateIdResult = { ok: true; value: string } | { ok: false; message: string };
 

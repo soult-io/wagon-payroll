@@ -53,6 +53,29 @@ describe("normalizeStateId (S24-D2 format checks)", () => {
     expect(normalizeStateId("TX", "AB_12").ok).toBe(false);
   });
 
+  it("refusals use the approved copy, without a trailing period", () => {
+    const msg = (s: string, v: string) => {
+      const r = normalizeStateId(s, v);
+      return r.ok ? null : r.message;
+    };
+    expect(msg("CA", "1")).toBe(
+      "California account numbers have 8 digits. Use the employer payroll tax account number from EDD (California's Employment Development Department)",
+    );
+    expect(msg("NC", "APPLIEDFOR")).toBe(
+      'North Carolina withholding account IDs have 9 digits. "APPLIEDFOR" can\'t go on a W-2, so add the number once North Carolina sends it',
+    );
+    expect(msg("MD", "1")).toBe(
+      "Maryland Central Registration (CR) numbers have 8 digits. Don't use your 10-digit unemployment insurance number or your EIN",
+    );
+    expect(msg("IL", "1")).toBe(
+      "Illinois account IDs are your 9-digit EIN, or your EIN followed by the 3-digit number Illinois gave you",
+    );
+    expect(msg("NY", "1")).toBe(
+      "New York withholding IDs are your 9-digit EIN plus any suffix New York gave you. Don't use your 7-digit unemployment insurance (UI) number",
+    );
+    expect(msg("TX", "")).toBe("Account numbers can use 1 to 20 letters, digits, spaces or dashes");
+  });
+
   it("a refusal message never contains the value", () => {
     const res = normalizeStateId("CA", "7654321");
     expect(res.ok).toBe(false);

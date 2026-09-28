@@ -26,6 +26,7 @@ import {
   taxFilings,
   type SeedDb,
 } from "@payroll/db";
+import { STATE_ID_RULES } from "@payroll/shared";
 import { decryptField, encryptField } from "../src/crypto/field-encryption.js";
 import { createTestApp, ORIGIN, type TestContext } from "./helpers.js";
 import { inviteAndOnboard, login, sessionHeader, TEST_PASSWORD } from "./flow-helpers.js";
@@ -175,8 +176,14 @@ describe("W26 state ID format checks", () => {
         expect(res.json().error).toBe("invalid_body");
         expect(await storedPlain(c.state, 2026)).toBeNull();
       }
-      expect(res.body).not.toContain(c.input);
-      expect(res.body).not.toContain(c.input.replace(/[\s-]/g, ""));
+      // The fixed refusal text may name a known bad value (NC's "APPLIEDFOR");
+      // that is copy, not an echo, so the state's own message is left out.
+      const rule = STATE_ID_RULES[c.state];
+      const echoed = rule
+        ? res.body.split(JSON.stringify(rule.message).slice(1, -1)).join("")
+        : res.body;
+      expect(echoed).not.toContain(c.input);
+      expect(echoed).not.toContain(c.input.replace(/[\s-]/g, ""));
     });
   }
 
