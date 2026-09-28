@@ -52,7 +52,7 @@ afterAll(async () => {
   await t.close();
 });
 
-type Method = "GET" | "PUT" | "DELETE";
+type Method = "GET" | "PUT" | "DELETE" | "POST";
 
 function api(method: Method, url: string, payload?: unknown, cookie: string | null = adminCookie) {
   return t.app.inject({
@@ -283,6 +283,26 @@ describe("W27 filed-year freeze", () => {
     const put2027 = await put("CA", { stateId: "00000003", fromTaxYear: 2027 });
     expect(put2027.statusCode).toBe(200);
     expect(await storedPlain("CA", 2027)).toBe("00000003");
+  });
+
+  it("a w2_w3 filing marked filed through the filings route (under the shared lock) freezes its year", async () => {
+    await clearStateIds();
+    await clearFilings();
+    await setFiling(2026, "ready");
+    const [row] = await t.db
+      .select({ id: taxFilings.id })
+      .from(taxFilings)
+      .where(and(eq(taxFilings.formType, "w2_w3"), eq(taxFilings.year, 2026)));
+    const filed = await api("POST", `/api/admin/tax-filings/${row?.id}/file`, {
+      filedOn: "2027-01-20",
+      filingMethod: "bso",
+      filingReference: "",
+    });
+    expect(filed.statusCode, filed.body).toBe(200);
+    const res = await put("CA", { stateId: "00000001" });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toEqual({ error: "state_id_year_filed", firstOpenYear: 2027 });
+    await clearFilings();
   });
 
   it("firstOpenYear is the first year from the requested one that is not filed", async () => {
