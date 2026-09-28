@@ -3,7 +3,7 @@
  * Admin employee detail (frontend spec): profile, compensation history
  * editor (effective-dated), W-4 history + add, invite/resend, disable.
  */
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import Button from "primevue/button";
 import Skeleton from "primevue/skeleton";
@@ -26,6 +26,11 @@ import PageHeader from "../../components/PageHeader.vue";
 import BackButton from "../../components/BackButton.vue";
 import EmptyState from "../../components/EmptyState.vue";
 import StatusChip from "../../components/StatusChip.vue";
+import EmployeeResidenceCard from "../../components/EmployeeResidenceCard.vue";
+import Message from "primevue/message";
+import { localityName, WORK_LOCALITY_STATES } from "@payroll/shared";
+import WorkLocalityQuestion from "../../components/WorkLocalityQuestion.vue";
+import { localityFromAnswer } from "../../composables/useWorkLocality";
 import {
   adminEmployeesApi,
   adminPayrollApi,
@@ -48,6 +53,13 @@ const { date, toIso } = useDates();
 const notify = useNotify();
 
 const employeeId = Number(route.params.employeeId);
+// Deep link: ?tab=state opens the State tax tab (dashboard "Still to do" links).
+const TABS = ["profile", "compensation", "w4", "state"];
+const activeTab = ref(
+  typeof route.query.tab === "string" && TABS.includes(route.query.tab)
+    ? route.query.tab
+    : "profile",
+);
 const loading = ref(true);
 const notFound = ref(false);
 const employee = ref<AdminEmployeeDetail | null>(null);
@@ -155,7 +167,97 @@ const wsBusy = ref(false);
 const wsForm = ref({
   stateCode: "",
   effectiveFrom: new Date(),
+  // PAY-163: New York → "yes"/"no" (work in Yonkers); Maryland → county code.
+  locality: "",
 });
+
+// PAY-163: answer the work-locality question on a row made before it was asked
+// (the row in force today, or a future row), targeted by its start date.
+const wlDialog = ref(false);
+const wlBusy = ref(false);
+const wlError = ref("");
+const wlForm = ref({ stateCode: "", locality: "", effectiveOn: "" });
+
+const displayName = computed(
+  () => employee.value?.preferredName ?? employee.value?.legalName ?? "this employee",
+);
+// A new state means a new question: drop the previous answer.
+watch(
+  () => wsForm.value.stateCode.trim().toUpperCase(),
+  () => {
+    wsForm.value.locality = "";
+  },
+);
+
+function stateLabel(stateCode: string): string {
+  return stateCode === "MD" ? "Maryland" : "New York";
+}
+
+/** The Assign dialog's NY / MD question is still unanswered. */
+const wsNeedsAnswer = computed(() => {
+  const stateCode = wsForm.value.stateCode.trim().toUpperCase();
+  return localityFromAnswer(stateCode, wsForm.value.locality) === undefined;
+});
+
+function workLocalityLabel(row: WorkStateRow): string {
+  if (row.localityCode) return localityName(row.localityCode);
+  if (!WORK_LOCALITY_STATES.includes(row.stateCode)) return "—";
+  return row.localityConfirmedAt ? "Not in Yonkers" : "Not answered yet";
+}
+
+/** NY/MD row in force today or starting later, never answered. */
+function needsLocalityAnswer(row: WorkStateRow): boolean {
+  const today = toIso(new Date()) ?? "";
+  return (
+    WORK_LOCALITY_STATES.includes(row.stateCode) &&
+    (row.effectiveTo === null || row.effectiveTo > today) &&
+    row.localityConfirmedAt === null
+  );
+}
+
+function openLocalityDialog(row: WorkStateRow) {
+  wlForm.value = { stateCode: row.stateCode, locality: "", effectiveOn: row.effectiveFrom };
+  wlError.value = "";
+  wlDialog.value = true;
+}
+
+function workLocalityError(err: unknown): string {
+  const name = displayName.value;
+  if (err instanceof ApiError) {
+    if (err.status === 404) return "We couldn't find this employee. Refresh the page.";
+    if (err.code === "work_state_ended") {
+      return "That work state has already ended, so it can't be changed here.";
+    }
+    if (err.code === "no_open_work_state") {
+      return `${name} doesn't have a current work state. Assign one first, then answer this question.`;
+    }
+    if (err.code === "invalid_body") {
+      return `That answer doesn't fit ${name}'s current work state. Refresh the page and try again.`;
+    }
+  }
+  return notify.errorMessage(err);
+}
+
+async function saveWorkLocality() {
+  const localityCode = localityFromAnswer(wlForm.value.stateCode, wlForm.value.locality);
+  if (localityCode === undefined) return;
+  wlBusy.value = true;
+  wlError.value = "";
+  try {
+    await adminPayrollApi.setWorkLocality(employeeId, {
+      localityCode,
+      effectiveOn: wlForm.value.effectiveOn,
+    });
+    notify.success("Work location saved");
+    wlDialog.value = false;
+    const { workStates: rows } = await adminPayrollApi.workStates(employeeId);
+    workStates.value = rows;
+  } catch (err) {
+    wlError.value = workLocalityError(err);
+  } finally {
+    wlBusy.value = false;
+  }
+}
 
 const seDialog = ref(false);
 const seBusy = ref(false);
@@ -330,12 +432,21 @@ async function addWorkState() {
     notify.info("Invalid state", "Use the 2-letter USPS code, e.g. IL.");
     return;
   }
+  const localityCode = localityFromAnswer(stateCode, wsForm.value.locality);
+  if (localityCode === undefined) {
+    notify.info("One more answer", "Tell us where in the state they work.");
+    return;
+  }
   wsBusy.value = true;
   try {
     const effectiveFrom = toIso(wsForm.value.effectiveFrom);
     if (!effectiveFrom) return;
-    await adminPayrollApi.assignWorkState(employeeId, { stateCode, effectiveFrom });
-    notify.success("Work state assigned", `${stateCode} effective ${effectiveFrom}.`);
+    await adminPayrollApi.assignWorkState(employeeId, {
+      stateCode,
+      effectiveFrom,
+      ...(WORK_LOCALITY_STATES.includes(stateCode) ? { localityCode } : {}),
+    });
+    notify.success("Work state assigned", `${stateCode} from ${date(effectiveFrom)}.`);
     wsDialog.value = false;
     const { workStates: rows } = await adminPayrollApi.workStates(employeeId);
     workStates.value = rows;
@@ -402,7 +513,7 @@ onMounted(load);
     <Skeleton v-if="loading" height="22rem" />
     <EmptyState v-else-if="notFound || !employee" icon="pi pi-exclamation-circle" title="Employee not found" />
 
-    <Tabs v-else value="profile">
+    <Tabs v-else v-model:value="activeTab">
       <TabList>
         <Tab value="profile">Profile</Tab>
         <Tab value="compensation">Compensation</Tab>
@@ -526,19 +637,35 @@ onMounted(load);
         </TabPanel>
 
         <TabPanel value="state">
+          <EmployeeResidenceCard :employee-id="employeeId" :employee-name="displayName" />
+
           <section class="card" style="margin-top: 1rem">
             <div class="row" style="justify-content: space-between">
-              <h3 style="margin: 0">Work state (PAY-13)</h3>
+              <h3 style="margin: 0">Where {{ displayName }} works</h3>
               <Button label="Assign" size="small" icon="pi pi-plus" @click="wsDialog = true" />
             </div>
             <p class="muted small">
-              State income tax follows the work location. Assigning a new state closes the current
-              window; with no row, the legacy flat “state withholding rate” applies.
+              State income tax follows where they work. Adding a new state ends the current one on
+              the new date.
             </p>
             <div class="table-scroll">
               <DataTable :value="workStates" striped-rows>
                 <template #empty><EmptyState title="No work state" body="Assign the state the employee works in to enable per-state withholding." /></template>
                 <Column field="stateCode" header="State" />
+                <Column header="City or county">
+                  <template #body="{ data }">
+                    {{ workLocalityLabel(data) }}
+                    <Button
+                      v-if="needsLocalityAnswer(data)"
+                      label="Answer"
+                      text
+                      size="small"
+                      icon="pi pi-map-marker"
+                      :aria-label="`Answer where ${displayName} works in ${stateLabel(data.stateCode)}`"
+                      @click="openLocalityDialog(data)"
+                    />
+                  </template>
+                </Column>
                 <Column header="Effective from">
                   <template #body="{ data }">{{ date(data.effectiveFrom) }}</template>
                 </Column>
@@ -749,8 +876,8 @@ onMounted(load);
     <Dialog v-model:visible="wsDialog" modal header="Assign work state" :style="{ width: '26rem' }">
       <form class="stack" @submit.prevent="addWorkState">
         <p class="muted small">
-          The previous open window closes at the new effective date. Run generation fails loudly for
-          a work state with no tax table for the year — configure it under Configuration → State taxes.
+          If we don't have that state's tax tables for the year, you'll need to add them under
+          Configuration → State taxes before running payroll.
         </p>
         <div class="form-grid">
           <div class="field">
@@ -762,9 +889,49 @@ onMounted(load);
             <DatePicker id="wsFrom" v-model="wsForm.effectiveFrom" date-format="yy-mm-dd" required />
           </div>
         </div>
+        <WorkLocalityQuestion
+          v-model="wsForm.locality"
+          :state-code="wsForm.stateCode.trim().toUpperCase()"
+          :employee-name="displayName"
+          id-prefix="ws"
+          show-required
+        />
         <div class="row" style="justify-content: flex-end">
           <Button label="Cancel" text severity="secondary" type="button" @click="wsDialog = false" />
-          <Button type="submit" label="Assign" :loading="wsBusy" :disabled="wsForm.stateCode.trim().length !== 2" />
+          <Button
+            type="submit"
+            label="Assign"
+            :loading="wsBusy"
+            :disabled="wsForm.stateCode.trim().length !== 2 || wsNeedsAnswer"
+          />
+        </div>
+      </form>
+    </Dialog>
+
+    <Dialog
+      v-model:visible="wlDialog"
+      modal
+      :header="`Where ${displayName} works in ${stateLabel(wlForm.stateCode)}`"
+      :style="{ width: '28rem' }"
+      :breakpoints="{ '575px': '95vw' }"
+    >
+      <form class="stack" @submit.prevent="saveWorkLocality">
+        <WorkLocalityQuestion
+          v-model="wlForm.locality"
+          :state-code="wlForm.stateCode"
+          :employee-name="displayName"
+          id-prefix="wl"
+        />
+        <Message v-if="wlError" severity="error" :closable="false" role="alert">{{ wlError }}</Message>
+        <div class="row" style="justify-content: flex-end">
+          <Button label="Cancel" text severity="secondary" type="button" @click="wlDialog = false" />
+          <Button
+            type="submit"
+            label="Save"
+            icon="pi pi-save"
+            :loading="wlBusy"
+            :disabled="localityFromAnswer(wlForm.stateCode, wlForm.locality) === undefined"
+          />
         </div>
       </form>
     </Dialog>

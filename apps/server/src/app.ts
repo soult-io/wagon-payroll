@@ -30,6 +30,7 @@ import { registerAdminDepositRoutes } from "./routes/admin-deposits.js";
 import { registerAdminCalendarRoutes } from "./routes/admin-calendar.js";
 import { registerAdminFilingRoutes } from "./routes/admin-filings.js";
 import { registerAdminStateTaxRoutes } from "./routes/admin-state-taxes.js";
+import { registerAdminLocalTaxRoutes } from "./routes/admin-local-tax.js";
 import { registerAdminAnnualFormRoutes } from "./routes/admin-annual-forms.js";
 import { registerExportRoutes } from "./routes/export.js";
 import { registerQaRoutes } from "./routes/qa.js";
@@ -95,6 +96,7 @@ export async function buildApp(deps: BuildAppDeps = {}) {
   registerAdminCalendarRoutes(app, { db, guards });
   registerAdminFilingRoutes(app, { db, config, guards });
   registerAdminStateTaxRoutes(app, { db, guards });
+  registerAdminLocalTaxRoutes(app, { db, config, guards });
   registerAdminAnnualFormRoutes(app, { db, config, guards });
   registerExportRoutes(app, { db, config });
   registerQaRoutes(app, { config }); // no-op unless APP_ENV=qa (spec 14 §3)

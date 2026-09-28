@@ -21,8 +21,10 @@ import {
   stateTaxConfigs,
   stateWithholdingElections,
 } from "@payroll/db";
+import { WORK_LOCALITY_STATES, workStateInput } from "@payroll/shared";
 import type { Db } from "../db.js";
 import type { Guards } from "../plugins/guards.js";
+import { actorOf, NOT_FOUND, parseEmployeeId, safeIssues } from "./params.js";
 
 interface AdminStateTaxDeps {
   db: Db;
@@ -216,8 +218,10 @@ export function registerAdminStateTaxRoutes(app: FastifyInstance, deps: AdminSta
     "/api/admin/employees/:employeeId/work-state",
     { preHandler: admin },
     async (req, reply) => {
-      const employeeId = Number((req.params as { employeeId: string }).employeeId);
-      if (!(await employeeExists(employeeId))) return reply.code(404).send({ error: "not_found" });
+      const employeeId = parseEmployeeId(req.params);
+      if (employeeId === null || !(await employeeExists(employeeId))) {
+        return reply.code(404).send(NOT_FOUND);
+      }
       const rows = await db
         .select()
         .from(employeeWorkStates)
@@ -231,18 +235,23 @@ export function registerAdminStateTaxRoutes(app: FastifyInstance, deps: AdminSta
    * Assign a work state effective from a date. The previous open row (if any)
    * is closed at the new effective_from in the same transaction — windows are
    * [effective_from, effective_to), matching the resolver's semantics.
+   *
+   * PAY-163 (Spec 25 (PAY-120)): New York and Maryland rows answer the
+   * work-locality question (`localityCode`: Yonkers or null for New York, the
+   * county for Maryland); the answer marks the new row confirmed.
    */
   app.put(
     "/api/admin/employees/:employeeId/work-state",
     { preHandler: admin },
     async (req, reply) => {
-      const employeeId = Number((req.params as { employeeId: string }).employeeId);
-      const body = z
-        .object({ stateCode: stateCodeSchema, effectiveFrom: dateSchema })
-        .safeParse(req.body);
+      const employeeId = parseEmployeeId(req.params);
+      if (employeeId === null) return reply.code(404).send(NOT_FOUND);
+      const body = workStateInput.safeParse(req.body);
       if (!body.success)
-        return reply.code(400).send({ error: "invalid_body", details: body.error.issues });
-      if (!(await employeeExists(employeeId))) return reply.code(404).send({ error: "not_found" });
+        return reply.code(400).send({ error: "invalid_body", details: safeIssues(body.error) });
+      if (!(await employeeExists(employeeId))) return reply.code(404).send(NOT_FOUND);
+      const answersLocality = WORK_LOCALITY_STATES.includes(body.data.stateCode);
+      const actorId = actorOf(req);
 
       const open = await db
         .select()
@@ -270,24 +279,32 @@ export function registerAdminStateTaxRoutes(app: FastifyInstance, deps: AdminSta
             .set({ effectiveTo: body.data.effectiveFrom })
             .where(eq(employeeWorkStates.id, previous.id));
         }
-        return tx
+        const rows = await tx
           .insert(employeeWorkStates)
           .values({
             employeeId,
             stateCode: body.data.stateCode,
             effectiveFrom: body.data.effectiveFrom,
+            ...(answersLocality
+              ? {
+                  localityCode: body.data.localityCode ?? null,
+                  localityConfirmedAt: new Date(),
+                  localityConfirmedBy: actorId,
+                }
+              : {}),
           })
           .returning();
+        // PAY-163: the audit row commits (or rolls back) with the change.
+        await tx.insert(auditEvents).values({
+          actorId,
+          action: "employee_work_state.assign",
+          entity: "employee",
+          entityId: String(employeeId),
+          before: previous ?? null,
+          after: rows[0],
+        });
+        return rows;
       });
-
-      await audit(
-        req.authUser!.id,
-        "employee_work_state.assign",
-        "employee",
-        String(employeeId),
-        previous ?? null,
-        inserted[0],
-      );
       return reply.code(201).send({ workState: inserted[0] });
     },
   );

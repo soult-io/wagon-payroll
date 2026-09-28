@@ -45,15 +45,22 @@ export function createDb(config: AppConfig, url?: string): Database {
 }
 
 /**
- * True when an error is (or wraps) a Postgres unique-violation (23505).
+ * True when an error is (or wraps) a Postgres error with one of `codes`.
  * Drizzle wraps driver errors in DrizzleQueryError with the original on
  * `cause` — walk the chain so both postgres-js and PGlite shapes match.
  */
-export function isUniqueViolation(err: unknown): boolean {
+export function hasPgErrorCode(err: unknown, codes: readonly string[]): boolean {
   let current: unknown = err;
   for (let depth = 0; depth < 5 && current && typeof current === "object"; depth += 1) {
-    if ("code" in current && (current as { code: unknown }).code === "23505") return true;
+    if ("code" in current && codes.includes((current as { code: unknown }).code as string)) {
+      return true;
+    }
     current = (current as { cause?: unknown }).cause;
   }
   return false;
+}
+
+/** True when an error is (or wraps) a Postgres unique-violation (23505). */
+export function isUniqueViolation(err: unknown): boolean {
+  return hasPgErrorCode(err, ["23505"]);
 }

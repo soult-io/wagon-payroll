@@ -10,6 +10,7 @@
 import { and, desc, eq, gt, gte, isNull, lt, lte, or, sql } from "drizzle-orm";
 import {
   compensation,
+  employeeResidences,
   employeeWorkStates,
   payrollEntries,
   payrollRuns,
@@ -240,6 +241,33 @@ export async function resolveWorkState(
       ),
     )
     .orderBy(desc(employeeWorkStates.effectiveFrom))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export type ResidenceRow = typeof employeeResidences.$inferSelect;
+
+/**
+ * Residence effective on `asOf` (Spec 25 (PAY-120): residence resolves on the
+ * PAY date): the row with effective_from <= asOf < effective_to|∞. The
+ * exclusion constraint guarantees at most one.
+ */
+export async function resolveResidence(
+  db: DbLike,
+  employeeId: number,
+  asOf: string,
+): Promise<ResidenceRow | null> {
+  const rows = await db
+    .select()
+    .from(employeeResidences)
+    .where(
+      and(
+        eq(employeeResidences.employeeId, employeeId),
+        lte(employeeResidences.effectiveFrom, asOf),
+        or(isNull(employeeResidences.effectiveTo), gt(employeeResidences.effectiveTo, asOf)),
+      ),
+    )
+    .orderBy(desc(employeeResidences.effectiveFrom))
     .limit(1);
   return rows[0] ?? null;
 }

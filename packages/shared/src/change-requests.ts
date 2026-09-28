@@ -9,11 +9,21 @@
 
 import { z } from "zod";
 
+/**
+ * True when `s` (YYYY-MM-DD) is a real calendar day. Round-trips through a
+ * UTC Date so impossible days (2026-02-30, which Date.parse rolls over to
+ * March) are rejected here instead of reaching Postgres.
+ */
+export function isRealIsoDate(s: string): boolean {
+  const d = new Date(`${s}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+}
+
 /** ISO date string (YYYY-MM-DD), the wire/JSON format for DATE columns. */
 export const isoDate = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD")
-  .refine((s) => !Number.isNaN(Date.parse(s)), "invalid date");
+  .refine(isRealIsoDate, "invalid date");
 
 /** Money on the wire: string or number, ≥ 0, at most 2 decimals (NUMERIC(12,2)). */
 export const moneyAmount = z.coerce

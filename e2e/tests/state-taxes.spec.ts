@@ -78,7 +78,7 @@ test("employee detail: State tax tab renders work-state and election tables", as
   try {
     await step(page, "Employee State tax tab shows work state + elections", async () => {
       await openStateTaxTab(page);
-      await expect(page.getByRole("heading", { name: "Work state (PAY-13)" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: /^Where .+ works$/ })).toBeVisible();
       await expect(
         page.getByRole("heading", { name: "State withholding elections (append-only)" }),
       ).toBeVisible();
@@ -105,7 +105,7 @@ test("ephemeral only: assign a work state and see it in the history", async ({ b
       // Scope to the work-state card — inactive tab panels stay mounted, so a
       // bare tbody.first() would land in the hidden Compensation table.
       const workStateCard = page.locator("section", {
-        has: page.getByRole("heading", { name: "Work state (PAY-13)" }),
+        has: page.getByRole("heading", { name: /^Where .+ works$/ }),
       });
       await expect(workStateCard.getByRole("cell", { name: "IL", exact: true })).toBeVisible();
     });
@@ -180,7 +180,7 @@ test("ephemeral only: employee state election flows request → approval → pay
         const id = Number(adminPage.url().match(/\/admin\/employees\/(\d+)/)?.[1]);
         expect(id).toBeGreaterThan(0);
         const workStateCard = adminPage.locator("section", {
-          has: adminPage.getByRole("heading", { name: "Work state (PAY-13)" }),
+          has: adminPage.getByRole("heading", { name: /^Where .+ works$/ }),
         });
         // The previous spec test usually assigned IL already; assign if missing.
         if (!(await workStateCard.getByRole("cell", { name: "IL", exact: true }).isVisible())) {

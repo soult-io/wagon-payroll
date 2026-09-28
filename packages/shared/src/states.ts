@@ -68,3 +68,19 @@ export function jurisdictionLabel(code: string): string {
   const name = STATE_NAMES[code];
   return name ? `${name} (${code})` : code;
 }
+
+const CODE_BY_NAME: ReadonlyMap<string, string> = new Map(
+  Object.entries(STATE_NAMES).map(([code, name]) => [name.toLowerCase(), code]),
+);
+
+/**
+ * Free-text US state (as typed in an address) → 2-letter USPS code, or null.
+ * Accepts a code in any case ("md") or the full name ("Maryland"); anything
+ * else — a city, a province, a typo — is null, never a guess.
+ */
+export function normalizeUsState(text: string): string | null {
+  const trimmed = text.trim();
+  const upper = trimmed.toUpperCase();
+  if (Object.hasOwn(STATE_NAMES, upper)) return upper;
+  return CODE_BY_NAME.get(trimmed.toLowerCase()) ?? null;
+}

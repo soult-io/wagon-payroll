@@ -1,0 +1,190 @@
+{
+  "description": "Local income-tax coverage for the pay-run guard (Spec 25 (PAY-120)). 'engine' = the app computes it; 'unsupported' = pay runs are held for employees living (basis residence) or working (basis work) there. A state with no row has no local income tax the employer withholds. Employer-paid-only taxes are not listed. Maintained by the state/local payroll SME; sourceVerified=true means the SME read the source page; false means only a search excerpt was seen, and the page must be read before enforcement.",
+  "reviewed": "2026-09-28",
+  "rows": [
+    {
+      "code": "NY-NYC",
+      "basis": "residence",
+      "handling": "engine",
+      "note": "New York City resident income tax (residents only; never a work locality).",
+      "source": "NYS-50-T-NYC (1/26), New York City withholding tax tables and methods — https://www.tax.ny.gov/pdf/publications/withholding/nys50_t_nyc.pdf",
+      "sourceVerified": true
+    },
+    {
+      "code": "NY-YONKERS",
+      "basis": "residence",
+      "handling": "engine",
+      "note": "Yonkers resident income tax surcharge.",
+      "source": "NYS-50-T-Y (1/26), Yonkers withholding tax tables and methods — https://www.tax.ny.gov/pdf/publications/withholding/nys50_t_y.pdf",
+      "sourceVerified": true
+    },
+    {
+      "code": "NY-YONKERS",
+      "basis": "work",
+      "handling": "engine",
+      "note": "Yonkers nonresident earnings tax.",
+      "source": "NYS-50-T-Y (1/26), Yonkers withholding tax tables and methods — https://www.tax.ny.gov/pdf/publications/withholding/nys50_t_y.pdf",
+      "sourceVerified": true
+    },
+    {
+      "code": "MD",
+      "basis": "residence",
+      "handling": "engine",
+      "note": "Maryland county and Baltimore City income tax (county of residence).",
+      "source": "Maryland Employer Withholding Guide (Jan 2026) — https://www.marylandcomptroller.gov/content/dam/mdcomp/tax/instructions/withholding/2026/withholding-guide.pdf",
+      "sourceVerified": true
+    },
+    {
+      "code": "MD",
+      "basis": "work",
+      "handling": "engine",
+      "note": "Maryland special nonresident rate for nonresidents working in Maryland.",
+      "source": "Maryland Employer Withholding Guide (Jan 2026) — https://www.marylandcomptroller.gov/content/dam/mdcomp/tax/instructions/withholding/2026/withholding-guide.pdf",
+      "sourceVerified": true
+    },
+    {
+      "code": "AL",
+      "basis": "work",
+      "handling": "unsupported",
+      "note": "City occupational taxes (e.g. Birmingham).",
+      "source": "Birmingham Code of Ordinances ch. 2 (occupational tax) ; https://www.birminghamal.gov/government/city-departments/finance/tax-license-division",
+      "sourceVerified": false
+    },
+    {
+      "code": "CO",
+      "basis": "work",
+      "handling": "unsupported",
+      "note": "Occupational privilege tax: Denver, Glendale, Greenwood Village, Sheridan.",
+      "source": "https://denvergov.org/files/assets/public/v/2/finance/documents/treasury/tax-guides/taxguidetopic61_occupationalprivilegetaxes_1.pdf ; https://www.glendale.co.us/355/Occupational-Privilege-Tax ; https://www.greenwoodvillage.com/1220/Occupational-Privilege-Tax-OPT ; http://ci.sheridan.co.us/288/Occupational-Privilege-Tax ; Aurora repealed its occupational privilege tax from 2025-01-01 (Ordinance 2022-77): https://www.auroragov.org/business_services/taxes/occupational_privilege_tax",
+      "sourceVerified": true
+    },
+    {
+      "code": "DE",
+      "basis": "residence",
+      "handling": "unsupported",
+      "note": "Wilmington earned income (wage) tax.",
+      "source": "https://www.wilmingtonde.gov/residents/earned-income-tax-and-net-profits-tax",
+      "sourceVerified": false
+    },
+    {
+      "code": "DE",
+      "basis": "work",
+      "handling": "unsupported",
+      "note": "Wilmington earned income (wage) tax.",
+      "source": "https://www.wilmingtonde.gov/residents/earned-income-tax-and-net-profits-tax",
+      "sourceVerified": false
+    },
+    {
+      "code": "IN",
+      "basis": "residence",
+      "handling": "unsupported",
+      "note": "County income tax. Departmental Notice #1 (R47/10-26), effective 2026-10-01.",
+      "source": "https://www.in.gov/dor/files/dn01.pdf",
+      "sourceVerified": true
+    },
+    {
+      "code": "IN",
+      "basis": "work",
+      "handling": "unsupported",
+      "note": "County income tax. Departmental Notice #1 (R47/10-26), effective 2026-10-01.",
+      "source": "https://www.in.gov/dor/files/dn01.pdf",
+      "sourceVerified": true
+    },
+    {
+      "code": "KY",
+      "basis": "work",
+      "handling": "unsupported",
+      "note": "City and county occupational license taxes.",
+      "source": "https://revenue.ky.gov/Forms/42A003-March%202026.pdf ; https://louisvilleky.gov/sites/default/files/2024-12/w-1_instructions_2025.pdf",
+      "sourceVerified": false
+    },
+    {
+      "code": "MI",
+      "basis": "residence",
+      "handling": "unsupported",
+      "note": "City income taxes.",
+      "source": "https://www.michigan.gov/taxes/-/media/Project/Websites/taxes/Forms/City-Withholding/TY2026/5469_ty2026.pdf",
+      "sourceVerified": false
+    },
+    {
+      "code": "MI",
+      "basis": "work",
+      "handling": "unsupported",
+      "note": "City income taxes.",
+      "source": "https://www.michigan.gov/taxes/-/media/Project/Websites/taxes/Forms/City-Withholding/TY2026/5469_ty2026.pdf",
+      "sourceVerified": false
+    },
+    {
+      "code": "MO",
+      "basis": "residence",
+      "handling": "unsupported",
+      "note": "Kansas City and St. Louis earnings tax.",
+      "source": "https://www.kcmo.gov/city-hall/departments/finance/earnings-tax ; https://www.stlouis-mo.gov/government/departments/collector/earnings-tax/payroll-tax-info.cfm",
+      "sourceVerified": false
+    },
+    {
+      "code": "MO",
+      "basis": "work",
+      "handling": "unsupported",
+      "note": "Kansas City and St. Louis earnings tax.",
+      "source": "https://www.kcmo.gov/city-hall/departments/finance/earnings-tax ; https://www.stlouis-mo.gov/government/departments/collector/earnings-tax/payroll-tax-info.cfm",
+      "sourceVerified": false
+    },
+    {
+      "code": "OH",
+      "basis": "residence",
+      "handling": "unsupported",
+      "note": "Municipal and school district income tax.",
+      "source": "https://tax.ohio.gov/help-center/faqs/employer-withholding-school-district ; https://codes.ohio.gov/ohio-revised-code/section-718.03 ; https://codes.ohio.gov/ohio-revised-code/section-718.011",
+      "sourceVerified": false
+    },
+    {
+      "code": "OH",
+      "basis": "work",
+      "handling": "unsupported",
+      "note": "Municipal and school district income tax.",
+      "source": "https://tax.ohio.gov/help-center/faqs/employer-withholding-school-district ; https://codes.ohio.gov/ohio-revised-code/section-718.03 ; https://codes.ohio.gov/ohio-revised-code/section-718.011",
+      "sourceVerified": false
+    },
+    {
+      "code": "OR",
+      "basis": "residence",
+      "handling": "unsupported",
+      "note": "Metro Supportive Housing Services tax and Multnomah County Preschool for All tax.",
+      "source": "https://www.portland.gov/revenue/withholding",
+      "sourceVerified": true
+    },
+    {
+      "code": "OR",
+      "basis": "work",
+      "handling": "unsupported",
+      "note": "Metro Supportive Housing Services tax and Multnomah County Preschool for All tax.",
+      "source": "https://www.portland.gov/revenue/withholding",
+      "sourceVerified": true
+    },
+    {
+      "code": "PA",
+      "basis": "residence",
+      "handling": "unsupported",
+      "note": "Local earned income tax and local services tax (Act 32) and Philadelphia wage tax. Residence too: every employer located in Pennsylvania withholds the Philadelphia resident wage tax, and a home-based employee's residence is an Act 32 worksite; the app does not know the employer's location, so a Pennsylvania resident is always held.",
+      "source": "https://dced.pa.gov/local-government/local-income-tax-information/ ; https://dced.pa.gov/local-government/local-income-tax-information/local-withholding-tax-faqs/ ; https://www.phila.gov/services/payments-assistance-taxes/taxes/business-taxes/business-taxes-by-type/wage-tax-employers/",
+      "sourceVerified": true
+    },
+    {
+      "code": "PA",
+      "basis": "work",
+      "handling": "unsupported",
+      "note": "Local earned income tax and local services tax (Act 32) and Philadelphia wage tax. Residence too: every employer located in Pennsylvania withholds the Philadelphia resident wage tax, and a home-based employee's residence is an Act 32 worksite; the app does not know the employer's location, so a Pennsylvania resident is always held.",
+      "source": "https://dced.pa.gov/local-government/local-income-tax-information/ ; https://dced.pa.gov/local-government/local-income-tax-information/local-withholding-tax-faqs/ ; https://www.phila.gov/services/payments-assistance-taxes/taxes/business-taxes/business-taxes-by-type/wage-tax-employers/",
+      "sourceVerified": true
+    },
+    {
+      "code": "WV",
+      "basis": "work",
+      "handling": "unsupported",
+      "note": "City service fees.",
+      "source": "https://charlestonwv.gov/sites/default/files/documents/2022-12/CITY%20SERVICE%20FEE%20FREQUENTLY%20ASKED%20QUESTIONS%2012.22.pdf",
+      "sourceVerified": false
+    }
+  ]
+}

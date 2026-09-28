@@ -162,6 +162,13 @@
       "when": 1790439439609,
       "tag": "0022_gorgeous_omega_sentinel",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1790600626844,
+      "tag": "0023_spooky_toro",
+      "breakpoints": true
     }
   ]
 }

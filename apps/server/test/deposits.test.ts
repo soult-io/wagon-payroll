@@ -141,9 +141,12 @@ async function depositRow(periodStart: string) {
 
 /** Assign an effective-dated work state via the admin route (PAY-13). */
 async function assignWorkState(employeeId: number, stateCode: string, effectiveFrom: string) {
+  // PAY-163: a New York work state answers the Yonkers question (here: no).
+  const locality = stateCode === "NY" ? { localityCode: null } : {};
   const res = await api("PUT", `/api/admin/employees/${employeeId}/work-state`, {
     stateCode,
     effectiveFrom,
+    ...locality,
   });
   expect(res.statusCode, res.body).toBe(201);
 }
