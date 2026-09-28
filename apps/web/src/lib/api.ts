@@ -439,6 +439,32 @@ export interface CompanyProfile {
   address: Address | null;
 }
 
+/** Spec 24 (PAY-116): an employer state tax account number, masked by the server. */
+export interface StateIdRow {
+  stateCode: string;
+  fromTaxYear: number;
+  idMasked: string;
+  source: "entered";
+}
+
+export interface StateIdDefault {
+  stateCode: "IL" | "NY";
+  idMasked: string;
+  source: "ein_default";
+}
+
+export interface StateIdNeeded {
+  stateCode: string;
+  taxYear: number;
+  reason: "tax_withheld" | "wages_only";
+}
+
+export interface StateIdList {
+  stateIds: StateIdRow[];
+  defaults: StateIdDefault[];
+  needed: StateIdNeeded[];
+}
+
 export interface AuthEventRow {
   id: number;
   userId: string | null;
@@ -511,6 +537,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     }
     throw new ApiError(res.status, code, message, details);
   }
+  // 204 No Content (e.g. DELETE of a state ID) has no body to parse.
+  if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
 
@@ -765,6 +793,15 @@ export const adminSettingsApi = {
   company: () => get<{ company: CompanyProfile }>("/api/admin/company"),
   putCompany: (input: { legalName: string; address?: Address; ein?: string }) =>
     put<{ company: CompanyProfile }>("/api/admin/company", input),
+  /** Spec 24 (PAY-116): write-only; reads return masks only. */
+  stateIds: () => get<StateIdList>("/api/admin/company/state-ids"),
+  putStateId: (stateCode: string, input: { stateId: string; fromTaxYear: number }) =>
+    put<{ stateId: StateIdRow }>(
+      `/api/admin/company/state-ids/${encodeURIComponent(stateCode)}`,
+      input,
+    ),
+  deleteStateId: (stateCode: string, fromTaxYear: number) =>
+    del<void>(`/api/admin/company/state-ids/${encodeURIComponent(stateCode)}/${fromTaxYear}`),
   authEvents: (input: { limit?: number; offset?: number } = {}) =>
     get<Paged<AuthEventRow>>(`/api/admin/audit/auth-events${qs(input)}`),
   auditEvents: (input: { limit?: number; offset?: number } = {}) =>

@@ -19,6 +19,7 @@ import Tab from "primevue/tab";
 import TabPanels from "primevue/tabpanels";
 import TabPanel from "primevue/tabpanel";
 import PageHeader from "../../components/PageHeader.vue";
+import StateTaxAccountNumbers from "../../components/StateTaxAccountNumbers.vue";
 import {
   adminPayrollApi,
   adminSettingsApi,
@@ -813,6 +814,7 @@ onMounted(() => {
               </div>
             </template>
           </section>
+          <StateTaxAccountNumbers style="margin-top: 1rem" />
         </TabPanel>
       </TabPanels>
     </Tabs>
