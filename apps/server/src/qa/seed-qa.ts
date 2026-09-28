@@ -40,6 +40,7 @@ import {
   seedDatabase,
   taxConfig,
   w4Elections,
+  employeeResidences,
   employeeWorkStates,
   type SeedDb,
 } from "@payroll/db";
@@ -195,9 +196,11 @@ async function ensureQaUser(deps: QaDeps, user: QaUser): Promise<{ id: string; c
 // ---------------------------------------------------------------------------
 
 interface W2Persona {
-  key: "ada" | "bob" | "carol";
+  key: "ada" | "bob" | "carol" | "nia" | "yuri" | "mara";
   legalName: string;
   state: string;
+  /** Spec 25 (PAY-120) residence locality: NYC, Yonkers or a Maryland county. */
+  locality: string | null;
   hireDate: string;
   taxId: string;
   userId?: string;
@@ -208,6 +211,7 @@ const W2_PERSONAS: W2Persona[] = [
     key: "ada",
     legalName: "Ada Testworth",
     state: "IL",
+    locality: null,
     hireDate: "2024-11-04",
     taxId: "000000001",
   },
@@ -215,6 +219,7 @@ const W2_PERSONAS: W2Persona[] = [
     key: "bob",
     legalName: "Bob Fakeley",
     state: "TX",
+    locality: null,
     hireDate: "2024-11-04",
     taxId: "000000002",
   },
@@ -222,18 +227,59 @@ const W2_PERSONAS: W2Persona[] = [
     key: "carol",
     legalName: "Carol Mockington",
     state: "WA",
+    locality: null,
     hireDate: "2024-11-04",
     taxId: "000000003",
   },
+  // PAY-163 (Spec 25 (PAY-120)): local income-tax residence personas. No
+  // compensation and no pay history — they exist so the residence screen and
+  // the local-tax check have New York City, Yonkers and Maryland cases.
+  {
+    key: "nia",
+    legalName: "Nia NYC",
+    state: "NY",
+    locality: "NY-NYC",
+    hireDate: "2025-03-03",
+    taxId: "000000004",
+  },
+  {
+    key: "yuri",
+    legalName: "Yuri Yonkers",
+    state: "NY",
+    locality: "NY-YONKERS",
+    hireDate: "2025-03-03",
+    taxId: "000000005",
+  },
+  {
+    key: "mara",
+    legalName: "Mara Maryland",
+    state: "MD",
+    locality: "MD-510",
+    hireDate: "2025-03-03",
+    taxId: "000000006",
+  },
 ];
 
+/** Work state (and confirmed work locality) of the residence personas. */
+const LOCAL_TAX_WORK: Partial<
+  Record<W2Persona["key"], { state: string; locality: string | null }>
+> = {
+  nia: { state: "NY", locality: null },
+  yuri: { state: "NY", locality: "NY-YONKERS" },
+  mara: { state: "MD", locality: "MD-510" },
+};
+
 function fakeAddress(persona: W2Persona) {
+  // Keyed by residence locality, else state. Street numbers are synthetic.
   const cities: Record<string, { city: string; zip: string }> = {
     IL: { city: "Springfield", zip: "62704" },
     TX: { city: "Austin", zip: "73301" },
     WA: { city: "Seattle", zip: "98101" },
+    "NY-NYC": { city: "New York", zip: "10001" },
+    "NY-YONKERS": { city: "Yonkers", zip: "10701" },
+    "MD-510": { city: "Baltimore", zip: "21201" },
   };
-  const c = cities[persona.state] ?? { city: "Nowhere", zip: "00000" };
+  const c = cities[persona.locality ?? persona.state] ?? { city: "Nowhere", zip: "00000" };
   return {
     line1: `1${persona.taxId.slice(-2)} Fake Street`,
     city: c.city,
@@ -332,6 +378,7 @@ async function ensureWorkState(
   employeeId: number,
   stateCode: string,
   effectiveFrom: string,
+  locality?: { code: string | null; confirmedBy: string },
 ): Promise<void> {
   const found = await db
     .select({ id: employeeWorkStates.id })
@@ -349,10 +396,50 @@ async function ensureWorkState(
     stateCode,
     effectiveFrom,
     effectiveTo: null,
+    ...(locality
+      ? {
+          localityCode: locality.code,
+          localityConfirmedAt: new Date(),
+          localityConfirmedBy: locality.confirmedBy,
+        }
+      : {}),
   });
 }
 
-export type W2Ids = Record<"ada" | "bob" | "carol", number>;
+export type W2Ids = Record<W2Persona["key"], number>;
+
+/**
+ * PAY-163: a residence for every W-2 persona (its synthetic home address
+ * state, from the hire date), plus the NY / MD personas' work states with a
+ * confirmed work locality. Idempotent: skips an employee that has a row.
+ */
+async function seedResidences(db: Db, ids: W2Ids, adminId: string): Promise<void> {
+  for (const persona of W2_PERSONAS) {
+    const employeeId = ids[persona.key];
+    const work = LOCAL_TAX_WORK[persona.key];
+    if (work) {
+      await ensureWorkState(db, employeeId, work.state, persona.hireDate, {
+        code: work.locality,
+        confirmedBy: adminId,
+      });
+    }
+    const found = await db
+      .select({ id: employeeResidences.id })
+      .from(employeeResidences)
+      .where(eq(employeeResidences.employeeId, employeeId))
+      .limit(1);
+    if (found[0]) continue;
+    await db.insert(employeeResidences).values({
+      employeeId,
+      country: "US",
+      stateCode: persona.state,
+      localityCode: persona.locality,
+      effectiveFrom: persona.hireDate,
+      source: "admin",
+      createdBy: adminId,
+    });
+  }
+}
 
 async function seedW2People(
   deps: QaDeps,
@@ -984,6 +1071,7 @@ export async function seedQaDataset(
   const companyId = one(companyRows, "company").id;
 
   const w2 = await seedW2People(deps, companyId, employeeLogin.id, today);
+  await seedResidences(deps.db, w2, admin.id);
   const payroll = await seedPayrollHistory(deps, w2, admin.id, today);
   // PAY-9: compute the deposit schedule from the issued history so the admin
   // Tax deposits page has rows immediately (the daily tick keeps it fresh).

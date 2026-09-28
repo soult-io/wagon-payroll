@@ -26,6 +26,7 @@ import {
   taxFilings,
   w4Elections,
   employeeWorkStates,
+  employeeResidences,
 } from "@payroll/db";
 import {
   historyMonths,
@@ -124,18 +125,21 @@ describe("QA logins", () => {
 });
 
 describe("W-2 personas", () => {
-  it("seeds the three employees with varied work states", async () => {
+  it("seeds the three paid employees plus the local-tax residence personas", async () => {
     const rows = await ctx.db.select().from(employees).where(eq(employees.employmentType, "w2"));
     expect(rows.map((r) => r.legalName).sort()).toEqual([
       "Ada Testworth",
       "Bob Fakeley",
       "Carol Mockington",
+      "Mara Maryland",
+      "Nia NYC",
+      "Yuri Yonkers",
     ]);
     // PAY-21: addresses are ciphertext at rest; decrypt for the state spread.
     const states = rows
       .map((r) => must(decryptAddress(r.address, ctx.config.encryptionKey), "address").state)
       .sort();
-    expect(states).toEqual(["IL", "TX", "WA"]);
+    expect(states).toEqual(["IL", "MD", "NY", "NY", "TX", "WA"]);
     // Carol carries the QA employee login.
     const carol = must(
       rows.find((r) => r.legalName === "Carol Mockington"),
@@ -331,6 +335,50 @@ describe("idempotency", () => {
     expect(second.payroll.draftCreated).toBe(false);
     expect(second.changeRequestCreated).toBe(false);
     expect(first.payroll.issued).toBe(3 * EXPECTED_MONTHS);
+  });
+
+  it("PAY-163: every W-2 persona has a synthetic residence matching its home address state", async () => {
+    const rows = await ctx.db
+      .select()
+      .from(employeeResidences)
+      .orderBy(employeeResidences.employeeId);
+    const byEmployee = new Map(rows.map((r) => [r.employeeId, r]));
+    const expected: [keyof QaSeedSummary["w2"], string, string | null][] = [
+      ["ada", "IL", null],
+      ["bob", "TX", null],
+      ["carol", "WA", null],
+      ["nia", "NY", "NY-NYC"],
+      ["yuri", "NY", "NY-YONKERS"],
+      ["mara", "MD", "MD-510"],
+    ];
+    for (const [key, stateCode, localityCode] of expected) {
+      const residence = must(byEmployee.get(first.w2[key]), `${key} residence`);
+      expect(residence).toMatchObject({ country: "US", stateCode, localityCode, source: "admin" });
+      const employee = must(
+        (await ctx.db.select().from(employees).where(eq(employees.id, first.w2[key])))[0],
+        key,
+      );
+      expect(
+        must(decryptAddress(employee.address, ctx.config.encryptionKey), "address").state,
+      ).toBe(stateCode);
+    }
+    // Idempotent: the re-run added no rows.
+    expect(rows).toHaveLength(6);
+  });
+
+  it("PAY-163: the NY and MD personas have confirmed work localities and no pay history", async () => {
+    const workRows = await ctx.db.select().from(employeeWorkStates);
+    const of = (id: number) => workRows.filter((r) => r.employeeId === id);
+    expect(of(first.w2.nia).map((r) => [r.stateCode, r.localityCode])).toEqual([["NY", null]]);
+    expect(of(first.w2.yuri).map((r) => [r.stateCode, r.localityCode])).toEqual([
+      ["NY", "NY-YONKERS"],
+    ]);
+    expect(of(first.w2.mara).map((r) => [r.stateCode, r.localityCode])).toEqual([["MD", "MD-510"]]);
+    for (const id of [first.w2.nia, first.w2.yuri, first.w2.mara]) {
+      expect(of(id)[0]?.localityConfirmedAt).not.toBeNull();
+      const runs = await ctx.db.select().from(payrollRuns).where(eq(payrollRuns.employeeId, id));
+      expect(runs).toHaveLength(0);
+    }
   });
 
   it("Ada has an IL work-state election", async () => {
