@@ -18,6 +18,7 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import {
   auditEvents,
   company,
+  companyStateIds,
   employees,
   payrollEntries,
   payrollRuns,
@@ -269,12 +270,12 @@ describe("W27 filed-year freeze", () => {
 
     const putFiled = await put("CA", { stateId: "00000009", fromTaxYear: 2026 });
     expect(putFiled.statusCode).toBe(409);
-    expect(putFiled.json()).toEqual({ error: "state_id_year_filed" });
+    expect(putFiled.json()).toEqual({ error: "state_id_year_filed", firstOpenYear: 2027 });
     expect(putFiled.body).not.toContain("00000009");
 
     const delFiled = await del("CA", 2026);
     expect(delFiled.statusCode).toBe(409);
-    expect(delFiled.json()).toEqual({ error: "state_id_year_filed" });
+    expect(delFiled.json()).toEqual({ error: "state_id_year_filed", firstOpenYear: 2027 });
 
     expect(await storedPlain("CA", 2026)).toBe("00000001");
     expect(await auditCount()).toBe(before);
@@ -282,6 +283,21 @@ describe("W27 filed-year freeze", () => {
     const put2027 = await put("CA", { stateId: "00000003", fromTaxYear: 2027 });
     expect(put2027.statusCode).toBe(200);
     expect(await storedPlain("CA", 2027)).toBe("00000003");
+  });
+
+  it("firstOpenYear is the first year from the requested one that is not filed", async () => {
+    await clearStateIds();
+    await clearFilings();
+    await setFiling(2026, "filed");
+    await setFiling(2027, "filed");
+    await setFiling(2028, "ready");
+    const res = await put("CA", { stateId: "00000001", fromTaxYear: 2026 });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toEqual({ error: "state_id_year_filed", firstOpenYear: 2028 });
+    const from2027 = await put("CA", { stateId: "00000001", fromTaxYear: 2027 });
+    expect(from2027.json()).toEqual({ error: "state_id_year_filed", firstOpenYear: 2028 });
+    expect((await put("CA", { stateId: "00000001", fromTaxYear: 2028 })).statusCode).toBe(200);
+    await clearFilings();
   });
 
   it("a filed year before the row's start is not affected; a ready (unfiled) year is", async () => {
@@ -604,5 +620,49 @@ describe("W28 no state ID in exports or figures", () => {
       expect(body).not.toContain("123456789012");
       expect(body).not.toContain("state_id");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R1 — first-time writes are race-safe on the unique key
+// ---------------------------------------------------------------------------
+
+describe("race-safe upsert (review R1)", () => {
+  it("a row that appears after the route last looked is replaced, not a 500", async () => {
+    await clearStateIds();
+    await clearFilings();
+    // Simulates the losing side of two first-time PUTs: the other writer's row
+    // is already committed when this write inserts.
+    await t.db.insert(companyStateIds).values({
+      companyId: 1,
+      stateCode: "NC",
+      fromTaxYear: 2026,
+      stateId: encryptField("111111111", t.config.encryptionKey),
+    });
+    const res = await put("NC", { stateId: "222222222" });
+    expect(res.statusCode).toBe(200);
+    expect(await storedPlain("NC", 2026)).toBe("222222222");
+    const [audit] = await auditFor("company.state_id.set", "NC:2026");
+    expect(audit?.before).toEqual({ idMasked: "••••1111" });
+    expect(audit?.after).toEqual({ idMasked: "••••2222" });
+  });
+
+  it("two first-time PUTs at once both succeed and leave one row", async () => {
+    await clearStateIds();
+    const earlier = (await auditFor("company.state_id.set", "MD:2026")).length;
+    const [a, b] = await Promise.all([
+      put("MD", { stateId: "11111111" }),
+      put("MD", { stateId: "22222222" }),
+    ]);
+    expect(a?.statusCode).toBe(200);
+    expect(b?.statusCode).toBe(200);
+    const rows = await t.pglite.query("SELECT 1 FROM company_state_ids WHERE state_code = 'MD'");
+    expect(rows.rows).toHaveLength(1);
+    const audits = (await auditFor("company.state_id.set", "MD:2026")).slice(
+      0,
+      (await auditFor("company.state_id.set", "MD:2026")).length - earlier,
+    );
+    expect(audits).toHaveLength(2);
+    expect(audits.filter((r) => r.before === null)).toHaveLength(1);
   });
 });
