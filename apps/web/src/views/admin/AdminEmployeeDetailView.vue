@@ -28,6 +28,7 @@ import EmptyState from "../../components/EmptyState.vue";
 import StatusChip from "../../components/StatusChip.vue";
 import EmployeeResidenceCard from "../../components/EmployeeResidenceCard.vue";
 import SelectButton from "primevue/selectbutton";
+import Message from "primevue/message";
 import { localityName, workLocalityOptions } from "@payroll/shared";
 import {
   adminEmployeesApi,
@@ -51,6 +52,13 @@ const { date, toIso } = useDates();
 const notify = useNotify();
 
 const employeeId = Number(route.params.employeeId);
+// Deep link: ?tab=state opens the State tax tab (dashboard "Still to do" links).
+const TABS = ["profile", "compensation", "w4", "state"];
+const activeTab = ref(
+  typeof route.query.tab === "string" && TABS.includes(route.query.tab)
+    ? route.query.tab
+    : "profile",
+);
 const loading = ref(true);
 const notFound = ref(false);
 const employee = ref<AdminEmployeeDetail | null>(null);
@@ -162,10 +170,12 @@ const wsForm = ref({
   locality: "",
 });
 
-// PAY-163: answer the work-locality question on the open row (rows made before it asked).
+// PAY-163: answer the work-locality question on a row made before it was asked
+// (the row in force today, or a future row), targeted by its start date.
 const wlDialog = ref(false);
 const wlBusy = ref(false);
-const wlForm = ref({ stateCode: "", locality: "" });
+const wlError = ref("");
+const wlForm = ref({ stateCode: "", locality: "", effectiveOn: "" });
 
 const displayName = computed(
   () => employee.value?.preferredName ?? employee.value?.legalName ?? "this employee",
@@ -192,8 +202,20 @@ watch(
 );
 
 function countyOptions() {
-  return workLocalityOptions("MD").map((o) => ({ label: o.name, value: o.code as string }));
+  return workLocalityOptions("MD")
+    .map((o) => ({ label: o.name, value: o.code as string }))
+    .sort((a, b) => (a.label < b.label ? -1 : 1));
 }
+
+function stateLabel(stateCode: string): string {
+  return stateCode === "MD" ? "Maryland" : "New York";
+}
+
+/** The Assign dialog's NY / MD question is still unanswered. */
+const wsNeedsAnswer = computed(() => {
+  const stateCode = wsForm.value.stateCode.trim().toUpperCase();
+  return localityFromAnswer(stateCode, wsForm.value.locality) === undefined;
+});
 
 function workLocalityLabel(row: WorkStateRow): string {
   if (row.localityCode) return localityName(row.localityCode);
@@ -201,31 +223,52 @@ function workLocalityLabel(row: WorkStateRow): string {
   return row.localityConfirmedAt ? "Not in Yonkers" : "Not answered yet";
 }
 
+/** NY/MD row in force today or starting later, never answered. */
 function needsLocalityAnswer(row: WorkStateRow): boolean {
+  const today = toIso(new Date()) ?? "";
   return (
     (row.stateCode === "NY" || row.stateCode === "MD") &&
-    row.effectiveTo === null &&
+    (row.effectiveTo === null || row.effectiveTo > today) &&
     row.localityConfirmedAt === null
   );
 }
 
 function openLocalityDialog(row: WorkStateRow) {
-  wlForm.value = { stateCode: row.stateCode, locality: "" };
+  wlForm.value = { stateCode: row.stateCode, locality: "", effectiveOn: row.effectiveFrom };
+  wlError.value = "";
   wlDialog.value = true;
+}
+
+function workLocalityError(err: unknown): string {
+  const name = displayName.value;
+  if (err instanceof ApiError) {
+    if (err.status === 404) return "We couldn't find this employee. Refresh the page.";
+    if (err.code === "no_open_work_state") {
+      return `${name} doesn't have a current work state. Assign one first, then answer this question.`;
+    }
+    if (err.code === "invalid_body") {
+      return `That answer doesn't fit ${name}'s current work state. Refresh the page and try again.`;
+    }
+  }
+  return notify.errorMessage(err);
 }
 
 async function saveWorkLocality() {
   const localityCode = localityFromAnswer(wlForm.value.stateCode, wlForm.value.locality);
   if (localityCode === undefined) return;
   wlBusy.value = true;
+  wlError.value = "";
   try {
-    await adminPayrollApi.setWorkLocality(employeeId, { localityCode });
+    await adminPayrollApi.setWorkLocality(employeeId, {
+      localityCode,
+      effectiveOn: wlForm.value.effectiveOn,
+    });
     notify.success("Work location saved");
     wlDialog.value = false;
     const { workStates: rows } = await adminPayrollApi.workStates(employeeId);
     workStates.value = rows;
   } catch (err) {
-    notify.error(err, "Could not save the work location");
+    wlError.value = workLocalityError(err);
   } finally {
     wlBusy.value = false;
   }
@@ -418,7 +461,7 @@ async function addWorkState() {
       effectiveFrom,
       ...(stateCode === "NY" || stateCode === "MD" ? { localityCode } : {}),
     });
-    notify.success("Work state assigned", `${stateCode} effective ${effectiveFrom}.`);
+    notify.success("Work state assigned", `${stateCode} from ${date(effectiveFrom)}.`);
     wsDialog.value = false;
     const { workStates: rows } = await adminPayrollApi.workStates(employeeId);
     workStates.value = rows;
@@ -485,7 +528,7 @@ onMounted(load);
     <Skeleton v-if="loading" height="22rem" />
     <EmptyState v-else-if="notFound || !employee" icon="pi pi-exclamation-circle" title="Employee not found" />
 
-    <Tabs v-else value="profile">
+    <Tabs v-else v-model:value="activeTab">
       <TabList>
         <Tab value="profile">Profile</Tab>
         <Tab value="compensation">Compensation</Tab>
@@ -613,12 +656,12 @@ onMounted(load);
 
           <section class="card" style="margin-top: 1rem">
             <div class="row" style="justify-content: space-between">
-              <h3 style="margin: 0">Work state (PAY-13)</h3>
+              <h3 style="margin: 0">Where {{ displayName }} works</h3>
               <Button label="Assign" size="small" icon="pi pi-plus" @click="wsDialog = true" />
             </div>
             <p class="muted small">
-              State income tax follows the work location. Assigning a new state closes the current
-              window; with no row, the legacy flat “state withholding rate” applies.
+              State income tax follows where they work. Adding a new state ends the current one on
+              the new date.
             </p>
             <div class="table-scroll">
               <DataTable :value="workStates" striped-rows>
@@ -633,6 +676,7 @@ onMounted(load);
                       text
                       size="small"
                       icon="pi pi-map-marker"
+                      :aria-label="`Answer where ${displayName} works in ${stateLabel(data.stateCode)}`"
                       @click="openLocalityDialog(data)"
                     />
                   </template>
@@ -847,8 +891,8 @@ onMounted(load);
     <Dialog v-model:visible="wsDialog" modal header="Assign work state" :style="{ width: '26rem' }">
       <form class="stack" @submit.prevent="addWorkState">
         <p class="muted small">
-          The previous open window closes at the new effective date. Run generation fails loudly for
-          a work state with no tax table for the year — configure it under Configuration → State taxes.
+          If we don't have that state's tax tables for the year, you'll need to add them under
+          Configuration → State taxes before running payroll.
         </p>
         <div class="form-grid">
           <div class="field">
@@ -861,20 +905,21 @@ onMounted(load);
           </div>
         </div>
         <div v-if="wsForm.stateCode.trim().toUpperCase() === 'NY'" class="field">
-          <label for="wsYonkers">Does {{ displayName }} do any of their work in Yonkers?</label>
+          <label id="wsYonkersLabel">Does {{ displayName }} do any of their work in Yonkers?</label>
           <SelectButton
-            id="wsYonkers"
             v-model="wsForm.locality"
+            aria-labelledby="wsYonkersLabel"
             :options="YES_NO"
             option-label="label"
             option-value="value"
           />
           <p class="muted small">Yonkers taxes people who work there, even if they live somewhere else.</p>
+          <p v-if="wsNeedsAnswer" class="muted small">Answer this to continue.</p>
         </div>
         <div v-if="wsForm.stateCode.trim().toUpperCase() === 'MD'" class="field">
           <label for="wsCounty">Which Maryland county does {{ displayName }} work in?</label>
           <Select
-            id="wsCounty"
+            input-id="wsCounty"
             v-model="wsForm.locality"
             :options="countyOptions()"
             option-label="label"
@@ -882,21 +927,33 @@ onMounted(load);
             filter
             placeholder="Choose a county"
           />
+          <p v-if="wsNeedsAnswer" class="muted small">Answer this to continue.</p>
         </div>
         <div class="row" style="justify-content: flex-end">
           <Button label="Cancel" text severity="secondary" type="button" @click="wsDialog = false" />
-          <Button type="submit" label="Assign" :loading="wsBusy" :disabled="wsForm.stateCode.trim().length !== 2" />
+          <Button
+            type="submit"
+            label="Assign"
+            :loading="wsBusy"
+            :disabled="wsForm.stateCode.trim().length !== 2 || wsNeedsAnswer"
+          />
         </div>
       </form>
     </Dialog>
 
-    <Dialog v-model:visible="wlDialog" modal header="Where they work" :style="{ width: '28rem' }">
+    <Dialog
+      v-model:visible="wlDialog"
+      modal
+      :header="`Where ${displayName} works in ${stateLabel(wlForm.stateCode)}`"
+      :style="{ width: '28rem' }"
+      :breakpoints="{ '575px': '95vw' }"
+    >
       <form class="stack" @submit.prevent="saveWorkLocality">
         <div v-if="wlForm.stateCode === 'NY'" class="field">
-          <label for="wlYonkers">Does {{ displayName }} do any of their work in Yonkers?</label>
+          <label id="wlYonkersLabel">Does {{ displayName }} do any of their work in Yonkers?</label>
           <SelectButton
-            id="wlYonkers"
             v-model="wlForm.locality"
+            aria-labelledby="wlYonkersLabel"
             :options="YES_NO"
             option-label="label"
             option-value="value"
@@ -906,7 +963,7 @@ onMounted(load);
         <div v-if="wlForm.stateCode === 'MD'" class="field">
           <label for="wlCounty">Which Maryland county does {{ displayName }} work in?</label>
           <Select
-            id="wlCounty"
+            input-id="wlCounty"
             v-model="wlForm.locality"
             :options="countyOptions()"
             option-label="label"
@@ -915,6 +972,7 @@ onMounted(load);
             placeholder="Choose a county"
           />
         </div>
+        <Message v-if="wlError" severity="error" :closable="false" role="alert">{{ wlError }}</Message>
         <div class="row" style="justify-content: flex-end">
           <Button label="Cancel" text severity="secondary" type="button" @click="wlDialog = false" />
           <Button

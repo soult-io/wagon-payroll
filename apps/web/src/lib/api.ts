@@ -345,6 +345,10 @@ export interface LocalTaxCheck {
     name: string;
     status: "ok" | "blocked";
     reasons: string[];
+    /** State or locality code behind a hold about a place (e.g. "PA", "NY-NYC"). */
+    place: string | null;
+    /** Work state code in force, or null when there is no work-state row. */
+    workState: string | null;
   }[];
 }
 
@@ -669,7 +673,10 @@ export const adminPayrollApi = {
     input: { stateCode: string; effectiveFrom: string; localityCode?: string | null },
   ) => put<{ workState: WorkStateRow }>(`/api/admin/employees/${employeeId}/work-state`, input),
   // PAY-163: work locality (backfill on the open row), residence, and the read-only check.
-  setWorkLocality: (employeeId: number, input: { localityCode: string | null }) =>
+  setWorkLocality: (
+    employeeId: number,
+    input: { localityCode: string | null; effectiveOn?: string },
+  ) =>
     put<{ workState: WorkStateRow }>(
       `/api/admin/employees/${employeeId}/work-state/locality`,
       input,

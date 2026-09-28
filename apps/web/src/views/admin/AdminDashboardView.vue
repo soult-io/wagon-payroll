@@ -20,6 +20,7 @@ import {
   type LocalTaxCheck,
   type OutboxHealth,
 } from "../../lib/api";
+import { localityName, stateName } from "@payroll/shared";
 import { requestTypeLabel } from "../../composables/useRequestTypes";
 import { useDates } from "../../composables/useDates";
 import { useNotify } from "../../composables/useNotify";
@@ -32,14 +33,40 @@ const draftRuns = ref<PayrollRunRow[]>([]);
 const pendingRequests = ref<ChangeRequest[]>([]);
 const outbox = ref<OutboxHealth | null>(null);
 const employeeNames = ref<Map<number, string>>(new Map());
-// PAY-163 (Spec 25 (PAY-120), step G1): employees still missing where they live or work.
+// PAY-163 (Spec 25 (PAY-120), step G1): who still needs "where they live /
+// work" filled in, and who the coming check would hold for a place the app
+// cannot handle yet.
+type CheckEntry = LocalTaxCheck["employees"][number];
 const localTax = ref<LocalTaxCheck | null>(null);
-const CAPTURE_REASONS = new Set(["residence_missing", "work_locality_unconfirmed"]);
-const localTaxToGo = computed(
-  () =>
-    localTax.value?.employees.filter((e) => e.reasons.some((r) => CAPTURE_REASONS.has(r))).length ??
-    0,
-);
+const TODO_LIMIT = 5;
+
+/** Fixable by filling in data: no residence, unanswered work locality, or no work state for a NY/MD resident. */
+function needsData(e: CheckEntry): boolean {
+  return (
+    e.reasons.includes("residence_missing") ||
+    e.reasons.includes("work_locality_unconfirmed") ||
+    (e.reasons.includes("local_outside_work_state") && e.workState === null)
+  );
+}
+
+/** Held for a place: unsupported, no tax tables yet, or living and working in different states. */
+function heldForPlace(e: CheckEntry): boolean {
+  return (
+    e.reasons.includes("local_unsupported_state") ||
+    e.reasons.includes("local_not_yet_supported") ||
+    (e.reasons.includes("local_outside_work_state") && e.workState !== null)
+  );
+}
+
+const localTaxTodo = computed(() => localTax.value?.employees.filter(needsData) ?? []);
+const localTaxTodoShown = computed(() => localTaxTodo.value.slice(0, TODO_LIMIT));
+const localTaxHeld = computed(() => localTax.value?.employees.filter(heldForPlace) ?? []);
+
+/** "PA" → "Pennsylvania"; "NY-NYC" → "New York City"; "MD-510" → "Baltimore City". */
+function placeName(code: string | null): string {
+  if (!code) return "a state";
+  return code.includes("-") ? localityName(code) : stateName(code);
+}
 
 async function loadLocalTax() {
   try {
@@ -78,11 +105,35 @@ function employeeName(id: number): string {
   <div class="page stack">
     <PageHeader title="Admin dashboard" subtitle="Everything waiting on your decision." />
 
-    <Message v-if="localTaxToGo > 0" severity="info" :closable="false">
-      <strong>New: tell us where each employee lives.</strong>
-      Soon we'll hold a pay run until this is filled in, so nobody is paid without the right local
-      tax. {{ localTaxToGo }} {{ localTaxToGo === 1 ? "employee" : "employees" }} to go.
-      <RouterLink :to="{ name: 'admin-employees' }">Fill in now</RouterLink>
+    <Message v-if="localTax && localTaxTodo.length > 0" severity="info" :closable="false">
+      <strong>New: tell us where each employee lives and works.</strong>
+      Some cities and counties charge their own income tax, and this is how we check for it.
+      <template v-if="!localTax.enforced">
+        Soon we'll hold a pay run until this is filled in, so nobody is paid without the right
+        local tax.
+      </template>
+      Still to do:
+      <template v-for="(e, i) in localTaxTodoShown" :key="e.employeeId">
+        <RouterLink
+          :to="{ name: 'admin-employee-detail', params: { employeeId: e.employeeId }, query: { tab: 'state' } }"
+        >{{ e.name }}</RouterLink><template v-if="i < localTaxTodoShown.length - 1">, </template>
+      </template>
+      <template v-if="localTaxTodo.length > TODO_LIMIT">
+        and
+        <RouterLink :to="{ name: 'admin-employees' }">{{ localTaxTodo.length - TODO_LIMIT }} more</RouterLink>
+      </template>
+      ({{ localTaxTodo.length }} {{ localTaxTodo.length === 1 ? "employee" : "employees" }})
+    </Message>
+
+    <Message v-if="localTax && localTaxHeld.length > 0" severity="warn" :closable="false">
+      <p v-for="e in localTaxHeld" :key="e.employeeId" style="margin: 0.25rem 0">
+        <RouterLink
+          :to="{ name: 'admin-employee-detail', params: { employeeId: e.employeeId }, query: { tab: 'state' } }"
+        >{{ e.name }}</RouterLink>
+        lives or works in {{ placeName(e.place) }}, where cities or counties can charge their own
+        income tax. Wagon Payroll can't work that out yet, so once the new check starts we'll hold
+        their pay run. You'll need to run payroll for {{ e.name }} another way for now.
+      </p>
     </Message>
 
     <div v-if="loading" class="grid-2">
