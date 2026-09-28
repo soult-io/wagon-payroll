@@ -306,7 +306,7 @@ defineExpose({ load });
             <DatePicker
               v-model="form.effectiveFrom"
               input-id="resSince"
-              date-format="yy-mm-dd"
+              date-format="d M yy"
               :min-date="minDate"
               required
             />

@@ -10,7 +10,23 @@ export interface CountryOption {
   name: string;
 }
 
-const NOT_COUNTRIES = new Set(["AA", "EU", "EZ", "UN", "ZZ"]);
+// Reserved and exceptionally reserved codes that name no country of residence:
+// AC Ascension, CP Clipperton, DG Diego Garcia, EA Ceuta & Melilla, IC Canary
+// Islands, TA Tristan da Cunha (ISO exceptional reservations), QO Outlying Oceania.
+const NOT_COUNTRIES = new Set([
+  "AA",
+  "AC",
+  "CP",
+  "DG",
+  "EA",
+  "EU",
+  "EZ",
+  "IC",
+  "QO",
+  "TA",
+  "UN",
+  "ZZ",
+]);
 
 function reserved(code: string): boolean {
   if (NOT_COUNTRIES.has(code)) return true;

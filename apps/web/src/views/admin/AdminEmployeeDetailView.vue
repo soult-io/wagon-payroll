@@ -243,6 +243,9 @@ function workLocalityError(err: unknown): string {
   const name = displayName.value;
   if (err instanceof ApiError) {
     if (err.status === 404) return "We couldn't find this employee. Refresh the page.";
+    if (err.code === "work_state_ended") {
+      return "That work state has already ended, so it can't be changed here.";
+    }
     if (err.code === "no_open_work_state") {
       return `${name} doesn't have a current work state. Assign one first, then answer this question.`;
     }

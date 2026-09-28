@@ -61,6 +61,7 @@ function heldForPlace(e: CheckEntry): boolean {
 const localTaxTodo = computed(() => localTax.value?.employees.filter(needsData) ?? []);
 const localTaxTodoShown = computed(() => localTaxTodo.value.slice(0, TODO_LIMIT));
 const localTaxHeld = computed(() => localTax.value?.employees.filter(heldForPlace) ?? []);
+const localTaxHeldShown = computed(() => localTaxHeld.value.slice(0, TODO_LIMIT));
 
 /** "PA" → "Pennsylvania"; "NY-NYC" → "New York City"; "MD-510" → "Baltimore City". */
 function placeName(code: string | null): string {
@@ -126,14 +127,21 @@ function employeeName(id: number): string {
     </Message>
 
     <Message v-if="localTax && localTaxHeld.length > 0" severity="warn" :closable="false">
-      <p v-for="e in localTaxHeld" :key="e.employeeId" style="margin: 0.25rem 0">
-        <RouterLink
-          :to="{ name: 'admin-employee-detail', params: { employeeId: e.employeeId }, query: { tab: 'state' } }"
-        >{{ e.name }}</RouterLink>
-        lives or works in {{ placeName(e.place) }}, where cities or counties can charge their own
-        income tax. Wagon Payroll can't work that out yet, so once the new check starts we'll hold
-        their pay run. You'll need to run payroll for {{ e.name }} another way for now.
-      </p>
+      Some employees live or work where cities or counties charge their own income tax. Wagon
+      Payroll can't work that out yet, so once the new check starts we'll hold their pay runs.
+      You'll need to run payroll for them another way for now:
+      <ul class="held-list">
+        <li v-for="e in localTaxHeldShown" :key="e.employeeId">
+          <RouterLink
+            :to="{ name: 'admin-employee-detail', params: { employeeId: e.employeeId }, query: { tab: 'state' } }"
+          >{{ e.name }}</RouterLink>
+          — {{ placeName(e.place) }}
+        </li>
+        <li v-if="localTaxHeld.length > TODO_LIMIT">
+          and
+          <RouterLink :to="{ name: 'admin-employees' }">{{ localTaxHeld.length - TODO_LIMIT }} more</RouterLink>
+        </li>
+      </ul>
     </Message>
 
     <div v-if="loading" class="grid-2">
@@ -204,6 +212,10 @@ function employeeName(id: number): string {
 </template>
 
 <style scoped>
+.held-list {
+  margin: 0.5rem 0 0;
+  padding-left: 1.25rem;
+}
 .inbox-list {
   list-style: none;
   margin: 0;
