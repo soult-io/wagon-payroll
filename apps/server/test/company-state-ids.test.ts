@@ -90,6 +90,25 @@ async function auditFor(action: string, entityId: string) {
     .orderBy(desc(auditEvents.id));
 }
 
+/** The audit row's payload as JSON (the bigint id is left out). */
+function auditJson(
+  row:
+    | { action: string; entity: string; entityId: string; before: unknown; after: unknown }
+    | undefined,
+) {
+  return JSON.stringify(
+    row
+      ? {
+          action: row.action,
+          entity: row.entity,
+          entityId: row.entityId,
+          before: row.before,
+          after: row.after,
+        }
+      : null,
+  );
+}
+
 async function auditCount(): Promise<number> {
   const [row] = await t.db.select({ n: sql<number>`count(*)::int` }).from(auditEvents);
   return row?.n ?? 0;
@@ -315,10 +334,8 @@ describe("W28 write-only storage and masking", () => {
     expect(audit).toBeDefined();
     expect(audit?.entity).toBe("company_state_id");
     expect(audit?.after).toEqual({ idMasked: "••••0001" });
-    expect(audit?.before === null || Object.keys(audit.before as object).join() === "idMasked").toBe(
-      true,
-    );
-    expect(JSON.stringify(audit)).not.toContain("00000001");
+    expect(audit?.before).toBeNull(); // a new row has no before-state
+    expect(auditJson(audit)).not.toContain("00000001");
 
     // Replacing the value audits before and after, both masked.
     expect((await put("CA", { stateId: "00000002" })).statusCode).toBe(200);
@@ -369,7 +386,7 @@ describe("W28 write-only storage and masking", () => {
     expect(get.body).not.toContain("AB12");
     const rows = await auditFor("company.state_id.set", "TX:2026");
     expect(rows.length).toBeGreaterThan(0);
-    for (const row of rows) expect(JSON.stringify(row)).not.toContain("AB12");
+    for (const row of rows) expect(auditJson(row)).not.toContain("AB12");
     expect(rows[0]?.after).toEqual({ idMasked: "••••" });
   });
 
@@ -407,7 +424,7 @@ describe("W28 write-only storage and masking", () => {
     expect(audit?.entity).toBe("company_state_id");
     expect(audit?.before).toEqual({ idMasked: "••••6789" });
     expect(audit?.after).toBeNull();
-    expect(JSON.stringify(audit)).not.toContain("123456789");
+    expect(auditJson(audit)).not.toContain("123456789");
   });
 
   it("L5: DELETE of a (state, year) with no row → 404 not_found, no audit row", async () => {
@@ -511,12 +528,42 @@ describe("GET defaults and needed", () => {
 
   it("needed lists 2026+ states with issued wages and no ID, with the reason", async () => {
     await clearStateIds();
-    await employeeWithRun({ workState: "NC", kind: "flat", payDate: "2026-03-25", stateTax: "12.00" });
-    await employeeWithRun({ workState: "CA", kind: "progressive", payDate: "2026-03-25", stateTax: "0.00" });
-    await employeeWithRun({ workState: "TX", kind: "none", payDate: "2026-03-25", stateTax: "0.00" });
-    await employeeWithRun({ workState: "IL", kind: "flat", payDate: "2026-03-25", stateTax: "20.00" }); // EIN default
-    await employeeWithRun({ workState: "MD", kind: "progressive", payDate: "2025-03-25", stateTax: "9.00" }); // pre-2026
-    await employeeWithRun({ workState: null, kind: "flat", payDate: "2026-04-25", stateTax: "7.00" }); // legacy
+    await employeeWithRun({
+      workState: "NC",
+      kind: "flat",
+      payDate: "2026-03-25",
+      stateTax: "12.00",
+    });
+    await employeeWithRun({
+      workState: "CA",
+      kind: "progressive",
+      payDate: "2026-03-25",
+      stateTax: "0.00",
+    });
+    await employeeWithRun({
+      workState: "TX",
+      kind: "none",
+      payDate: "2026-03-25",
+      stateTax: "0.00",
+    });
+    await employeeWithRun({
+      workState: "IL",
+      kind: "flat",
+      payDate: "2026-03-25",
+      stateTax: "20.00",
+    }); // EIN default
+    await employeeWithRun({
+      workState: "MD",
+      kind: "progressive",
+      payDate: "2025-03-25",
+      stateTax: "9.00",
+    }); // pre-2026
+    await employeeWithRun({
+      workState: null,
+      kind: "flat",
+      payDate: "2026-04-25",
+      stateTax: "7.00",
+    }); // legacy
 
     const get = await api("GET", BASE);
     expect(get.json().needed).toEqual([

@@ -169,6 +169,13 @@
       "when": 1790600626844,
       "tag": "0023_spooky_toro",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1790629174722,
+      "tag": "0024_neat_slapstick",
+      "breakpoints": true
     }
   ]
 }

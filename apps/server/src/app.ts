@@ -25,6 +25,7 @@ import { registerMyInvoiceRoutes } from "./routes/my-invoices.js";
 import { registerAdminNotificationRoutes } from "./routes/admin-notifications.js";
 import { registerAdminEmployeeRoutes } from "./routes/admin-employees.js";
 import { registerAdminSettingsRoutes } from "./routes/admin-settings.js";
+import { registerAdminStateIdRoutes } from "./routes/admin-state-ids.js";
 import { registerAdminContractorRoutes } from "./routes/admin-contractors.js";
 import { registerAdminDepositRoutes } from "./routes/admin-deposits.js";
 import { registerAdminCalendarRoutes } from "./routes/admin-calendar.js";
@@ -91,6 +92,7 @@ export async function buildApp(deps: BuildAppDeps = {}) {
   registerAdminNotificationRoutes(app, { db, config, guards });
   registerAdminEmployeeRoutes(app, { auth, db, config, guards });
   registerAdminSettingsRoutes(app, { db, config, guards });
+  registerAdminStateIdRoutes(app, { db, config, guards });
   registerAdminContractorRoutes(app, { db, config, guards });
   registerAdminDepositRoutes(app, { db, config, guards });
   registerAdminCalendarRoutes(app, { db, guards });
