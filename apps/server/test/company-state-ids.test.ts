@@ -327,6 +327,25 @@ describe("W27 filed-year freeze", () => {
     await clearFilings();
   });
 
+  it("firstOpenYear is past the last filed year in the window, not the first gap", async () => {
+    await clearStateIds();
+    await clearFilings();
+    await setFiling(2026, "filed");
+    await setFiling(2028, "filed");
+    const gap = await put("CA", { stateId: "00000001", fromTaxYear: 2026 });
+    expect(gap.json()).toEqual({ error: "state_id_year_filed", firstOpenYear: 2029 });
+    // Following the answer succeeds (no 409 loop).
+    expect((await put("CA", { stateId: "00000001", fromTaxYear: 2029 })).statusCode).toBe(200);
+
+    await clearStateIds();
+    await clearFilings();
+    await setFiling(2027, "filed");
+    const later = await put("CA", { stateId: "00000001", fromTaxYear: 2026 });
+    expect(later.json()).toEqual({ error: "state_id_year_filed", firstOpenYear: 2028 });
+    expect((await put("CA", { stateId: "00000001", fromTaxYear: 2028 })).statusCode).toBe(200);
+    await clearFilings();
+  });
+
   it("a filed year before the row's start is not affected; a ready (unfiled) year is", async () => {
     await clearStateIds();
     await clearFilings();
