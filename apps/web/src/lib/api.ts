@@ -312,6 +312,40 @@ export interface WorkStateRow {
   stateCode: string;
   effectiveFrom: string;
   effectiveTo: string | null;
+  /** PAY-163: Yonkers or the Maryland county; null = none (only when confirmed). */
+  localityCode: string | null;
+  localityConfirmedAt: string | null;
+}
+
+/** PAY-163: where an employee lives for local income tax (effective-dated). */
+export interface ResidenceRow {
+  id: number;
+  employeeId: number;
+  country: string;
+  stateCode: string | null;
+  localityCode: string | null;
+  effectiveFrom: string;
+  effectiveTo: string | null;
+  source: "admin" | "certificate";
+  createdAt: string;
+}
+
+export interface ResidenceDetail {
+  current: ResidenceRow | null;
+  history: ResidenceRow[];
+  /** Country and US state of the home address on file (never the street). */
+  addressHint: { country: string; state: string | null } | null;
+}
+
+export interface LocalTaxCheck {
+  enforced: boolean;
+  payDate: string;
+  employees: {
+    employeeId: number;
+    name: string;
+    status: "ok" | "blocked";
+    reasons: string[];
+  }[];
 }
 
 /** PAY-13: state withholding election (the IL-W-4 / DE 4 mirror of W4ElectionRow). */
@@ -630,8 +664,29 @@ export const adminPayrollApi = {
   }) => put<{ config: StateTaxConfigRow }>("/api/admin/state-tax-config", input),
   workStates: (employeeId: number) =>
     get<{ workStates: WorkStateRow[] }>(`/api/admin/employees/${employeeId}/work-state`),
-  assignWorkState: (employeeId: number, input: { stateCode: string; effectiveFrom: string }) =>
-    put<{ workState: WorkStateRow }>(`/api/admin/employees/${employeeId}/work-state`, input),
+  assignWorkState: (
+    employeeId: number,
+    input: { stateCode: string; effectiveFrom: string; localityCode?: string | null },
+  ) => put<{ workState: WorkStateRow }>(`/api/admin/employees/${employeeId}/work-state`, input),
+  // PAY-163: work locality (backfill on the open row), residence, and the read-only check.
+  setWorkLocality: (employeeId: number, input: { localityCode: string | null }) =>
+    put<{ workState: WorkStateRow }>(
+      `/api/admin/employees/${employeeId}/work-state/locality`,
+      input,
+    ),
+  residence: (employeeId: number) =>
+    get<ResidenceDetail>(`/api/admin/employees/${employeeId}/residence`),
+  setResidence: (
+    employeeId: number,
+    input: {
+      country: string;
+      stateCode: string | null;
+      localityCode: string | null;
+      effectiveFrom: string;
+    },
+  ) => put<{ residence: ResidenceRow }>(`/api/admin/employees/${employeeId}/residence`, input),
+  localTaxCheck: (payDate?: string) =>
+    get<LocalTaxCheck>(`/api/admin/local-tax/check${payDate ? qs({ payDate }) : ""}`),
   stateElections: (employeeId: number, state?: string) =>
     get<{ elections: StateElectionRow[] }>(
       `/api/admin/employees/${employeeId}/state-elections${state ? qs({ state }) : ""}`,

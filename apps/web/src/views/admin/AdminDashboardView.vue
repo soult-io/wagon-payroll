@@ -3,9 +3,10 @@
  * Admin dashboard (frontend spec): pending approvals inbox (payroll drafts +
  * change requests) + outbox health card.
  */
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import Button from "primevue/button";
 import Skeleton from "primevue/skeleton";
+import Message from "primevue/message";
 import PageHeader from "../../components/PageHeader.vue";
 import EmptyState from "../../components/EmptyState.vue";
 import StatusChip from "../../components/StatusChip.vue";
@@ -16,6 +17,7 @@ import {
   changeRequestsApi,
   type PayrollRunRow,
   type ChangeRequest,
+  type LocalTaxCheck,
   type OutboxHealth,
 } from "../../lib/api";
 import { requestTypeLabel } from "../../composables/useRequestTypes";
@@ -30,8 +32,25 @@ const draftRuns = ref<PayrollRunRow[]>([]);
 const pendingRequests = ref<ChangeRequest[]>([]);
 const outbox = ref<OutboxHealth | null>(null);
 const employeeNames = ref<Map<number, string>>(new Map());
+// PAY-163 (Spec 25 (PAY-120), step G1): employees still missing where they live or work.
+const localTax = ref<LocalTaxCheck | null>(null);
+const CAPTURE_REASONS = new Set(["residence_missing", "work_locality_unconfirmed"]);
+const localTaxToGo = computed(
+  () =>
+    localTax.value?.employees.filter((e) => e.reasons.some((r) => CAPTURE_REASONS.has(r))).length ??
+    0,
+);
+
+async function loadLocalTax() {
+  try {
+    localTax.value = await adminPayrollApi.localTaxCheck();
+  } catch {
+    localTax.value = null; // the banner is a nudge; the dashboard works without it
+  }
+}
 
 onMounted(async () => {
+  void loadLocalTax();
   try {
     const [runs, requests, health, employees] = await Promise.all([
       adminPayrollApi.runs({ status: "awaiting_approval" }),
@@ -58,6 +77,13 @@ function employeeName(id: number): string {
 <template>
   <div class="page stack">
     <PageHeader title="Admin dashboard" subtitle="Everything waiting on your decision." />
+
+    <Message v-if="localTaxToGo > 0" severity="info" :closable="false">
+      <strong>New: tell us where each employee lives.</strong>
+      Soon we'll hold a pay run until this is filled in, so nobody is paid without the right local
+      tax. {{ localTaxToGo }} {{ localTaxToGo === 1 ? "employee" : "employees" }} to go.
+      <RouterLink :to="{ name: 'admin-employees' }">Fill in now</RouterLink>
+    </Message>
 
     <div v-if="loading" class="grid-2">
       <Skeleton height="12rem" />
