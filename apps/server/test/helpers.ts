@@ -81,7 +81,10 @@ export interface TestContext extends BuiltApp {
   close: () => Promise<void>;
 }
 
-export async function createTestApp(overrides: Partial<AppConfig> = {}): Promise<TestContext> {
+export async function createTestApp(
+  overrides: Partial<AppConfig> = {},
+  extra: { logStream?: { write(msg: string): void } } = {},
+): Promise<TestContext> {
   const pglite = new PGlite("memory://");
   const skippedStatements = await runMigrations(pglite);
 
@@ -95,6 +98,7 @@ export async function createTestApp(overrides: Partial<AppConfig> = {}): Promise
 
   const db = drizzle(pglite, { schema }) as unknown as Db;
   const built = await buildApp({
+    ...(extra.logStream ? { logStream: extra.logStream } : {}),
     config,
     database: {
       db,

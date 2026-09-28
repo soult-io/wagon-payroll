@@ -45,6 +45,7 @@ import {
   sumCategory,
   type TaxAdjustmentRow,
   type TaxFilingRow,
+  W2W3_FILING_LOCK,
   toMoney,
   todayIso,
   worksheetHash,
@@ -57,6 +58,7 @@ export {
   MONEY_RE,
   type TaxAdjustmentRow,
   type TaxFilingRow,
+  W2W3_FILING_LOCK,
   worksheetHash,
 } from "./shared.js";
 
@@ -609,6 +611,8 @@ export async function markFiled(
   }
 
   return db.transaction(async (tx) => {
+    // Spec 24 (PAY-116): state ID writes check filed w2_w3 years under this lock.
+    if (before.formType === "w2_w3") await tx.execute(W2W3_FILING_LOCK);
     const updated = await tx
       .update(taxFilings)
       .set({

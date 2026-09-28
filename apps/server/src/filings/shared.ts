@@ -12,6 +12,13 @@ import { round2 } from "@payroll/engine/money";
 import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
 
+/**
+ * Spec 24 (PAY-116): one advisory lock serializes marking a w2_w3 filing
+ * filed with employer state ID writes, whose filed-year check must see
+ * every filing marked filed before it writes.
+ */
+export const W2W3_FILING_LOCK = sql`SELECT pg_advisory_xact_lock(hashtext('w2_w3_filing_state_ids'))`;
+
 export type TaxFilingRow = typeof taxFilings.$inferSelect;
 export type TaxAdjustmentRow = typeof taxAdjustments.$inferSelect;
 

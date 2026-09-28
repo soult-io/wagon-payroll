@@ -176,7 +176,9 @@ export function registerAdminStateIdRoutes(app: FastifyInstance, deps: Deps): vo
     if (!owner) return reply.code(404).send({ error: "no_company" });
     const target = { companyId: owner.id, stateCode, fromTaxYear: body.data.fromTaxYear };
     const result = await writeStateId(db, key, target, normalized.value, actorOf(req));
-    if (result.status === 409) return reply.code(409).send({ error: result.error });
+    if (result.status === 409) {
+      return reply.code(409).send({ error: result.error, firstOpenYear: result.firstOpenYear });
+    }
     if (result.status !== 200) throw new Error("unexpected state ID write result");
     return {
       stateId: {
@@ -204,7 +206,9 @@ export function registerAdminStateIdRoutes(app: FastifyInstance, deps: Deps): vo
         { companyId: owner.id, ...params.data },
         actorOf(req),
       );
-      if (result.status === 409) return reply.code(409).send({ error: result.error });
+      if (result.status === 409) {
+        return reply.code(409).send({ error: result.error, firstOpenYear: result.firstOpenYear });
+      }
       if (result.status === 404) return reply.code(404).send(NOT_FOUND);
       return reply.code(204).send();
     },

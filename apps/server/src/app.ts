@@ -46,6 +46,8 @@ export interface BuildAppDeps {
   database?: Database;
   /** Re-register scheduler cron after pay-schedule edits (wired in index.ts). */
   onScheduleChange?: () => Promise<void>;
+  /** Test override: a pino destination for the request log (default stdout). */
+  logStream?: { write(msg: string): void };
 }
 
 export async function buildApp(deps: BuildAppDeps = {}) {
@@ -56,7 +58,9 @@ export async function buildApp(deps: BuildAppDeps = {}) {
   const guards = createGuards({ auth, db });
 
   const app = Fastify({
-    logger: { level: config.logLevel },
+    logger: deps.logStream
+      ? { level: config.logLevel, stream: deps.logStream }
+      : { level: config.logLevel },
     trustProxy: true,
   });
 
