@@ -27,9 +27,10 @@ import BackButton from "../../components/BackButton.vue";
 import EmptyState from "../../components/EmptyState.vue";
 import StatusChip from "../../components/StatusChip.vue";
 import EmployeeResidenceCard from "../../components/EmployeeResidenceCard.vue";
-import SelectButton from "primevue/selectbutton";
 import Message from "primevue/message";
-import { localityName, WORK_LOCALITY_STATES, workLocalityOptions } from "@payroll/shared";
+import { localityName, WORK_LOCALITY_STATES } from "@payroll/shared";
+import WorkLocalityQuestion from "../../components/WorkLocalityQuestion.vue";
+import { localityFromAnswer } from "../../composables/useWorkLocality";
 import {
   adminEmployeesApi,
   adminPayrollApi,
@@ -180,19 +181,6 @@ const wlForm = ref({ stateCode: "", locality: "", effectiveOn: "" });
 const displayName = computed(
   () => employee.value?.preferredName ?? employee.value?.legalName ?? "this employee",
 );
-const YES_NO = [
-  { label: "Yes", value: "yes" },
-  { label: "No", value: "no" },
-];
-
-/** Work-locality answer → localityCode (undefined = not answered yet). */
-function localityFromAnswer(stateCode: string, answer: string): string | null | undefined {
-  if (stateCode === "NY")
-    return answer === "yes" ? "NY-YONKERS" : answer === "no" ? null : undefined;
-  if (stateCode === "MD") return answer ? answer : undefined;
-  return null;
-}
-
 // A new state means a new question: drop the previous answer.
 watch(
   () => wsForm.value.stateCode.trim().toUpperCase(),
@@ -200,10 +188,6 @@ watch(
     wsForm.value.locality = "";
   },
 );
-
-const COUNTY_OPTIONS = workLocalityOptions("MD")
-  .map((o) => ({ label: o.name, value: o.code as string }))
-  .sort((a, b) => (a.label < b.label ? -1 : 1));
 
 function stateLabel(stateCode: string): string {
   return stateCode === "MD" ? "Maryland" : "New York";
@@ -905,31 +889,13 @@ onMounted(load);
             <DatePicker id="wsFrom" v-model="wsForm.effectiveFrom" date-format="yy-mm-dd" required />
           </div>
         </div>
-        <div v-if="wsForm.stateCode.trim().toUpperCase() === 'NY'" class="field">
-          <label id="wsYonkersLabel">Does {{ displayName }} do any of their work in Yonkers?</label>
-          <SelectButton
-            v-model="wsForm.locality"
-            aria-labelledby="wsYonkersLabel"
-            :options="YES_NO"
-            option-label="label"
-            option-value="value"
-          />
-          <p class="muted small">Yonkers taxes people who work there, even if they live somewhere else.</p>
-          <p v-if="wsNeedsAnswer" class="muted small">Answer this to continue.</p>
-        </div>
-        <div v-if="wsForm.stateCode.trim().toUpperCase() === 'MD'" class="field">
-          <label for="wsCounty">Which Maryland county does {{ displayName }} work in?</label>
-          <Select
-            input-id="wsCounty"
-            v-model="wsForm.locality"
-            :options="COUNTY_OPTIONS"
-            option-label="label"
-            option-value="value"
-            filter
-            placeholder="Choose a county"
-          />
-          <p v-if="wsNeedsAnswer" class="muted small">Answer this to continue.</p>
-        </div>
+        <WorkLocalityQuestion
+          v-model="wsForm.locality"
+          :state-code="wsForm.stateCode.trim().toUpperCase()"
+          :employee-name="displayName"
+          id-prefix="ws"
+          show-required
+        />
         <div class="row" style="justify-content: flex-end">
           <Button label="Cancel" text severity="secondary" type="button" @click="wsDialog = false" />
           <Button
@@ -950,29 +916,12 @@ onMounted(load);
       :breakpoints="{ '575px': '95vw' }"
     >
       <form class="stack" @submit.prevent="saveWorkLocality">
-        <div v-if="wlForm.stateCode === 'NY'" class="field">
-          <label id="wlYonkersLabel">Does {{ displayName }} do any of their work in Yonkers?</label>
-          <SelectButton
-            v-model="wlForm.locality"
-            aria-labelledby="wlYonkersLabel"
-            :options="YES_NO"
-            option-label="label"
-            option-value="value"
-          />
-          <p class="muted small">Yonkers taxes people who work there, even if they live somewhere else.</p>
-        </div>
-        <div v-if="wlForm.stateCode === 'MD'" class="field">
-          <label for="wlCounty">Which Maryland county does {{ displayName }} work in?</label>
-          <Select
-            input-id="wlCounty"
-            v-model="wlForm.locality"
-            :options="COUNTY_OPTIONS"
-            option-label="label"
-            option-value="value"
-            filter
-            placeholder="Choose a county"
-          />
-        </div>
+        <WorkLocalityQuestion
+          v-model="wlForm.locality"
+          :state-code="wlForm.stateCode"
+          :employee-name="displayName"
+          id-prefix="wl"
+        />
         <Message v-if="wlError" severity="error" :closable="false" role="alert">{{ wlError }}</Message>
         <div class="row" style="justify-content: flex-end">
           <Button label="Cancel" text severity="secondary" type="button" @click="wlDialog = false" />
