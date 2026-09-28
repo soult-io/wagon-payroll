@@ -6,6 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  isoDate,
   LOCALITY_CODES,
   WORK_LOCALITY_CODES,
   localityName,
@@ -208,5 +209,26 @@ describe("workStateInput / workLocalityInput", () => {
     expect(workLocalityInput.safeParse({ localityCode: "NY-NYC" }).success).toBe(false);
     expect(workLocalityInput.safeParse({}).success).toBe(false);
     expect(workLocalityInput.safeParse({ localityCode: null, x: 1 }).success).toBe(false);
+  });
+});
+
+describe("isoDate (round-trip strict)", () => {
+  it("accepts real calendar dates, including 29 February in a leap year", () => {
+    for (const d of ["2026-01-01", "2026-12-31", "2024-02-29", "2000-02-29"]) {
+      expect(isoDate.safeParse(d).success, d).toBe(true);
+    }
+  });
+
+  it("rejects dates that do not exist", () => {
+    for (const d of [
+      "2026-02-30",
+      "2025-02-29",
+      "2026-04-31",
+      "2026-13-01",
+      "2026-00-10",
+      "1900-02-29",
+    ]) {
+      expect(isoDate.safeParse(d).success, d).toBe(false);
+    }
   });
 });
