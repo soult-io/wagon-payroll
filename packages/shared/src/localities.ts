@@ -203,6 +203,10 @@ export const workStateInput = z
   });
 export type WorkStateInput = z.infer<typeof workStateInput>;
 
-/** PUT /api/admin/employees/:employeeId/work-state/locality (backfill on the open row). */
-export const workLocalityInput = z.strictObject({ localityCode: workLocalityCode });
+/** PUT /api/admin/employees/:employeeId/work-state/locality (backfill on the row in force). */
+export const workLocalityInput = z.strictObject({
+  localityCode: workLocalityCode,
+  /** Answer for the work-state row in force on this day (default: today). */
+  effectiveOn: isoDate.optional(),
+});
 export type WorkLocalityInput = z.infer<typeof workLocalityInput>;

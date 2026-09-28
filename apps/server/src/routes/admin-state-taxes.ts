@@ -278,7 +278,7 @@ export function registerAdminStateTaxRoutes(app: FastifyInstance, deps: AdminSta
             .set({ effectiveTo: body.data.effectiveFrom })
             .where(eq(employeeWorkStates.id, previous.id));
         }
-        return tx
+        const rows = await tx
           .insert(employeeWorkStates)
           .values({
             employeeId,
@@ -293,16 +293,17 @@ export function registerAdminStateTaxRoutes(app: FastifyInstance, deps: AdminSta
               : {}),
           })
           .returning();
+        // PAY-163: the audit row commits (or rolls back) with the change.
+        await tx.insert(auditEvents).values({
+          actorId: req.authUser?.id ?? "unknown",
+          action: "employee_work_state.assign",
+          entity: "employee",
+          entityId: String(employeeId),
+          before: previous ?? null,
+          after: rows[0],
+        });
+        return rows;
       });
-
-      await audit(
-        req.authUser!.id,
-        "employee_work_state.assign",
-        "employee",
-        String(employeeId),
-        previous ?? null,
-        inserted[0],
-      );
       return reply.code(201).send({ workState: inserted[0] });
     },
   );

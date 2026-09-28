@@ -7,11 +7,15 @@
  *   residence (country, state, NYC / Yonkers / Maryland county). The GET's
  *   address hint decrypts the home address server-side and returns only its
  *   2-letter US state (or null); street, city and ZIP never leave.
+ * - PUT /api/admin/employees/:employeeId/residence with the open row's start
+ *   date corrects that row (audit employee_residence.correct);
+ *   `sameAsBefore` re-confirms it from today (audit employee_residence.confirm).
  * - PUT /api/admin/employees/:employeeId/work-state/locality — answer the
- *   work-locality question on the open work-state row (rows written before
- *   PAY-163 are unconfirmed).
+ *   work-locality question on the work-state row in force on `effectiveOn`
+ *   (default today). Rows written before PAY-163 are unconfirmed.
  * - GET /api/admin/local-tax/check?payDate= — per active W-2 employee: ok or
- *   the reason codes a pay run would be held for. `enforced` is false in G1.
+ *   the reason codes a pay run would be held for, the place code behind a
+ *   hold and the work state code. `enforced` is false in G1.
  *
  * Audit events carry codes and dates only. Error bodies carry codes only.
  */
@@ -33,13 +37,13 @@ import type { AppConfig } from "../config.js";
 import { decryptAddress } from "../crypto/address-encryption.js";
 import type { Db } from "../db.js";
 import { todayIso } from "../filings/shared.js";
-import { checkLocalTaxSupport } from "../payroll/local-guard.js";
+import { checkLocalTaxSupport, holdPlace } from "../payroll/local-guard.js";
 import {
   loadLocalConfigYears,
   loadLocalCoverage,
   localGuardInputFor,
 } from "../payroll/local-guard-inputs.js";
-import type { ResidenceRow } from "../payroll/resolve.js";
+import { type ResidenceRow, resolveWorkState } from "../payroll/resolve.js";
 import type { Guards } from "../plugins/guards.js";
 import { NOT_FOUND, parseEmployeeId, safeIssues } from "./params.js";
 
@@ -106,8 +110,9 @@ function effectiveOn(row: ResidenceRow, day: string): boolean {
 }
 
 /**
- * Why a new residence cannot follow the open row, or null. "Still the same"
- * must repeat the open row's place; any new row must start after it.
+ * Why a residence cannot be written against the open row, or null. "Still
+ * the same" must repeat the open row's place; a new row must not start before
+ * the open row (the same start date corrects the open row instead).
  */
 function residenceConflict(
   previous: ResidenceRow | undefined,
@@ -121,7 +126,12 @@ function residenceConflict(
       previous.localityCode === input.localityCode;
     if (!same) return "not_same_as_before";
   }
-  if (previous && input.effectiveFrom <= previous.effectiveFrom) return "invalid_effective_from";
+  if (!previous) return null;
+  if (input.effectiveFrom < previous.effectiveFrom) return "invalid_effective_from";
+  // Confirming "still the same" on the day the open row starts has nothing to confirm.
+  if (input.sameAsBefore && input.effectiveFrom === previous.effectiveFrom) {
+    return "invalid_effective_from";
+  }
   return null;
 }
 
@@ -235,41 +245,18 @@ export function registerAdminLocalTaxRoutes(app: FastifyInstance, deps: AdminLoc
         .orderBy(desc(employeeResidences.effectiveFrom))
         .limit(1);
       const previous = open[0];
-      const conflict = residenceConflict(previous, input);
+      // "Still the same" is always a confirmation from today (server clock).
+      const request = input.sameAsBefore ? { ...input, effectiveFrom: todayIso() } : input;
+      const conflict = residenceConflict(previous, request);
       if (conflict) return reply.code(409).send({ error: conflict });
 
       const actorId = actorOf(req);
       try {
-        const inserted = await db.transaction(async (tx) => {
-          if (previous) {
-            await tx
-              .update(employeeResidences)
-              .set({ effectiveTo: input.effectiveFrom })
-              .where(eq(employeeResidences.id, previous.id));
-          }
-          const rows = await tx
-            .insert(employeeResidences)
-            .values({
-              employeeId,
-              country: input.country,
-              stateCode: input.stateCode,
-              localityCode: input.localityCode,
-              effectiveFrom: input.effectiveFrom,
-              source: "admin",
-              createdBy: actorId,
-            })
-            .returning();
-          const row = one(rows);
-          await audit(
-            tx,
-            actorId,
-            input.sameAsBefore ? "employee_residence.confirm" : "employee_residence.assign",
-            employeeId,
-            previous ? residenceAudit(previous) : null,
-            residenceAudit(row),
-          );
-          return row;
-        });
+        if (previous && previous.effectiveFrom === request.effectiveFrom) {
+          const corrected = await correctResidence(previous, request, actorId);
+          return reply.code(200).send({ residence: residenceView(corrected) });
+        }
+        const inserted = await addResidence(employeeId, previous, request, actorId);
         return reply.code(201).send({ residence: residenceView(inserted) });
       } catch (err) {
         if (isWindowConflict(err)) return reply.code(409).send({ error: "invalid_effective_from" });
@@ -277,6 +264,75 @@ export function registerAdminLocalTaxRoutes(app: FastifyInstance, deps: AdminLoc
       }
     },
   );
+
+  /** New residence from `request.effectiveFrom`; closes the open row there. */
+  async function addResidence(
+    employeeId: number,
+    previous: ResidenceRow | undefined,
+    request: ResidenceInput,
+    actorId: string,
+  ): Promise<ResidenceRow> {
+    return db.transaction(async (tx) => {
+      if (previous) {
+        await tx
+          .update(employeeResidences)
+          .set({ effectiveTo: request.effectiveFrom })
+          .where(eq(employeeResidences.id, previous.id));
+      }
+      const rows = await tx
+        .insert(employeeResidences)
+        .values({
+          employeeId,
+          country: request.country,
+          stateCode: request.stateCode,
+          localityCode: request.localityCode,
+          effectiveFrom: request.effectiveFrom,
+          source: "admin",
+          createdBy: actorId,
+        })
+        .returning();
+      const row = one(rows);
+      await audit(
+        tx,
+        actorId,
+        request.sameAsBefore ? "employee_residence.confirm" : "employee_residence.assign",
+        employeeId,
+        previous ? residenceAudit(previous) : null,
+        residenceAudit(row),
+      );
+      return row;
+    });
+  }
+
+  /** Same start date as the open row: fix that row's place in place (a data-entry correction). */
+  async function correctResidence(
+    previous: ResidenceRow,
+    request: ResidenceInput,
+    actorId: string,
+  ): Promise<ResidenceRow> {
+    return db.transaction(async (tx) => {
+      const rows = await tx
+        .update(employeeResidences)
+        .set({
+          country: request.country,
+          stateCode: request.stateCode,
+          localityCode: request.localityCode,
+          source: "admin",
+        })
+        .where(eq(employeeResidences.id, previous.id))
+        .returning();
+      const row = one(rows);
+      await audit(
+        tx,
+        actorId,
+        "employee_residence.correct",
+        previous.employeeId,
+        residenceAudit(previous),
+        residenceAudit(row),
+      );
+      return row;
+    });
+  }
 
   // --------------------------------------------------- work-state locality
 
@@ -292,18 +348,9 @@ export function registerAdminLocalTaxRoutes(app: FastifyInstance, deps: AdminLoc
       }
       if (!(await findEmployee(employeeId))) return reply.code(404).send(NOT_FOUND);
 
-      const open = await db
-        .select()
-        .from(employeeWorkStates)
-        .where(
-          and(
-            eq(employeeWorkStates.employeeId, employeeId),
-            isNull(employeeWorkStates.effectiveTo),
-          ),
-        )
-        .orderBy(desc(employeeWorkStates.effectiveFrom))
-        .limit(1);
-      const row = open[0];
+      // The row in force on the given day (default today) — not only the open
+      // row: a future-dated row can close the row that applies today.
+      const row = await resolveWorkState(db, employeeId, body.data.effectiveOn ?? todayIso());
       if (!row) return reply.code(409).send({ error: "no_open_work_state" });
       const problem = workLocalityProblem(row.stateCode, body.data.localityCode);
       if (problem) {
@@ -376,6 +423,11 @@ export function registerAdminLocalTaxRoutes(app: FastifyInstance, deps: AdminLoc
         name: person.legalName,
         status: result.ok ? ("ok" as const) : ("blocked" as const),
         reasons: result.ok ? [] : result.reasons,
+        // State or locality code behind a hold about a place (for the message).
+        place: holdPlace(input),
+        // Work state in force (code only): lets the admin tell "add a work
+        // state" apart from "works in another state".
+        workState: input.workState?.stateCode ?? null,
       });
     }
     return { enforced: false, payDate, employees: results };

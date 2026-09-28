@@ -228,19 +228,29 @@ describe("local tax coverage seed", () => {
         .filter((r) => r.code === code)
         .map((r) => r.basis)
         .sort();
-    for (const s of ["DE", "IN", "MI", "MO", "OH", "OR"]) {
+    for (const s of ["DE", "IN", "MI", "MO", "OH", "OR", "PA"]) {
       expect(byState(s), s).toEqual(["residence", "work"]);
     }
-    for (const s of ["AL", "CO", "KY", "PA", "WV"]) expect(byState(s), s).toEqual(["work"]);
+    for (const s of ["AL", "CO", "KY", "WV"]) expect(byState(s), s).toEqual(["work"]);
+    // Aurora repealed its occupational privilege tax from 2025-01-01.
+    const co = must(
+      unsupported.find((r) => r.code === "CO"),
+      "CO row",
+    );
+    expect(co.note).not.toContain("Aurora");
+    for (const city of ["Denver", "Glendale", "Greenwood Village", "Sheridan"]) {
+      expect(co.note).toContain(city);
+    }
     expect(byState("IA")).toEqual([]);
   });
 
-  it("marks every row whose source was not fetched live as sourceVerified: false", () => {
+  it("every row cites a URL; sourceVerified is true only where the source page was read", () => {
+    const verified = new Set(["NY-NYC", "NY-YONKERS", "MD", "CO", "IN", "OR", "PA"]);
     for (const row of LOCAL_TAX_COVERAGE_FILE.rows) {
-      expect(typeof row.sourceVerified).toBe("boolean");
-      expect(row.source.length).toBeGreaterThan(0);
+      expect(row.source, row.code).toMatch(/https?:\/\//);
+      expect(row.sourceVerified, `${row.code}:${row.basis}`).toBe(verified.has(row.code));
     }
-    expect(LOCAL_TAX_COVERAGE_FILE.rows.some((r) => r.sourceVerified === false)).toBe(true);
+    expect(LOCAL_TAX_COVERAGE_FILE.rows.some((r) => r.code === "IA")).toBe(false);
   });
 
   it("LT42: running the seeder twice leaves no duplicate rows", async () => {
@@ -480,7 +490,7 @@ describe("PUT /api/admin/employees/:employeeId/residence", () => {
     ]);
   });
 
-  it("409 invalid_effective_from when the start is not after the open row's start", async () => {
+  it("409 invalid_effective_from when the start is before the open row's start", async () => {
     const id = await createEmployee();
     const body = {
       country: "US",
@@ -489,11 +499,67 @@ describe("PUT /api/admin/employees/:employeeId/residence", () => {
       effectiveFrom: "2026-03-01",
     };
     expect((await api("PUT", residenceUrl(id), body)).statusCode).toBe(201);
-    for (const effectiveFrom of ["2026-03-01", "2026-02-01"]) {
-      const res = await api("PUT", residenceUrl(id), { ...body, stateCode: "NJ", effectiveFrom });
-      expect(res.statusCode).toBe(409);
-      expect(res.json().error).toBe("invalid_effective_from");
-    }
+    const res = await api("PUT", residenceUrl(id), {
+      ...body,
+      stateCode: "NJ",
+      effectiveFrom: "2026-02-01",
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toBe("invalid_effective_from");
+  });
+
+  it("the same start date as the open row corrects that row (200) and audits employee_residence.correct", async () => {
+    const id = await createEmployee();
+    const body = {
+      country: "US",
+      stateCode: "MD",
+      localityCode: "MD-005",
+      effectiveFrom: "2026-03-01",
+    };
+    const first = await api("PUT", residenceUrl(id), body);
+    expect(first.statusCode).toBe(201);
+    const fixed = await api("PUT", residenceUrl(id), { ...body, localityCode: "MD-510" });
+    expect(fixed.statusCode).toBe(200);
+    expect(fixed.json().residence).toMatchObject({
+      id: first.json().residence.id,
+      localityCode: "MD-510",
+      effectiveFrom: "2026-03-01",
+      effectiveTo: null,
+    });
+    const rows = await t.db
+      .select()
+      .from(employeeResidences)
+      .where(eq(employeeResidences.employeeId, id));
+    expect(rows.map((r) => r.localityCode)).toEqual(["MD-510"]);
+    const corrections = await auditRows(id, "employee_residence.correct");
+    expect(corrections).toHaveLength(1);
+    const audit = must(corrections[0], "audit row");
+    expect(audit.before).toEqual({
+      country: "US",
+      stateCode: "MD",
+      localityCode: "MD-005",
+      effectiveFrom: "2026-03-01",
+      effectiveTo: null,
+      source: "admin",
+    });
+    expect(audit.after).toMatchObject({ localityCode: "MD-510", effectiveFrom: "2026-03-01" });
+    expect(await auditRows(id, "employee_residence.assign")).toHaveLength(1);
+  });
+
+  it("S1: an impossible date is a 400 that does not echo it (residence and work-state PUT)", async () => {
+    const id = await createEmployee();
+    const res = await api("PUT", residenceUrl(id), {
+      country: "US",
+      stateCode: "TX",
+      localityCode: null,
+      effectiveFrom: "2026-02-30",
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("invalid_body");
+    expect(res.body).not.toContain("02-30");
+    const ws = await api("PUT", workStateUrl(id), { stateCode: "IL", effectiveFrom: "2026-02-30" });
+    expect(ws.statusCode).toBe(400);
+    expect(ws.body).not.toContain("02-30");
   });
 
   it("400 invalid_body for bad input — the body never echoes what was sent", async () => {
@@ -550,7 +616,7 @@ describe("PUT /api/admin/employees/:employeeId/residence", () => {
     });
   });
 
-  it("sameAsBefore: inserts a same-values row and audits employee_residence.confirm", async () => {
+  it("sameAsBefore: inserts a same-values row dated today (server clock) and audits employee_residence.confirm", async () => {
     const id = await createEmployee();
     const body = {
       country: "US",
@@ -559,17 +625,19 @@ describe("PUT /api/admin/employees/:employeeId/residence", () => {
       effectiveFrom: "2026-01-01",
     };
     expect((await api("PUT", residenceUrl(id), body)).statusCode).toBe(201);
+    const today = new Date().toISOString().slice(0, 10);
     const res = await api("PUT", residenceUrl(id), {
       ...body,
-      effectiveFrom: "2026-09-01",
+      effectiveFrom: "2026-02-01", // ignored: "still the same" is always from today
       sameAsBefore: true,
     });
     expect(res.statusCode).toBe(201);
+    expect(res.json().residence.effectiveFrom).toBe(today);
     const confirms = await auditRows(id, "employee_residence.confirm");
     expect(confirms).toHaveLength(1);
     expect(must(confirms[0], "audit row").after).toMatchObject({
       localityCode: "NY-YONKERS",
-      effectiveFrom: "2026-09-01",
+      effectiveFrom: today,
     });
     expect(await auditRows(id, "employee_residence.assign")).toHaveLength(1);
     const rows = await t.db
@@ -726,6 +794,39 @@ describe("PUT /api/admin/employees/:employeeId/work-state/locality (backfill)", 
     );
   });
 
+  it("R3: targets the row in force on effectiveOn (default today), even when a future row is open", async () => {
+    const id = await createEmployee();
+    await t.db.insert(employeeWorkStates).values([
+      { employeeId: id, stateCode: "NY", effectiveFrom: "2025-01-01", effectiveTo: "2099-01-01" },
+      { employeeId: id, stateCode: "MD", effectiveFrom: "2099-01-01" },
+    ]);
+    const today = await api("PUT", workLocalityUrl(id), { localityCode: "NY-YONKERS" });
+    expect(today.statusCode).toBe(200);
+    expect(today.json().workState).toMatchObject({
+      stateCode: "NY",
+      effectiveFrom: "2025-01-01",
+      localityCode: "NY-YONKERS",
+    });
+    const future = await api("PUT", workLocalityUrl(id), {
+      localityCode: "MD-021",
+      effectiveOn: "2099-02-01",
+    });
+    expect(future.statusCode).toBe(200);
+    expect(future.json().workState).toMatchObject({ stateCode: "MD", localityCode: "MD-021" });
+    const before = await api("PUT", workLocalityUrl(id), {
+      localityCode: null,
+      effectiveOn: "2024-06-01",
+    });
+    expect(before.statusCode).toBe(409);
+    expect(before.json().error).toBe("no_open_work_state");
+    const bad = await api("PUT", workLocalityUrl(id), {
+      localityCode: null,
+      effectiveOn: "2026-02-30",
+    });
+    expect(bad.statusCode).toBe(400);
+    expect(bad.body).not.toContain("02-30");
+  });
+
   it("409 when there is no open work-state row", async () => {
     const id = await createEmployee();
     const res = await api("PUT", workLocalityUrl(id), { localityCode: null });
@@ -780,10 +881,11 @@ describe("GET /api/admin/local-tax/check", () => {
   });
 
   it("400 for a bad payDate, without echoing it", async () => {
-    for (const bad of ["2026-13-01", "Zq9", "2026-1-1"]) {
+    for (const bad of ["2026-13-01", "Zq9", "2026-1-1", "2026-02-30"]) {
       const res = await check(bad);
       expect(res.statusCode, bad).toBe(400);
       expect(res.body).not.toContain("Zq9");
+      expect(res.body).not.toContain("02-30");
     }
   });
 
@@ -832,7 +934,10 @@ describe("GET /api/admin/local-tax/check", () => {
     expect(entryFor(body, nyc)).toMatchObject({
       status: "blocked",
       reasons: ["local_not_yet_supported"],
+      place: "NY-NYC",
+      workState: "NY",
     });
+    expect(entryFor(body, noResidence)).toMatchObject({ place: null, workState: null });
     expect(entryFor(body, contractor)).toBeUndefined();
     expect(entryFor(body, gone)).toBeUndefined();
     for (const secret of ["3 Sham Ln", "Mocksville", "73999"])

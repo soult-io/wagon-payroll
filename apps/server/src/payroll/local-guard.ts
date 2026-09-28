@@ -100,22 +100,31 @@ function workLocalityUnconfirmed(workState: NonNullable<LocalGuardInput["workSta
   return WORK_LOCALITY_REQUIRED.has(workState.stateCode) && workState.localityCode === null;
 }
 
+interface LocalOwed {
+  /** Tax table key ('NY-NYC', 'NY-YONKERS-NR', 'MD-510', 'MD-NONRES'). */
+  jurisdiction: string;
+  /** The place, for messages: the residence locality, or the work locality/state. */
+  place: string;
+}
+
 /**
- * The local jurisdictions this employee's run would carry, or the
- * outside-work-state finding. Residence and work state are both known here.
+ * The locals this employee's run would carry, and the place of a resident
+ * local that cannot be computed because the work state differs (or is
+ * missing). Residence is known here.
  */
 function applicableLocals(
   input: LocalGuardInput,
   residenceCodes: (string | null)[],
   workCodes: (string | null)[],
   workConfirmed: boolean,
-): { jurisdictions: string[]; outsideWorkState: boolean } {
+): { locals: LocalOwed[]; outsidePlace: string | null } {
   const { residence, workState, coverage } = input;
-  const jurisdictions: string[] = [];
-  let outsideWorkState = false;
+  const locals: LocalOwed[] = [];
+  let outsidePlace: string | null = null;
 
   const residentRow = findRow(coverage, "residence", "engine", residenceCodes);
   const residenceState = residence?.country === "US" ? residence.stateCode : null;
+  const residencePlace = residence?.localityCode ?? residenceState;
   // Any engine residence row in the residence state (NY without NYC/Yonkers too).
   const residenceStateHasLocals =
     residenceState !== null &&
@@ -124,27 +133,36 @@ function applicableLocals(
         r.basis === "residence" && r.handling === "engine" && stateOf(r.code) === residenceState,
     );
 
-  if (residenceStateHasLocals && workState === null) outsideWorkState = true;
-  if (residentRow && residenceState !== null) {
+  if (residenceStateHasLocals && workState === null) outsidePlace = residencePlace;
+  if (residentRow && residencePlace !== null) {
     if (workState === null || workState.stateCode !== residenceState) {
-      outsideWorkState = true;
+      outsidePlace = residencePlace;
     } else {
-      jurisdictions.push(residence?.localityCode ?? residenceState);
+      locals.push({ jurisdiction: residencePlace, place: residencePlace });
     }
   }
 
   const workRow = workConfirmed ? findRow(coverage, "work", "engine", workCodes) : undefined;
   // A resident of the same local owes the resident tax only (no nonresident tax).
-  if (workRow && workRow.code !== residentRow?.code) {
-    jurisdictions.push(NONRESIDENT_JURISDICTION[workRow.code] ?? workRow.code);
+  if (workState && workRow && workRow.code !== residentRow?.code) {
+    locals.push({
+      jurisdiction: NONRESIDENT_JURISDICTION[workRow.code] ?? workRow.code,
+      place: workState.localityCode ?? workState.stateCode,
+    });
   }
-  return { jurisdictions, outsideWorkState };
+  return { locals, outsidePlace };
 }
 
-export function checkLocalTaxSupport(input: LocalGuardInput): LocalGuardResult {
-  if (input.employmentType !== "w2") return { ok: true };
+interface Analysis {
+  reasons: Set<LocalGuardReason>;
+  /** The place behind the first hold that is about a place, or null. */
+  place: string | null;
+}
+
+function analyze(input: LocalGuardInput): Analysis {
   const { residence, workState, coverage } = input;
   const reasons = new Set<LocalGuardReason>();
+  const places: (string | null)[] = [];
 
   if (coverage.length === 0) reasons.add("local_coverage_missing");
   if (residence === null) reasons.add("residence_missing");
@@ -154,28 +172,51 @@ export function checkLocalTaxSupport(input: LocalGuardInput): LocalGuardResult {
   const residenceCodes =
     residence?.country === "US" ? [residence.stateCode, residence.localityCode] : [];
   const workCodes = workState ? [workState.stateCode, workState.localityCode] : [];
-  if (
-    findRow(coverage, "residence", "unsupported", residenceCodes) ||
-    findRow(coverage, "work", "unsupported", workCodes)
-  ) {
+  const unsupported =
+    findRow(coverage, "residence", "unsupported", residenceCodes) ??
+    findRow(coverage, "work", "unsupported", workCodes);
+  if (unsupported) {
     reasons.add("local_unsupported_state");
+    places.push(unsupported.code);
   }
 
   // Which locals apply is unknowable without a residence; residence_missing holds the run.
   if (residence !== null) {
-    const { jurisdictions, outsideWorkState } = applicableLocals(
+    const { locals, outsidePlace } = applicableLocals(
       input,
       residenceCodes,
       workCodes,
       !unconfirmed,
     );
-    if (outsideWorkState) reasons.add("local_outside_work_state");
-    const missingTable = jurisdictions.some(
-      (j) => !(input.localConfigYears[j] ?? []).includes(input.taxYear),
+    const missing = locals.find(
+      (l) => !(input.localConfigYears[l.jurisdiction] ?? []).includes(input.taxYear),
     );
-    if (missingTable) reasons.add("local_not_yet_supported");
+    if (missing) {
+      reasons.add("local_not_yet_supported");
+      places.push(missing.place);
+    }
+    if (outsidePlace !== null) {
+      reasons.add("local_outside_work_state");
+      places.push(outsidePlace);
+    }
   }
+  return { reasons, place: places[0] ?? null };
+}
 
+export function checkLocalTaxSupport(input: LocalGuardInput): LocalGuardResult {
+  if (input.employmentType !== "w2") return { ok: true };
+  const { reasons } = analyze(input);
   if (reasons.size === 0) return { ok: true };
   return { ok: false, reasons: REASON_ORDER.filter((r) => reasons.has(r)) };
+}
+
+/**
+ * The state or locality code behind a hold about a place
+ * (local_unsupported_state, local_not_yet_supported, local_outside_work_state),
+ * for the admin message ("… lives or works in {place} …"); null when nothing
+ * is held for a place. Same inputs and rules as checkLocalTaxSupport.
+ */
+export function holdPlace(input: LocalGuardInput): string | null {
+  if (input.employmentType !== "w2") return null;
+  return analyze(input).place;
 }

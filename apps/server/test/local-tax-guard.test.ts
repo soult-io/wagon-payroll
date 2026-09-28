@@ -15,6 +15,7 @@
 import { describe, expect, it } from "vitest";
 import {
   checkLocalTaxSupport,
+  holdPlace,
   type LocalGuardInput,
   type LocalGuardCoverageRow,
 } from "../src/payroll/local-guard.js";
@@ -27,6 +28,7 @@ const COVERAGE: LocalGuardCoverageRow[] = [
   { code: "MD", basis: "work", handling: "engine" },
   { code: "OH", basis: "residence", handling: "unsupported" },
   { code: "OH", basis: "work", handling: "unsupported" },
+  { code: "PA", basis: "residence", handling: "unsupported" },
   { code: "PA", basis: "work", handling: "unsupported" },
 ];
 
@@ -99,8 +101,13 @@ describe("checkLocalTaxSupport — employees with no local tax", () => {
     ).toEqual({ ok: true });
   });
 
-  it("PA resident working in TX is ok — PA is on the list for work only", () => {
-    expect(checkLocalTaxSupport(input({ residence: us("PA") }))).toEqual({ ok: true });
+  it("a state with work-basis rows only does not hold its residents (synthetic coverage)", () => {
+    const workOnly: LocalGuardCoverageRow[] = [
+      { code: "KY", basis: "work", handling: "unsupported" },
+    ];
+    expect(checkLocalTaxSupport(input({ residence: us("KY"), coverage: workOnly }))).toEqual({
+      ok: true,
+    });
   });
 
   it("New York resident outside NYC and Yonkers, working in NY (no Yonkers work), is ok", () => {
@@ -170,6 +177,10 @@ describe("work_locality_unconfirmed", () => {
 describe("local_unsupported_state", () => {
   it("residence in a state listed for residence (OH) blocks", () => {
     expect(reasonsOf(input({ residence: us("OH") }))).toEqual(["local_unsupported_state"]);
+  });
+
+  it("LT53: TX worker living in PA blocks (PA is listed for residence and work)", () => {
+    expect(reasonsOf(input({ residence: us("PA") }))).toEqual(["local_unsupported_state"]);
   });
 
   it("work in a state listed for work (PA) blocks", () => {
@@ -357,5 +368,43 @@ describe("reason ordering and purity", () => {
     const copy = structuredClone(i);
     checkLocalTaxSupport(i);
     expect(i).toEqual(copy);
+  });
+});
+
+describe("holdPlace — the place behind a hold, for the admin message", () => {
+  it("unsupported residence state, then unsupported work state", () => {
+    expect(holdPlace(input({ residence: us("OH") }))).toBe("OH");
+    expect(holdPlace(input({ residence: us("NJ"), workState: work("PA", null) }))).toBe("PA");
+    expect(holdPlace(input({ residence: us("OH"), workState: work("PA", null) }))).toBe("OH");
+  });
+
+  it("the resident local that has no table or is outside the work state", () => {
+    const nyc = { residence: us("NY", "NY-NYC"), workState: work("NY", null) };
+    expect(holdPlace(input({ ...nyc, localConfigYears: {} }))).toBe("NY-NYC");
+    expect(holdPlace(input({ residence: us("NY", "NY-NYC"), workState: work("NJ", null) }))).toBe(
+      "NY-NYC",
+    );
+    expect(holdPlace(input({ residence: us("MD", "MD-003"), workState: null }))).toBe("MD-003");
+  });
+
+  it("the work locality for a nonresident local with no table", () => {
+    expect(
+      holdPlace(
+        input({ residence: us("DE"), workState: work("MD", "MD-510"), localConfigYears: {} }),
+      ),
+    ).toBe("MD-510");
+    expect(
+      holdPlace(
+        input({ residence: us("NJ"), workState: work("NY", "NY-YONKERS"), localConfigYears: {} }),
+      ),
+    ).toBe("NY-YONKERS");
+  });
+
+  it("null when nothing is held for a place (ok, or only missing data)", () => {
+    expect(holdPlace(input())).toBeNull();
+    expect(holdPlace(input({ residence: null }))).toBeNull();
+    expect(
+      holdPlace(input({ residence: us("NJ"), workState: work("NY", null, false) })),
+    ).toBeNull();
   });
 });
