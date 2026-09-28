@@ -23,7 +23,7 @@
  * Audit events carry codes and dates only. Error bodies carry codes only.
  */
 
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance } from "fastify";
 import { and, asc, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { employeeResidences, employees } from "@payroll/db";
@@ -47,7 +47,7 @@ import {
 import { answerWorkLocality, writeResidence } from "../payroll/local-tax-writes.js";
 import type { ResidenceRow } from "../payroll/resolve.js";
 import type { Guards } from "../plugins/guards.js";
-import { NOT_FOUND, parseEmployeeId, safeIssues } from "./params.js";
+import { actorOf, NOT_FOUND, parseEmployeeId, safeIssues } from "./params.js";
 
 interface AdminLocalTaxDeps {
   db: Db;
@@ -84,13 +84,6 @@ function addressHint(
 
 function effectiveOn(row: ResidenceRow, day: string): boolean {
   return row.effectiveFrom <= day && (row.effectiveTo === null || row.effectiveTo > day);
-}
-
-/** The admin behind a request (requireRole guarantees a session). */
-function actorOf(req: FastifyRequest): string {
-  const user = req.authUser;
-  if (!user) throw new Error("admin route reached without a session");
-  return user.id;
 }
 
 export function registerAdminLocalTaxRoutes(app: FastifyInstance, deps: AdminLocalTaxDeps): void {

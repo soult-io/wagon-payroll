@@ -24,7 +24,7 @@ import {
 import { WORK_LOCALITY_STATES, workStateInput } from "@payroll/shared";
 import type { Db } from "../db.js";
 import type { Guards } from "../plugins/guards.js";
-import { NOT_FOUND, parseEmployeeId, safeIssues } from "./params.js";
+import { actorOf, NOT_FOUND, parseEmployeeId, safeIssues } from "./params.js";
 
 interface AdminStateTaxDeps {
   db: Db;
@@ -251,6 +251,7 @@ export function registerAdminStateTaxRoutes(app: FastifyInstance, deps: AdminSta
         return reply.code(400).send({ error: "invalid_body", details: safeIssues(body.error) });
       if (!(await employeeExists(employeeId))) return reply.code(404).send(NOT_FOUND);
       const answersLocality = WORK_LOCALITY_STATES.includes(body.data.stateCode);
+      const actorId = actorOf(req);
 
       const open = await db
         .select()
@@ -288,14 +289,14 @@ export function registerAdminStateTaxRoutes(app: FastifyInstance, deps: AdminSta
               ? {
                   localityCode: body.data.localityCode ?? null,
                   localityConfirmedAt: new Date(),
-                  localityConfirmedBy: req.authUser?.id ?? null,
+                  localityConfirmedBy: actorId,
                 }
               : {}),
           })
           .returning();
         // PAY-163: the audit row commits (or rolls back) with the change.
         await tx.insert(auditEvents).values({
-          actorId: req.authUser?.id ?? "unknown",
+          actorId,
           action: "employee_work_state.assign",
           entity: "employee",
           entityId: String(employeeId),

@@ -10,6 +10,7 @@
  *   `custom` checks, which is fixed text.
  */
 
+import type { FastifyRequest } from "fastify";
 import { z } from "zod";
 
 const employeeIdParam = z.object({
@@ -37,3 +38,14 @@ export function safeIssues(error: z.ZodError): SafeIssue[] {
 }
 
 export const NOT_FOUND = { error: "not_found" } as const;
+
+/**
+ * The admin behind a request. Routes behind requireRole always have a
+ * session; a missing one is a server bug and throws — never a fake actor
+ * in an audit row.
+ */
+export function actorOf(req: FastifyRequest): string {
+  const user = req.authUser;
+  if (!user) throw new Error("admin route reached without a session");
+  return user.id;
+}
