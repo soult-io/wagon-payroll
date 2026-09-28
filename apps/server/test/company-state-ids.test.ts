@@ -13,7 +13,7 @@
  * All identifiers are synthetic.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { and, desc, eq, sql } from "drizzle-orm";
 import {
   auditEvents,
@@ -133,6 +133,14 @@ async function setFiling(year: number, status: "not_started" | "ready" | "filed"
 async function clearFilings() {
   await t.pglite.exec("DELETE FROM tax_filings WHERE form_type = 'w2_w3'");
 }
+
+// Every test starts from the same state, whatever order the tests run in:
+// no state IDs, no w2_w3 filings, the synthetic EIN on the company.
+beforeEach(async () => {
+  await clearStateIds();
+  await clearFilings();
+  await t.db.update(company).set({ ein: encryptField(EIN, t.config.encryptionKey) });
+});
 
 // ---------------------------------------------------------------------------
 // W26 — format checks per state (S24-D2)
