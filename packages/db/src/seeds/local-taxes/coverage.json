@@ -1,0 +1,182 @@
+{
+  "description": "Local income-tax coverage for the pay-run guard (Spec 25 (PAY-120)). 'engine' = the app computes it; 'unsupported' = pay runs are held for employees living (basis residence) or working (basis work) there. A state with no row has no local income tax the employer withholds. Employer-paid-only taxes are not listed. Maintained by the state/local payroll SME; sourceVerified=false means the source has not been fetched live yet and must be before enforcement.",
+  "reviewed": "2026-09-28",
+  "rows": [
+    {
+      "code": "NY-NYC",
+      "basis": "residence",
+      "handling": "engine",
+      "note": "New York City resident income tax (residents only; never a work locality).",
+      "source": "NYS-50-T-NYC (1/26), New York City withholding tax tables and methods — https://www.tax.ny.gov/pdf/publications/withholding/nys50_t_nyc.pdf",
+      "sourceVerified": true
+    },
+    {
+      "code": "NY-YONKERS",
+      "basis": "residence",
+      "handling": "engine",
+      "note": "Yonkers resident income tax surcharge.",
+      "source": "NYS-50-T-Y (1/26), Yonkers withholding tax tables and methods — https://www.tax.ny.gov/pdf/publications/withholding/nys50_t_y.pdf",
+      "sourceVerified": true
+    },
+    {
+      "code": "NY-YONKERS",
+      "basis": "work",
+      "handling": "engine",
+      "note": "Yonkers nonresident earnings tax.",
+      "source": "NYS-50-T-Y (1/26), Yonkers withholding tax tables and methods — https://www.tax.ny.gov/pdf/publications/withholding/nys50_t_y.pdf",
+      "sourceVerified": true
+    },
+    {
+      "code": "MD",
+      "basis": "residence",
+      "handling": "engine",
+      "note": "Maryland county and Baltimore City income tax (county of residence).",
+      "source": "Maryland Employer Withholding Guide (Jan 2026) — https://www.marylandcomptroller.gov/content/dam/mdcomp/tax/instructions/withholding/2026/withholding-guide.pdf",
+      "sourceVerified": true
+    },
+    {
+      "code": "MD",
+      "basis": "work",
+      "handling": "engine",
+      "note": "Maryland special nonresident rate for nonresidents working in Maryland.",
+      "source": "Maryland Employer Withholding Guide (Jan 2026) — https://www.marylandcomptroller.gov/content/dam/mdcomp/tax/instructions/withholding/2026/withholding-guide.pdf",
+      "sourceVerified": true
+    },
+    {
+      "code": "AL",
+      "basis": "work",
+      "handling": "unsupported",
+      "note": "City occupational taxes.",
+      "source": "Alabama Department of Revenue — local occupational license taxes (source to be fetched live before enforcement)",
+      "sourceVerified": false
+    },
+    {
+      "code": "CO",
+      "basis": "work",
+      "handling": "unsupported",
+      "note": "Occupational privilege tax (Denver, Aurora, Glendale, Greenwood Village, Sheridan).",
+      "source": "Colorado city occupational privilege taxes (Denver, Aurora, Glendale, Greenwood Village, Sheridan) (source to be fetched live before enforcement)",
+      "sourceVerified": false
+    },
+    {
+      "code": "DE",
+      "basis": "residence",
+      "handling": "unsupported",
+      "note": "Wilmington city wage tax.",
+      "source": "City of Wilmington, Delaware — earned income (wage) tax (source to be fetched live before enforcement)",
+      "sourceVerified": false
+    },
+    {
+      "code": "DE",
+      "basis": "work",
+      "handling": "unsupported",
+      "note": "Wilmington city wage tax.",
+      "source": "City of Wilmington, Delaware — earned income (wage) tax (source to be fetched live before enforcement)",
+      "sourceVerified": false
+    },
+    {
+      "code": "IN",
+      "basis": "residence",
+      "handling": "unsupported",
+      "note": "County income tax.",
+      "source": "Indiana Department of Revenue — county income tax withholding (source to be fetched live before enforcement)",
+      "sourceVerified": false
+    },
+    {
+      "code": "IN",
+      "basis": "work",
+      "handling": "unsupported",
+      "note": "County income tax.",
+      "source": "Indiana Department of Revenue — county income tax withholding (source to be fetched live before enforcement)",
+      "sourceVerified": false
+    },
+    {
+      "code": "KY",
+      "basis": "work",
+      "handling": "unsupported",
+      "note": "Occupational license taxes.",
+      "source": "Kentucky city and county occupational license taxes (source to be fetched live before enforcement)",
+      "sourceVerified": false
+    },
+    {
+      "code": "MI",
+      "basis": "residence",
+      "handling": "unsupported",
+      "note": "City income taxes.",
+      "source": "Michigan Department of Treasury — city income tax withholding (source to be fetched live before enforcement)",
+      "sourceVerified": false
+    },
+    {
+      "code": "MI",
+      "basis": "work",
+      "handling": "unsupported",
+      "note": "City income taxes.",
+      "source": "Michigan Department of Treasury — city income tax withholding (source to be fetched live before enforcement)",
+      "sourceVerified": false
+    },
+    {
+      "code": "MO",
+      "basis": "residence",
+      "handling": "unsupported",
+      "note": "Kansas City and St. Louis earnings tax.",
+      "source": "Kansas City and City of St. Louis, Missouri — earnings tax (source to be fetched live before enforcement)",
+      "sourceVerified": false
+    },
+    {
+      "code": "MO",
+      "basis": "work",
+      "handling": "unsupported",
+      "note": "Kansas City and St. Louis earnings tax.",
+      "source": "Kansas City and City of St. Louis, Missouri — earnings tax (source to be fetched live before enforcement)",
+      "sourceVerified": false
+    },
+    {
+      "code": "OH",
+      "basis": "residence",
+      "handling": "unsupported",
+      "note": "Municipal and school district income tax.",
+      "source": "Ohio Department of Taxation — school district income tax; Ohio municipal income tax (source to be fetched live before enforcement)",
+      "sourceVerified": false
+    },
+    {
+      "code": "OH",
+      "basis": "work",
+      "handling": "unsupported",
+      "note": "Municipal and school district income tax.",
+      "source": "Ohio Department of Taxation — school district income tax; Ohio municipal income tax (source to be fetched live before enforcement)",
+      "sourceVerified": false
+    },
+    {
+      "code": "OR",
+      "basis": "residence",
+      "handling": "unsupported",
+      "note": "Metro Supportive Housing Services tax and Multnomah County Preschool for All tax.",
+      "source": "Metro (Portland) Supportive Housing Services income tax; Multnomah County Preschool for All income tax (reviewed 2026-09-28; citation to be recorded before enforcement)",
+      "sourceVerified": false
+    },
+    {
+      "code": "OR",
+      "basis": "work",
+      "handling": "unsupported",
+      "note": "Metro Supportive Housing Services tax and Multnomah County Preschool for All tax.",
+      "source": "Metro (Portland) Supportive Housing Services income tax; Multnomah County Preschool for All income tax (reviewed 2026-09-28; citation to be recorded before enforcement)",
+      "sourceVerified": false
+    },
+    {
+      "code": "PA",
+      "basis": "work",
+      "handling": "unsupported",
+      "note": "Local earned income tax and local services tax (Act 32, tied to Pennsylvania worksites) and Philadelphia wage tax. The resident rule for employers outside Philadelphia is to be verified before enforcement.",
+      "source": "Pennsylvania Act 32 local earned income tax and local services tax; City of Philadelphia wage tax (reviewed 2026-09-28; citation to be recorded before enforcement)",
+      "sourceVerified": false
+    },
+    {
+      "code": "WV",
+      "basis": "work",
+      "handling": "unsupported",
+      "note": "City service fees.",
+      "source": "West Virginia municipal service fees (source to be fetched live before enforcement)",
+      "sourceVerified": false
+    }
+  ]
+}

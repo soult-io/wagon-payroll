@@ -14,6 +14,8 @@
  *   - exclusion constraint on compensation daterange(effective_from, effective_to)
  *     for non-overlapping effective-dated pay (requires btree_gist).
  *   - trigger rejecting UPDATE on issued payroll_runs except void bookkeeping.
+ *   - exclusion constraint on employee_residences windows per employee
+ *     (PAY-163, drizzle/0023_spooky_toro.sql).
  */
 
 import { sql } from "drizzle-orm";
@@ -1069,10 +1071,25 @@ export const stateTaxBrackets = pgTable(
 );
 
 /**
+ * Spec 25 (PAY-120) closed locality lists, as SQL for the CHECK constraints.
+ * Must equal LOCALITY_CODES / WORK_LOCALITY_CODES in @payroll/shared (a test
+ * inserts every shared code). NYC taxes residents only: never a work locality.
+ */
+const MD_LOCALITY_SQL = sql.raw(
+  "'MD-001','MD-003','MD-005','MD-009','MD-011','MD-013','MD-015','MD-017','MD-019','MD-021','MD-023','MD-025'," +
+    "'MD-027','MD-029','MD-031','MD-033','MD-035','MD-037','MD-039','MD-041','MD-043','MD-045','MD-047','MD-510'",
+);
+
+/**
  * The employee's WORK state, effective-dated (state income tax follows the
  * work location). V1: a single work state per employee — the resolver picks
  * the latest row effective on the period start; multi-state allocation is a
  * phase-2 concern.
+ *
+ * PAY-163: `locality_code` is the taxing work locality (Yonkers, or the
+ * Maryland county). NULL means "no taxing work locality" ONLY when
+ * `locality_confirmed_at` is set; rows written before PAY-163 are NULL and
+ * unconfirmed.
  */
 export const employeeWorkStates = pgTable(
   "employee_work_states",
@@ -1087,10 +1104,114 @@ export const employeeWorkStates = pgTable(
     /** NULL = open-ended. */
     effectiveTo: date("effective_to"),
     createdAt: createdAt(),
+    localityCode: text("locality_code"),
+    localityConfirmedAt: timestamp("locality_confirmed_at", { withTimezone: true }),
+    /** user.id of the admin who answered the work-locality question. */
+    localityConfirmedBy: text("locality_confirmed_by"),
   },
   (t) => [
     unique("employee_work_states_employee_effective_uniq").on(t.employeeId, t.effectiveFrom),
     check("employee_work_states_code_check", sql`${t.stateCode} ~ '^[A-Z]{2}$'`),
+    check(
+      "employee_work_states_locality_check",
+      sql`${t.localityCode} IS NULL OR (${t.localityCode} LIKE ${t.stateCode} || '-%' AND ${t.localityCode} IN ('NY-YONKERS',${MD_LOCALITY_SQL}))`,
+    ),
+    check(
+      "employee_work_states_locality_confirmed_check",
+      sql`${t.localityCode} IS NULL OR ${t.localityConfirmedAt} IS NOT NULL`,
+    ),
+  ],
+);
+
+/**
+ * PAY-163 (Spec 25) — where the employee lives for local income tax,
+ * effective-dated and resolved on the PAY date. The home address is only a
+ * hint (ZIP codes cross locality lines); this row is the fact the local-tax
+ * guard reads. Codes are plaintext by design (county/city level, needed for
+ * grouping); the full address stays encrypted on `employees.address`.
+ *
+ * Windows are [effective_from, effective_to); an exclusion constraint (raw
+ * SQL in the migration) makes overlapping windows for one employee
+ * impossible. `source`: 'admin' (entered by an admin) or 'certificate' (set
+ * from a local withholding certificate — later step).
+ */
+export const employeeResidences = pgTable(
+  "employee_residences",
+  {
+    id: serial("id").primaryKey(),
+    employeeId: integer("employee_id")
+      .notNull()
+      .references(() => employees.id),
+    /** ISO 3166-1 alpha-2. */
+    country: text("country").notNull(),
+    /** USPS code; set exactly when country = 'US'. */
+    stateCode: text("state_code"),
+    /** One of LOCALITY_CODES, inside `state_code`; required for Maryland. */
+    localityCode: text("locality_code"),
+    effectiveFrom: date("effective_from").notNull(),
+    /** NULL = open-ended. */
+    effectiveTo: date("effective_to"),
+    source: text("source").notNull().default("admin"),
+    /** user.id of the admin who wrote the row. */
+    createdBy: text("created_by").notNull(),
+    createdAt: createdAt().notNull(),
+  },
+  (t) => [
+    unique("employee_residences_employee_effective_uniq").on(t.employeeId, t.effectiveFrom),
+    check("employee_residences_country_check", sql`${t.country} ~ '^[A-Z]{2}$'`),
+    check(
+      "employee_residences_us_state_check",
+      sql`(${t.country} = 'US') = (${t.stateCode} IS NOT NULL)`,
+    ),
+    check(
+      "employee_residences_state_code_check",
+      sql`${t.stateCode} IS NULL OR ${t.stateCode} ~ '^[A-Z]{2}$'`,
+    ),
+    check(
+      "employee_residences_locality_check",
+      sql`${t.localityCode} IS NULL OR ${t.localityCode} IN ('NY-NYC','NY-YONKERS',${MD_LOCALITY_SQL})`,
+    ),
+    check(
+      "employee_residences_locality_state_check",
+      sql`${t.localityCode} IS NULL OR (${t.stateCode} IS NOT NULL AND ${t.localityCode} LIKE ${t.stateCode} || '-%')`,
+    ),
+    check(
+      "employee_residences_md_county_check",
+      sql`${t.stateCode} IS DISTINCT FROM 'MD' OR ${t.localityCode} IS NOT NULL`,
+    ),
+    check(
+      "employee_residences_window_check",
+      sql`${t.effectiveTo} IS NULL OR ${t.effectiveTo} > ${t.effectiveFrom}`,
+    ),
+    check("employee_residences_source_check", sql`${t.source} IN ('admin','certificate')`),
+  ],
+);
+
+/**
+ * PAY-163 (Spec 25) — which states / localities have local income tax the
+ * employer must withhold, and whether the app computes it ('engine') or must
+ * hold the pay run ('unsupported'). Data, maintained by the state/local
+ * payroll SME in seeds/local-taxes/coverage.json and loaded by the seed CLI.
+ * `code` is a USPS state ('OH') or a locality code ('NY-NYC'); `basis` says
+ * whether living there or working there triggers it. A state with no row has
+ * no local income tax the employer withholds.
+ */
+export const localTaxCoverage = pgTable(
+  "local_tax_coverage",
+  {
+    code: text("code").notNull(),
+    basis: text("basis").notNull(),
+    handling: text("handling").notNull(),
+    note: text("note").notNull().default(""),
+    /** Official source the row was checked against. */
+    source: text("source").notNull().default(""),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    primaryKey({ name: "local_tax_coverage_pk", columns: [t.code, t.basis] }),
+    check("local_tax_coverage_code_check", sql`${t.code} ~ '^[A-Z]{2}(-[A-Z0-9]{2,10})?$'`),
+    check("local_tax_coverage_basis_check", sql`${t.basis} IN ('residence','work')`),
+    check("local_tax_coverage_handling_check", sql`${t.handling} IN ('unsupported','engine')`),
   ],
 );
 

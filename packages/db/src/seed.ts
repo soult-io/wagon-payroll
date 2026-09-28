@@ -124,5 +124,8 @@ export async function seedDatabase(db: SeedDb): Promise<{ done: true }> {
   // PAY-13 phase 1: TX/IL/CA state withholding tables.
   const { seedStateTaxes } = await import("./state-seeds.js");
   await seedStateTaxes(db);
+  // PAY-163: local income-tax coverage list read by the local-tax guard.
+  const { seedLocalTaxCoverage } = await import("./local-tax-seeds.js");
+  await seedLocalTaxCoverage(db);
   return { done: true };
 }
