@@ -231,39 +231,42 @@ export function registerAdminLocalTaxRoutes(app: FastifyInstance, deps: AdminLoc
         return reply.code(400).send({ error: "invalid_body", details: safeIssues(body.error) });
       }
       if (!(await findEmployee(employeeId))) return reply.code(404).send(NOT_FOUND);
-      const input = body.data;
-
-      const open = await db
-        .select()
-        .from(employeeResidences)
-        .where(
-          and(
-            eq(employeeResidences.employeeId, employeeId),
-            isNull(employeeResidences.effectiveTo),
-          ),
-        )
-        .orderBy(desc(employeeResidences.effectiveFrom))
-        .limit(1);
-      const previous = open[0];
-      // "Still the same" is always a confirmation from today (server clock).
-      const request = input.sameAsBefore ? { ...input, effectiveFrom: todayIso() } : input;
-      const conflict = residenceConflict(previous, request);
-      if (conflict) return reply.code(409).send({ error: conflict });
-
-      const actorId = actorOf(req);
-      try {
-        if (previous && previous.effectiveFrom === request.effectiveFrom) {
-          const corrected = await correctResidence(previous, request, actorId);
-          return reply.code(200).send({ residence: residenceView(corrected) });
-        }
-        const inserted = await addResidence(employeeId, previous, request, actorId);
-        return reply.code(201).send({ residence: residenceView(inserted) });
-      } catch (err) {
-        if (isWindowConflict(err)) return reply.code(409).send({ error: "invalid_effective_from" });
-        throw err;
-      }
+      const result = await writeResidence(employeeId, body.data, actorOf(req));
+      return reply.code(result.status).send(result.body);
     },
   );
+
+  /** Correct, confirm or add a residence; returns the HTTP status and body. */
+  async function writeResidence(
+    employeeId: number,
+    input: ResidenceInput,
+    actorId: string,
+  ): Promise<{ status: number; body: unknown }> {
+    const open = await db
+      .select()
+      .from(employeeResidences)
+      .where(
+        and(eq(employeeResidences.employeeId, employeeId), isNull(employeeResidences.effectiveTo)),
+      )
+      .orderBy(desc(employeeResidences.effectiveFrom))
+      .limit(1);
+    const previous = open[0];
+    // "Still the same" is always a confirmation from today (server clock).
+    const request = input.sameAsBefore ? { ...input, effectiveFrom: todayIso() } : input;
+    const conflict = residenceConflict(previous, request);
+    if (conflict) return { status: 409, body: { error: conflict } };
+    try {
+      if (previous && previous.effectiveFrom === request.effectiveFrom) {
+        const corrected = await correctResidence(previous, request, actorId);
+        return { status: 200, body: { residence: residenceView(corrected) } };
+      }
+      const inserted = await addResidence(employeeId, previous, request, actorId);
+      return { status: 201, body: { residence: residenceView(inserted) } };
+    } catch (err) {
+      if (isWindowConflict(err)) return { status: 409, body: { error: "invalid_effective_from" } };
+      throw err;
+    }
+  }
 
   /** New residence from `request.effectiveFrom`; closes the open row there. */
   async function addResidence(

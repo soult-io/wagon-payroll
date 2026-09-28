@@ -107,6 +107,19 @@ interface LocalOwed {
   place: string;
 }
 
+/** Any engine residence row in the state (NY counts even outside NYC/Yonkers). */
+function stateHasResidentLocals(
+  coverage: LocalGuardCoverageRow[],
+  stateCode: string | null,
+): boolean {
+  return (
+    stateCode !== null &&
+    coverage.some(
+      (r) => r.basis === "residence" && r.handling === "engine" && stateOf(r.code) === stateCode,
+    )
+  );
+}
+
 /**
  * The locals this employee's run would carry, and the place of a resident
  * local that cannot be computed because the work state differs (or is
@@ -125,15 +138,10 @@ function applicableLocals(
   const residentRow = findRow(coverage, "residence", "engine", residenceCodes);
   const residenceState = residence?.country === "US" ? residence.stateCode : null;
   const residencePlace = residence?.localityCode ?? residenceState;
-  // Any engine residence row in the residence state (NY without NYC/Yonkers too).
-  const residenceStateHasLocals =
-    residenceState !== null &&
-    coverage.some(
-      (r) =>
-        r.basis === "residence" && r.handling === "engine" && stateOf(r.code) === residenceState,
-    );
 
-  if (residenceStateHasLocals && workState === null) outsidePlace = residencePlace;
+  if (workState === null && stateHasResidentLocals(coverage, residenceState)) {
+    outsidePlace = residencePlace;
+  }
   if (residentRow && residencePlace !== null) {
     if (workState === null || workState.stateCode !== residenceState) {
       outsidePlace = residencePlace;
