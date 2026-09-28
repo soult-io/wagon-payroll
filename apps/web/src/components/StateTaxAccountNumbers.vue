@@ -149,6 +149,7 @@ async function save() {
   if (!checked.ok) {
     // Keep what was typed so it can be corrected; it stays in this component only.
     fieldError.value = `${checked.message}.`;
+    void focusNumber();
     return;
   }
   fieldError.value = "";
@@ -315,13 +316,30 @@ onBeforeUnmount(() => {
         <InputNumber
           v-model="fromTaxYear"
           input-id="stateIdYear"
+          class="state-id-year"
           :use-grouping="false"
           :min="STATE_ID_MIN_YEAR"
           :max="STATE_ID_MAX_YEAR"
           :invalid="yearMissing"
-          :pt="{ pcInputText: { root: { 'aria-describedby': 'stateIdYearHint' } } }"
+          :pt="{
+            pcInputText: {
+              root: {
+                'aria-describedby': yearMissing ? 'stateIdYearError stateIdYearHint' : 'stateIdYearHint',
+                'aria-invalid': yearMissing ? 'true' : undefined,
+              },
+            },
+          }"
         />
-        <small v-if="yearMissing" class="p-error">Enter a year from 2026 on.</small>
+        <Message
+          v-if="yearMissing"
+          id="stateIdYearError"
+          severity="error"
+          size="small"
+          variant="simple"
+          :closable="false"
+        >
+          Enter a year from 2026 on.
+        </Message>
         <small id="stateIdYearHint" class="muted">
           The first year this number goes on your W-2s. Keep 2026 unless your state gave you a new
           number. Then enter the year the new number starts.
@@ -332,6 +350,7 @@ onBeforeUnmount(() => {
         <InputText
           id="stateIdValue"
           v-model="typed"
+          class="state-id-input"
           autocomplete="off"
           spellcheck="false"
           maxlength="64"
@@ -340,7 +359,16 @@ onBeforeUnmount(() => {
           :aria-invalid="fieldError !== '' ? 'true' : undefined"
           :aria-describedby="describedBy"
         />
-        <small v-if="fieldError" id="stateIdValueError" class="p-error">{{ fieldError }}</small>
+        <Message
+          v-if="fieldError"
+          id="stateIdValueError"
+          severity="error"
+          size="small"
+          variant="simple"
+          :closable="false"
+        >
+          {{ fieldError }}
+        </Message>
         <small v-if="stateHint" id="stateIdValueStateHint" class="muted">{{ stateHint }}</small>
         <small id="stateIdValueHint" class="muted">{{ GENERAL_HINT }}</small>
       </div>
@@ -361,3 +389,19 @@ onBeforeUnmount(() => {
     </div>
   </section>
 </template>
+
+<style scoped>
+/*
+ * PrimeVue's hover and focus border rules (.p-inputtext:enabled:hover/:focus)
+ * outrank .p-inputtext.p-invalid, so an invalid field that has focus or the
+ * pointer lost its red border. Keep the invalid colour in every state.
+ */
+.state-id-input.p-invalid,
+.state-id-input.p-invalid:enabled:hover,
+.state-id-input.p-invalid:enabled:focus,
+.state-id-year :deep(.p-inputtext.p-invalid),
+.state-id-year :deep(.p-inputtext.p-invalid:enabled:hover),
+.state-id-year :deep(.p-inputtext.p-invalid:enabled:focus) {
+  border-color: var(--p-inputtext-invalid-border-color);
+}
+</style>

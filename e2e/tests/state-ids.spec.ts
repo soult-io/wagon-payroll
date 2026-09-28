@@ -37,6 +37,30 @@ test("ephemeral only: save a state account number and see only its mask", async 
       "California account numbers have 8 digits",
     );
     await expect(card.locator("#stateIdValue")).toHaveAttribute("aria-invalid", "true");
+    // Styled as an error: PrimeVue's invalid state on the input, error message under it.
+    await expect(card.locator("#stateIdValue")).toHaveClass(/p-invalid/);
+    await expect(card.locator("#stateIdValueError")).toHaveClass(/p-message-error/);
+    // The error line is not in the muted hint colour.
+    const colorOf = (sel: string, prop: "color" | "borderBottomColor") =>
+      card.locator(sel).evaluate((el, p) => getComputedStyle(el)[p], prop);
+    expect(await colorOf("#stateIdValueError .p-message-text", "color")).not.toBe(
+      await colorOf("#stateIdValueHint", "color"),
+    );
+    // The invalid border stays the theme's invalid colour while the field has
+    // focus and the pointer; PrimeVue's hover/focus border rules would
+    // otherwise win. Polled: borders animate.
+    const invalidColor = await page.evaluate(() => {
+      const probe = document.createElement("span");
+      probe.style.color = "var(--p-inputtext-invalid-border-color)";
+      document.body.appendChild(probe);
+      const rgb = getComputedStyle(probe).color;
+      probe.remove();
+      return rgb;
+    });
+    expect(invalidColor).not.toBe(await colorOf("#stateIdYear", "borderBottomColor"));
+    await expect(card.locator("#stateIdValue")).toBeFocused();
+    await card.locator("#stateIdValue").hover();
+    await expect.poll(() => colorOf("#stateIdValue", "borderBottomColor")).toBe(invalidColor);
     await expect(card.locator("#stateIdValue")).toHaveValue("1234567");
 
     await card.locator("#stateIdValue").fill(SYNTHETIC_CA_ID);
