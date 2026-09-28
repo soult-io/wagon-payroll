@@ -198,7 +198,7 @@ export function registerAdminStateIdRoutes(app: FastifyInstance, deps: Deps): vo
         return reply.code(400).send({ error: "invalid_params", details: safeIssues(params.error) });
       }
       const owner = await theCompany();
-      if (!owner) return reply.code(404).send(NOT_FOUND);
+      if (!owner) return reply.code(404).send({ error: "no_company" });
       const result = await deleteStateId(
         db,
         key,

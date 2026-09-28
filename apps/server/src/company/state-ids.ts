@@ -14,8 +14,8 @@
  *   share one transaction that first takes the w2_w3 filing advisory lock
  *   (also taken by markFiled) and locks the w2_w3 tax_filings rows
  *   FOR UPDATE (L4), so a filing marked filed at the same moment cannot slip
- *   between them. A 409 names the first year from the requested one that is
- *   not filed. Audit rows carry `{ idMasked }` only.
+ *   between them. A 409 names firstOpenYear: the year after the last filed
+ *   year the change would reach. Audit rows carry `{ idMasked }` only.
  */
 
 import { and, asc, eq, gt, lte, desc } from "drizzle-orm";
@@ -128,8 +128,8 @@ interface WriteTarget {
  * Serialize with the filings: take the w2_w3 advisory lock (markFiled takes
  * it too, so no filing is marked filed between the check and the write,
  * including a filing row created meanwhile), lock the existing w2_w3 rows,
- * and return the first tax year from `fromTaxYear` that is not filed when a
- * change at `target` would alter the ID of a filed year, else null. The
+ * and, when a change at `target` would alter the ID of a filed year, return
+ * the year after the last such filed year (firstOpenYear), else null. The
  * years from `fromTaxYear` up to (not incl.) the state's next row start use
  * the changed row.
  */
@@ -153,12 +153,13 @@ async function filedYearConflict(tx: Tx, target: WriteTarget): Promise<number | 
     .orderBy(asc(companyStateIds.fromTaxYear))
     .limit(1);
   const until = next?.fromTaxYear ?? Number.POSITIVE_INFINITY;
-  const filed = new Set(filings.filter((f) => f.status === "filed").map((f) => f.year));
-  const hit = [...filed].some((y) => y >= target.fromTaxYear && y < until);
-  if (!hit) return null;
-  let open = target.fromTaxYear;
-  while (filed.has(open)) open += 1;
-  return open;
+  const hits = filings
+    .filter((f) => f.status === "filed" && f.year >= target.fromTaxYear && f.year < until)
+    .map((f) => f.year);
+  if (hits.length === 0) return null;
+  // The year after the last filed year the change would reach: a row from
+  // there leaves every filed year in the window on the ID it was filed with.
+  return Math.max(...hits) + 1;
 }
 
 async function lockedRow(tx: Tx, target: WriteTarget) {
