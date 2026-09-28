@@ -383,7 +383,7 @@ describe("run generation with state withholding", () => {
       method: "PUT",
       url: `/api/admin/employees/${employeeId}/work-state`,
       headers: sessionHeader(adminCookie),
-      payload: { stateCode: "NY", effectiveFrom: "2025-01-01" },
+      payload: { stateCode: "NY", effectiveFrom: "2025-01-01", localityCode: null },
     });
     const { generated, skipped } = await generate(employeeId, 2025, 3);
     expect(generated).toHaveLength(0);
