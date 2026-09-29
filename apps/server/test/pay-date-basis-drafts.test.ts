@@ -396,21 +396,53 @@ describe("D9 — issuing a past pay date in another calendar year", () => {
       ? { ok: true, code: null, status: r.value.status }
       : { ok: false, code: r.code, status: null };
 
-  it("P-1: paid 2026-12-31, today 2027-01-10 → 409 past_pay_date_other_year", async () => {
+  /** D9.1 refusal copy (Product Lead decision, PAY-173): exact server text. */
+  const d9Message = (payDate: string) => {
+    const year = payDate.slice(0, 4);
+    return (
+      `This payroll's pay date, ${payDate}, is in ${year}, and that year has ended. ` +
+      "Wagon Payroll can't record a payroll in a past year yet, so nothing was issued. " +
+      `If you paid your team on ${payDate}, keep that date. Don't change it. ` +
+      `Keep your own record of the payment and make sure it's included in your ${year} payroll tax filings. ` +
+      "A way to record it here is coming soon."
+    );
+  };
+  /** Approve in-process, then issue over HTTP, both under a fixed "now". */
+  async function issueHttpAt(publicId: string, instant: string) {
+    return withClock(instant, async () => {
+      await transitionRun(
+        { db: t.db, config: t.config },
+        { publicId, action: "approve", actorId: "test-admin" },
+      );
+      // A session minted at real "now" is expired at a fixed 2027 clock; log in under the same clock.
+      const headers = sessionHeader(
+        (await login(t, "pay-date-drafts-admin@test.dev", TEST_PASSWORD)).sessionCookie,
+      );
+      const res = await t.app.inject({
+        method: "POST",
+        url: `/api/admin/payroll-runs/${publicId}/issue`,
+        headers,
+        payload: {},
+      });
+      const body = res.json() as { error?: string; message?: string };
+      return {
+        status: res.statusCode,
+        error: body.error ?? null,
+        message: body.message ?? "",
+        bodyHasNoAmounts: !/\$/.test(res.body) && !/\d+\.\d{2}/.test(res.body),
+      };
+    });
+  }
+
+  it("P-1: paid 2026-12-31, today 2027-01-10 → 409 past_pay_date_other_year, D9.1 copy", async () => {
     const run = await approvedDraft("2026-12-31");
-    const res = await issueAt(run.publicId, "2027-01-10T12:00:00Z");
-    expect({
-      ...view(res),
-      tellsFix: res.ok
-        ? false
-        : res.message.includes("Set the pay date to the actual payment date."),
-      runStatus: (await runRow(t, run.id)).status,
-    }).toEqual({
-      ok: false,
-      code: "past_pay_date_other_year",
-      status: null,
-      tellsFix: true,
-      runStatus: "approved",
+    const res = await issueHttpAt(run.publicId, "2027-01-10T12:00:00Z");
+    expect({ ...res, runStatus: (await runRow(t, run.id)).status }).toEqual({
+      status: 409,
+      error: "past_pay_date_other_year",
+      message: d9Message("2026-12-31"),
+      bodyHasNoAmounts: true,
+      runStatus: "approved", // not issued
     });
   });
 
@@ -432,12 +464,15 @@ describe("D9 — issuing a past pay date in another calendar year", () => {
     });
   });
 
-  it("P-4 (i): APP_TZ Europe/Madrid, clock 2026-12-31T23:30Z (Madrid 2027-01-01 00:30), paid 2026-12-31 → 409", async () => {
+  it("P-4 (i): APP_TZ Europe/Madrid, clock 2026-12-31T23:30Z (Madrid 2027-01-01 00:30), paid 2026-12-31 → 409, D9.1 copy", async () => {
     const run = await approvedDraft("2026-12-31");
-    expect(view(await issueAt(run.publicId, "2026-12-31T23:30:00Z"))).toEqual({
-      ok: false,
-      code: "past_pay_date_other_year",
-      status: null,
+    const res = await issueHttpAt(run.publicId, "2026-12-31T23:30:00Z");
+    expect({ ...res, runStatus: (await runRow(t, run.id)).status }).toEqual({
+      status: 409,
+      error: "past_pay_date_other_year",
+      message: d9Message("2026-12-31"),
+      bodyHasNoAmounts: true,
+      runStatus: "approved", // not issued
     });
   });
 
