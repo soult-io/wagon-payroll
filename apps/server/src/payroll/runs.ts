@@ -864,16 +864,24 @@ export async function transitionRun(
       return next;
     });
   } catch (err) {
-    // D4: the refusal rolled the transaction back; record it on its own.
+    // D4: the refusal rolled the transaction back; record it on its own. A
+    // failed audit write is logged and never replaces the 409 stale_draft.
     if (err instanceof StaleDraftError) {
-      await db.insert(auditEvents).values({
-        actorId: input.actorId,
-        action: "run.stale_detected",
-        entity: "payroll_run",
-        entityId: err.runPublicId,
-        before: null,
-        after: { fields: err.fields },
-      });
+      try {
+        await db.insert(auditEvents).values({
+          actorId: input.actorId,
+          action: "run.stale_detected",
+          entity: "payroll_run",
+          entityId: err.runPublicId,
+          before: null,
+          after: { fields: err.fields },
+        });
+      } catch (auditErr) {
+        // Error class only: a driver message can carry query parameters.
+        console.warn(
+          `[payroll] run.stale_detected audit write failed for run ${err.runPublicId} (${auditErr instanceof Error ? auditErr.name : "unknown"})`,
+        );
+      }
     }
     throw err;
   }
