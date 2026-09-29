@@ -54,7 +54,7 @@ import {
 import { round2 } from "@payroll/engine/money";
 import type { Db } from "../db.js";
 import {
-  SNAPSHOT_TEMPLATE_VERSION,
+  LEGACY_SNAPSHOT_TEMPLATE_VERSION,
   snapshotHash,
   type RunSnapshot,
   type SnapshotBracket,
@@ -455,7 +455,7 @@ function planAndValidate(
       },
       result,
       engineVersion: LEGACY_ENGINE_VERSION,
-      templateVersion: SNAPSHOT_TEMPLATE_VERSION,
+      templateVersion: LEGACY_SNAPSHOT_TEMPLATE_VERSION,
       // YTD through this run, from STORED (validated) amounts — includes
       // owner-approved deviation runs (e.g. 2026-03 true-up) at their issued
       // values, which is exactly what an employee's YTD must reflect.

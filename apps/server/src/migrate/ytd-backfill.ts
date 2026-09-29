@@ -4,7 +4,8 @@
  * block, so the payslip's expanded Year-to-Date section (gross / withholdings
  * / net, owner request 2026-07-30) cannot render from them.
  *
- * For every legacy-imported run, walk chronologically and accumulate the run's
+ * For every legacy-imported run, walk in pay-date order (pay_date,
+ * period_start, id; YTD resets each pay-date year) and accumulate the run's
  * OWN stored payroll_entries per category — the same stored-is-truth rule the
  * migration uses (deviation runs count at their ISSUED amounts). Where the
  * snapshot's `ytd` differs from the expected accumulation, patch
@@ -28,9 +29,9 @@ import { auditEvents, payrollEntries, payrollRuns } from "@payroll/db";
 import { round2 } from "@payroll/engine/money";
 import type { Db } from "../db.js";
 import {
+  LEGACY_SNAPSHOT_TEMPLATE_VERSION,
   type RunSnapshot,
   type RunSnapshotYtd,
-  SNAPSHOT_TEMPLATE_VERSION,
   snapshotHash,
 } from "../payroll/snapshot.js";
 import { LEGACY_CREATED_BY } from "./migrate.js";
@@ -88,7 +89,8 @@ export async function backfillLegacyYtd(
     .select()
     .from(payrollRuns)
     .where(eq(payrollRuns.createdBy, LEGACY_CREATED_BY))
-    .orderBy(asc(payrollRuns.periodStart));
+    // Spec 26 (PAY-173) D2 order: wages are counted in the year they are PAID.
+    .orderBy(asc(payrollRuns.payDate), asc(payrollRuns.periodStart), asc(payrollRuns.id));
 
   const entries =
     runs.length === 0
@@ -117,13 +119,14 @@ export async function backfillLegacyYtd(
     m.set(e.category, round2((m.get(e.category) ?? 0) + Number(e.amount)));
   }
 
-  // Chronological walk: accumulate per-category, resetting each calendar year
-  // (YTD is a per-year figure); expected YTD through each run.
+  // Walk in (pay_date, period_start, id) order: accumulate per-category,
+  // resetting each pay-date calendar year (YTD = wages paid in the year,
+  // Spec 26 (PAY-173)); expected YTD through each run.
   const acc = new Map<string, number>();
   let accYear: string | null = null;
   const expectedByRun = new Map<number, RunSnapshotYtd>();
   for (const run of runs) {
-    const year = run.periodStart.slice(0, 4);
+    const year = run.payDate.slice(0, 4);
     if (year !== accYear) {
       acc.clear();
       accYear = year;
@@ -151,7 +154,7 @@ export async function backfillLegacyYtd(
           const next: RunSnapshot = {
             ...snapshot,
             ytd,
-            templateVersion: SNAPSHOT_TEMPLATE_VERSION,
+            templateVersion: LEGACY_SNAPSHOT_TEMPLATE_VERSION,
           };
           await tx
             .update(payrollRuns)

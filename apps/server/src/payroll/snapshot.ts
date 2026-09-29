@@ -11,6 +11,14 @@ import type { PayrollResult } from "@payroll/engine";
 export const SNAPSHOT_TEMPLATE_VERSION = "1.3.0";
 
 /**
+ * Template version of the snapshot shape the legacy tools write (migrate.ts,
+ * ytd-backfill.ts): 1.2.0 = inputs + ytd, WITHOUT inputs.resolution. Those
+ * runs were imported, not resolved by run generation, so they carry no
+ * resolution block and must not claim 1.3.0 (Spec 26 (PAY-173) D5).
+ */
+export const LEGACY_SNAPSHOT_TEMPLATE_VERSION = "1.2.0";
+
+/**
  * Year-to-date accumulations THROUGH this run (inclusive), employee-side.
  * Frozen at issuance so the payslip's YTD block renders from the snapshot
  * alone. Added in template 1.1.0 — optional so pre-1.1.0 snapshots (the
