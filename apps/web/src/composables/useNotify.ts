@@ -7,20 +7,26 @@ import { ApiError } from "../lib/api";
 
 /**
  * Spec 26 (PAY-173) §5 copy for the payroll-run refusals. ytd_order_conflict
- * and past_pay_date_other_year keep the server text: it names the pay date
- * and ends with the spec sentence; the fallback is that sentence alone.
+ * shows the server text when there is any (it names the pay date); the
+ * fallback is used only when the server sent none.
  */
 const STALE_DRAFT_MESSAGE =
-  "This draft is out of date. Something it depends on changed after it was created — for example another payroll was issued, or a tax table or W-4 was updated. Void this draft and generate it again to recalculate.";
+  "This draft is out of date, so it was not approved or issued. Something it depends on changed after it was made — for example, another payroll was issued, or a tax table or W-4 was updated. To fix it, void this draft, then generate it again from Config → Pay schedule → Generate drafts now so the numbers are recalculated.";
+
+const YTD_ORDER_FALLBACK =
+  "This employee already has a payroll issued with a later pay date. Payrolls must be issued in the order they are paid. Nothing was approved or issued. Void this draft and generate it again with the date you actually pay it.";
+
+/** The server's own message, or null when the body carried none (err.message is then a generic default). */
+function serverMessage(err: ApiError): string | null {
+  const message = err.body?.["message"];
+  return typeof message === "string" && message.trim() !== "" ? message : null;
+}
 
 function payrollRunMessage(err: ApiError): string | null {
   if (err.code === "stale_draft") return STALE_DRAFT_MESSAGE;
-  if (err.code === "ytd_order_conflict") {
-    return err.message.includes("Set the pay date")
-      ? err.message
-      : "Set the pay date to the date this payment is actually made.";
-  }
+  if (err.code === "ytd_order_conflict") return serverMessage(err) ?? YTD_ORDER_FALLBACK;
   if (err.code === "past_pay_date_other_year") {
+    // Copy and check unchanged pending the owner's F1 decision (PAY-173).
     return err.message.includes("Set the pay date")
       ? err.message
       : "Set the pay date to the actual payment date.";
@@ -34,9 +40,21 @@ function w4WindowMessage(err: ApiError): string | null {
   const allowed = err.body?.["window"] as { earliest?: string | null; latest?: string } | null;
   if (!allowed?.latest) return err.message;
   return allowed.earliest
-    ? `This W-4 must take effect between ${allowed.earliest} and ${allowed.latest}.`
-    : `This W-4 must take effect no later than ${allowed.latest}.`;
+    ? `The "Effective from" date must be between ${allowed.earliest} and ${allowed.latest}. IRS rules set this range from the date the employee filed this W-4 ("Date filed"). Change "Effective from", or check "Date filed", then try again.`
+    : `For a W-4 for next year, the "Effective from" date must be ${allowed.latest} or earlier. Change "Effective from", or check "Date filed" and "Tax year", then try again.`;
 }
+
+/**
+ * Long refusals that tell the admin what to do next stay on screen until
+ * closed (WCAG 2.2.1): a 5-second toast is too short to read them.
+ */
+const STICKY_ERROR_CODES = new Set([
+  "stale_draft",
+  "ytd_order_conflict",
+  "past_pay_date_other_year",
+  "invalid_w4_effective_date",
+  "effective_date",
+]);
 
 export function useNotify() {
   const toast = useToast();
@@ -65,7 +83,13 @@ export function useNotify() {
   }
 
   function error(err: unknown, summary = "Error") {
-    toast.add({ severity: "error", summary, detail: errorMessage(err), life: 5000 });
+    const sticky = err instanceof ApiError && STICKY_ERROR_CODES.has(err.code);
+    toast.add({
+      severity: "error",
+      summary,
+      detail: errorMessage(err),
+      ...(sticky ? {} : { life: 5000 }),
+    });
   }
 
   return { success, info, error, errorMessage };
