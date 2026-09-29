@@ -29,7 +29,7 @@
  * (1.45%): no issue. Synthetic data only.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { and, eq, like } from "drizzle-orm";
 import {
   company,
@@ -566,6 +566,15 @@ describe("T15 negative social_security sum -> negative_amount block (fail first)
 // ---------------------------------------------------------------------------
 
 describe("T16 box4_over_max blocks the W-2, the W-3 PDF and the notices (fail first)", () => {
+  // Order-safe: the notices test corrects the entry; every T16 test starts
+  // from the blocked state (10,918.21 withheld, 1c over the 2025 maximum).
+  beforeEach(async () => {
+    await t.db
+      .update(payrollEntries)
+      .set({ amount: "10918.21" })
+      .where(eq(payrollEntries.id, t16.ssEntryId));
+  });
+
   it("list 200: blocked, the single box4_over_max issue, amounts still shown to the admin", async () => {
     const res = await get("/api/admin/annual-forms/w2?year=2025");
     expect(res.statusCode, res.body).toBe(200);
@@ -597,10 +606,21 @@ describe("T16 box4_over_max blocks the W-2, the W-3 PDF and the notices (fail fi
   });
 
   it("the W-3 worksheet still refreshes for a box-4 block (figures readable)", async () => {
+    // Put a different value in the stored row first, so only a refresh
+    // performed while the W-2 is blocked can produce 10918.21.
+    const before = await w2w3Row(2025);
+    if (!before) throw new Error("2025 w2_w3 row missing");
+    await t.db
+      .update(taxFilings)
+      .set({ worksheet: { stale: true }, worksheetHash: "stale" })
+      .where(eq(taxFilings.id, before.id));
+    await syncAnnualFilings({ db: t.db, config: t.config }, { today: TODAY });
     const row = await w2w3Row(2025);
     expect((row?.worksheet as Record<string, unknown> | null)?.box4SsTax).toBe("10918.21");
   });
 
+  // One test on purpose: hold -> correct -> send -> not again is a sequence,
+  // and "not again" depends on the notified-years record the send writes.
   it("notices: 2025 held while blocked, sent once corrected; 2024 (no bundled fw2) held although clean", async () => {
     const notices = async (userId: string, year: number) =>
       t.db

@@ -111,6 +111,61 @@ async function issueRun(employeeId: number, year: number, month: number): Promis
   }
 }
 
+/** The W-2 list body plus the three 409 PDF bodies for the defect employee. */
+async function requestDefectSurfaces(): Promise<{ listBody: string; pdfBodies: string[] }> {
+  const get = (url: string) => t.app.inject({ method: "GET", url, headers: ADMIN });
+  const list = await get("/api/admin/annual-forms/w2?year=2025");
+  expect(list.statusCode, list.body).toBe(200);
+  const pdfBodies: string[] = [];
+  for (const url of [
+    `/api/admin/annual-forms/w2/${roundingId}/pdf?year=2025`,
+    `/api/admin/annual-forms/w2/${roundingId}/print-packet?year=2025`,
+    "/api/admin/annual-forms/w3/pdf?year=2025",
+  ]) {
+    const res = await get(url);
+    expect(res.statusCode, url).toBe(409);
+    pdfBodies.push(res.body);
+  }
+  return { listBody: list.body, pdfBodies };
+}
+
+function expectNoAmount(text: string, what: string): void {
+  for (const a of AMOUNTS) expect(text, `${what} leaks ${a}`).not.toContain(a);
+  expect(text, what).not.toMatch(/\d+\.\d\d/);
+}
+
+/**
+ * The list legitimately carries the twelve unaffected W-2s ("8000.00",
+ * "1061.17", ...). The defect employee's own figures (13333.32 wages,
+ * 1111.11 per run, 826.68 / 193.32 withheld) and the W-3 total (109333.32)
+ * must appear nowhere in the list body; the defect row itself carries no
+ * amount at all.
+ */
+function expectListLeakFree(listBody: string): void {
+  for (const a of ["1111", "13333", "826.68", "193.32", "109333"]) {
+    expect(listBody, `list leaks ${a}`).not.toContain(a);
+  }
+  const rows = (JSON.parse(listBody) as { w2s: Record<string, unknown>[] }).w2s;
+  const defectRow = rows.find((w) => w.employeeId === roundingId);
+  expect(defectRow).toBeDefined();
+  const { employeeId: _id, ...defectFields } = defectRow ?? {};
+  expectNoAmount(JSON.stringify(defectFields), "defect row");
+}
+
+/**
+ * pino adds clock/host fields ("time" epoch ms, "responseTime" float, "pid",
+ * "hostname") whose digits can contain "8000" by chance; drop only those.
+ */
+function scrubLogLine(line: string): string {
+  const NOISE = new Set(["time", "responseTime", "pid", "hostname"]);
+  try {
+    const obj = JSON.parse(line) as Record<string, unknown>;
+    return JSON.stringify(Object.fromEntries(Object.entries(obj).filter(([k]) => !NOISE.has(k))));
+  } catch {
+    return line;
+  }
+}
+
 async function w2w3Row() {
   const rows = await t.db
     .select()
@@ -122,7 +177,6 @@ async function w2w3Row() {
 }
 
 describe("T10 a forced defect for one employee is contained (fail first)", () => {
-  const bodies: string[] = [];
   const consoleLines: string[] = [];
   let storedHash: string | null;
   let storedWorksheet: unknown;
@@ -147,7 +201,6 @@ describe("T10 a forced defect for one employee is contained (fail first)", () =>
       url: "/api/admin/annual-forms/w2?year=2025",
       headers: ADMIN,
     });
-    bodies.push(res.body);
     expect(res.statusCode, res.body).toBe(200);
     const rows = (res.json() as { w2s: Record<string, unknown>[] }).w2s;
     const row = rows.find((w) => w.employeeId === roundingId);
@@ -175,7 +228,6 @@ describe("T10 a forced defect for one employee is contained (fail first)", () =>
       "/api/admin/annual-forms/w3/pdf?year=2025",
     ]) {
       const res = await t.app.inject({ method: "GET", url, headers: ADMIN });
-      bodies.push(res.body);
       expect(res.statusCode, url).toBe(409);
     }
   });
@@ -197,49 +249,19 @@ describe("T10 a forced defect for one employee is contained (fail first)", () =>
     expect(row?.worksheet).toEqual(storedWorksheet);
   });
 
-  it("no defect-row field, PDF body or log line contains a fixture amount", () => {
-    // bodies[0] is the W-2 list; bodies[1..] are the three 409 PDF bodies.
-    expect(bodies.length).toBeGreaterThanOrEqual(4);
-    const [listBody = "", ...pdfBodies] = bodies;
-
-    // The list legitimately carries the twelve unaffected W-2s ("8000.00",
-    // "1061.17", ...). The defect employee's own figures (13333.32 wages,
-    // 1111.11 per run, 826.68 / 193.32 withheld) and the W-3 total (109333.32)
-    // must appear nowhere in the list body; the defect row itself must carry
-    // no amount at all.
-    for (const a of ["1111", "13333", "826.68", "193.32", "109333"]) {
-      expect(listBody, `list leaks ${a}`).not.toContain(a);
-    }
-    const rows = (JSON.parse(listBody) as { w2s: Record<string, unknown>[] }).w2s;
-    const defectRow = rows.find((w) => w.employeeId === roundingId);
-    expect(defectRow).toBeDefined();
-    const { employeeId: _id, ...defectFields } = defectRow ?? {};
-    const defectText = JSON.stringify(defectFields);
-    for (const a of AMOUNTS) expect(defectText, `defect row leaks ${a}`).not.toContain(a);
-    expect(defectText).not.toMatch(/\d+\.\d\d/);
-
+  it("no defect-row field, PDF body or log line contains a fixture amount", async () => {
+    // Order-safe: this test makes its own requests (list, three PDFs, a sync)
+    // and checks only the bodies and log lines they produce.
+    logLines.length = 0;
+    consoleLines.length = 0;
+    const { listBody, pdfBodies } = await requestDefectSurfaces();
+    await syncAnnualFilings({ db: t.db, config: t.config }, { today: TODAY });
+    expectListLeakFree(listBody);
     // PDF 409 bodies carry codes only.
-    for (const body of pdfBodies) {
-      for (const a of AMOUNTS) expect(body, `pdf body leaks ${a}`).not.toContain(a);
-      expect(body).not.toMatch(/\d+\.\d\d/);
-    }
-
-    // Logs: pino adds clock/host fields ("time" epoch ms, "responseTime"
-    // float, "pid", "hostname") whose digits can contain "8000" by chance;
-    // drop those, then check everything else. The check must not be vacuous.
+    for (const body of pdfBodies) expectNoAmount(body, "pdf body");
+    // The log check must not be vacuous.
     expect(logLines.length).toBeGreaterThan(0);
-    const NOISE = new Set(["time", "responseTime", "pid", "hostname"]);
-    const scrubbed = logLines.map((line) => {
-      try {
-        const obj = JSON.parse(line) as Record<string, unknown>;
-        return JSON.stringify(
-          Object.fromEntries(Object.entries(obj).filter(([k]) => !NOISE.has(k))),
-        );
-      } catch {
-        return line;
-      }
-    });
-    for (const text of [...scrubbed, ...consoleLines]) {
+    for (const text of [...logLines.map(scrubLogLine), ...consoleLines]) {
       for (const a of AMOUNTS) expect(text, `log leaks ${a}`).not.toContain(a);
       expect(text).not.toContain('"x"');
       expect(text).not.toContain("not a money string");
