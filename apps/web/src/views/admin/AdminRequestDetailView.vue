@@ -58,9 +58,10 @@ const note = ref("");
 const denyVisible = ref(false);
 const denyReason = ref("");
 /**
- * Set after a 409 effective_date: the admin has seen that payroll already ran
- * for earlier periods, so the next approve sends the picked date as an
- * explicit override even when it equals the requested date.
+ * Set after a 409 effective_date (payroll already ran for earlier periods, or
+ * a W-4 date outside the IRS window): the picker now holds the proposed date,
+ * and the next approve sends it as an explicit override even when it equals
+ * the requested date.
  */
 const effectiveDateConfirmed = ref(false);
 
@@ -211,7 +212,12 @@ async function approve() {
     }
     const { request: updated } = await changeRequestsApi.approve(publicId, input);
     request.value = updated;
-    notify.success("Request approved", "The change has been applied.");
+    notify.success(
+      "Request approved",
+      updated.effectiveFrom
+        ? `The change has been applied, effective ${date(updated.effectiveFrom)}.`
+        : "The change has been applied.",
+    );
     await load();
   } catch (err) {
     if (err instanceof ApiError && err.code === "effective_date") {
@@ -326,7 +332,13 @@ onMounted(load);
           </div>
         </div>
         <div class="row">
-          <Button label="Approve & apply" icon="pi pi-check" :loading="busy" @click="approve" />
+          <Button
+            label="Approve & apply"
+            icon="pi pi-check"
+            :loading="busy"
+            :disabled="Boolean(request.effectiveFrom) && !effectiveFrom"
+            @click="approve"
+          />
           <Button label="Deny" severity="danger" outlined icon="pi pi-times" :disabled="busy" @click="denyVisible = true" />
         </div>
       </section>
