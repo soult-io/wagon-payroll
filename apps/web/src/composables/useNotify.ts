@@ -16,6 +16,9 @@ const STALE_DRAFT_MESSAGE =
 const YTD_ORDER_FALLBACK =
   "This employee already has a payroll issued with a later pay date. Payrolls must be issued in the order they are paid. Nothing was approved or issued. Void this draft and generate it again with the date you actually pay it.";
 
+const PAST_YEAR_FALLBACK =
+  "This payroll's pay date is in a year that has ended. Wagon Payroll can't record a payroll in a past year yet, so nothing was issued. If that's the date you paid your team, keep it. Don't change it. Keep your own record of the payment and make sure it's included in that year's payroll tax filings.";
+
 /** The server's own message, or null when the body carried none (err.message is then a generic default). */
 function serverMessage(err: ApiError): string | null {
   const message = err.body?.["message"];
@@ -25,12 +28,7 @@ function serverMessage(err: ApiError): string | null {
 function payrollRunMessage(err: ApiError): string | null {
   if (err.code === "stale_draft") return STALE_DRAFT_MESSAGE;
   if (err.code === "ytd_order_conflict") return serverMessage(err) ?? YTD_ORDER_FALLBACK;
-  if (err.code === "past_pay_date_other_year") {
-    // Copy and check unchanged pending the owner's F1 decision (PAY-173).
-    return err.message.includes("Set the pay date")
-      ? err.message
-      : "Set the pay date to the actual payment date.";
-  }
+  if (err.code === "past_pay_date_other_year") return serverMessage(err) ?? PAST_YEAR_FALLBACK;
   return null;
 }
 
@@ -84,9 +82,10 @@ export function useNotify() {
 
   function error(err: unknown, summary = "Error") {
     const sticky = err instanceof ApiError && STICKY_ERROR_CODES.has(err.code);
+    const pastYear = err instanceof ApiError && err.code === "past_pay_date_other_year";
     toast.add({
       severity: "error",
-      summary,
+      summary: pastYear ? "Payroll not issued" : summary,
       detail: errorMessage(err),
       ...(sticky ? {} : { life: 5000 }),
     });

@@ -763,10 +763,11 @@ async function assertRunCurrent(
 ): Promise<void> {
   if (action === "issue") {
     const today = localDate((deps.clock ?? (() => new Date()))(), deps.config.appTz);
-    if (run.payDate < today && run.payDate.slice(0, 4) !== today.slice(0, 4)) {
+    const year = run.payDate.slice(0, 4);
+    if (run.payDate < today && year !== today.slice(0, 4)) {
       throw new PayrollServiceError(
         "past_pay_date_other_year",
-        `The pay date ${run.payDate} is in a past year. Set the pay date to the actual payment date.`,
+        `This payroll's pay date, ${run.payDate}, is in ${year}, and that year has ended. Wagon Payroll can't record a payroll in a past year yet, so nothing was issued. If you paid your team on ${run.payDate}, keep that date. Don't change it. Keep your own record of the payment and make sure it's included in your ${year} payroll tax filings. A way to record it here is coming soon.`,
       );
     }
   }
