@@ -3,19 +3,30 @@
  * and blocking paths. All tests here must FAIL on origin/main
  * 1fbd87e40a701e026709726a8a2716df924310d1 (behaviour is new):
  * - T09 missing federal tax_config for a year with issued runs -> 409
- *   `missing_tax_config` on every W-2/W-3 surface (P162-D3), list stays 200.
+ *   `missing_tax_config` on every admin W-2/W-3 surface (P162-D3), list
+ *   stays 200. The employee PDF route refuses with exactly
+ *   { error: "w2_not_ready" } (Product Lead 2026-09-29: employees never see
+ *   reason codes).
  * - T15 a negative box -> `negative_amount` block, boxes null, PDFs 409, W-3
  *   worksheet not refreshed (P162-D2/D5); documents money() is unsigned.
  * - T16 box 4 over the year's maximum -> `box4_over_max` block, PDFs 409,
- *   W-2 notices held until corrected (P162-D7).
+ *   W-2 notices held until corrected (P162-D7). Runs in 2025, a year with a
+ *   bundled fw2 template, so the notice can be sent once corrected.
+ * - T16b the "W-2s are ready" notice is also held for a year with no
+ *   bundled fw2 template, even when every W-2 is clean (Product Lead
+ *   2026-09-29). 2024 has no bundled fw2.
  *
  * Each scenario runs in its own past tax year with its own federal
  * tax_config row (SSA wage bases: 2021 142,800; 2022 147,000; 2023 160,200;
  * 2024 168,600). The runs are direct inserts so exact entry amounts can be
  * set (the pattern annual-forms.test.ts uses for its legacy contractor run).
- * T16 hand figures: 2024 box 4 max = 168,600.00 x 6.2% = 10,453.20
- * (iw2w3 2024 box 4); 10,453.21 is 1c over. Box 6 = 180,000 x 1.45% =
- * 2,610.00 (under $200,000: no Additional Medicare). Synthetic data only.
+ * T16 hand figures (2025, seeded config, SSA base 176,100): box 3 =
+ * min(180,000.00, 176,100.00) = 176,100.00; box 4 max = 176,100.00 x 6.2%
+ * = 10,918.20 (iw2w3 2025 box 4 "should not exceed $10,918.20"); 10,918.21
+ * is 1c over and 1c off 6.2% x box 3 (tol ceil(1/2) = 1c: no off-rate
+ * warn). Box 6 = 180,000 x 1.45% = 2,610.00 (under $200,000: no Additional
+ * Medicare). T16b 2024: 1,000.00 wages, 62.00 SS (6.2%), 14.50 Medicare
+ * (1.45%): no issue. Synthetic data only.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -46,8 +57,10 @@ let ADMIN: Record<string, string>;
 let t09: { employeeId: number; session: Record<string, string> };
 /** T15: negative social_security in 2023. */
 let t15EmployeeId: number;
-/** T16: box 4 over the 2024 maximum. */
+/** T16: box 4 over the 2025 maximum (bundled fw2 year). */
 let t16: { employeeId: number; userId: string; session: Record<string, string>; ssEntryId: number };
+/** T16b: a clean 2024 W-2 (no bundled fw2 for 2024). */
+let t16b: { employeeId: number; userId: string };
 
 const T09_AMOUNTS = ["5432.10", "5432.1", "432.10", "336.79", "78.77", "32.59"];
 
@@ -92,7 +105,7 @@ beforeAll(async () => {
     employer_futa: "6.00",
   });
 
-  // T16 employee: 180,000.00 wages in one 2024 run, box 4 withheld 1c over the max.
+  // T16 employee: 180,000.00 wages in one 2025 run, box 4 withheld 1c over the max.
   {
     const user = await inviteAndOnboard(t, { email: "blocks-t16@test.dev", name: "Blocks T16" });
     const employeeId = await createEmployee("Blocks T16 Over Max", user.userId);
@@ -100,17 +113,35 @@ beforeAll(async () => {
       (await login(t, "blocks-t16@test.dev", TEST_PASSWORD)).sessionCookie,
     );
     await consent(session);
-    const ids = await insertIssuedRun(employeeId, "2024-06-15", {
+    const ids = await insertIssuedRun(employeeId, "2025-06-15", {
       gross_pay: "180000.00",
       federal_withholding: "0.00",
-      social_security: "10453.21",
+      social_security: "10918.21",
       medicare: "2610.00",
       employer_futa: "42.00",
     });
     t16 = { employeeId, userId: user.userId, session, ssEntryId: ids.social_security ?? -1 };
   }
 
-  // Year-closed rows for 2021-2024 (940 + w2_w3), all with config present.
+  // T16b employee: a clean 2024 W-2, consented, account-linked.
+  {
+    const user = await inviteAndOnboard(t, { email: "blocks-t16b@test.dev", name: "Blocks T16b" });
+    const employeeId = await createEmployee("Blocks T16b No Form", user.userId);
+    const session = sessionHeader(
+      (await login(t, "blocks-t16b@test.dev", TEST_PASSWORD)).sessionCookie,
+    );
+    await consent(session);
+    await insertIssuedRun(employeeId, "2024-06-15", {
+      gross_pay: "1000.00",
+      federal_withholding: "0.00",
+      social_security: "62.00",
+      medicare: "14.50",
+      employer_futa: "6.00",
+    });
+    t16b = { employeeId, userId: user.userId };
+  }
+
+  // Year-closed rows for 2021-2025 (940 + w2_w3), all with config present.
   await syncAnnualFilings({ db: t.db, config: t.config }, { today: TODAY });
 }, 300_000);
 
@@ -331,13 +362,10 @@ describe("T09 missing federal tax_config -> 409 missing_tax_config everywhere (f
       }
     });
 
-    it(`(a) ${year}: employee W-2 PDF -> 409 missing_tax_config (year optional), no amounts`, async () => {
+    it(`(a) ${year}: employee W-2 PDF -> 409 exactly { error: w2_not_ready } (no reason code), no amounts`, async () => {
       const res = await get(`/api/my/w2/${year}/pdf`, t09.session);
       expect(res.statusCode).toBe(409);
-      const body = res.json() as Record<string, unknown>;
-      expect(body.error).toBe("missing_tax_config");
-      for (const k of Object.keys(body)) expect(["error", "year"]).toContain(k);
-      if ("year" in body) expect(body.year).toBe(year);
+      expect(res.json()).toEqual({ error: "w2_not_ready" });
       noAmounts(res.body, T09_AMOUNTS);
     });
   }
@@ -539,67 +567,79 @@ describe("T15 negative social_security sum -> negative_amount block (fail first)
 
 describe("T16 box4_over_max blocks the W-2, the W-3 PDF and the notices (fail first)", () => {
   it("list 200: blocked, the single box4_over_max issue, amounts still shown to the admin", async () => {
-    const res = await get("/api/admin/annual-forms/w2?year=2024");
+    const res = await get("/api/admin/annual-forms/w2?year=2025");
     expect(res.statusCode, res.body).toBe(200);
     const row = (res.json() as { w2s: Record<string, unknown>[] }).w2s.find(
       (w) => w.employeeId === t16.employeeId,
     );
     expect(row?.blocked).toBe(true);
     expect(row?.issues).toEqual([{ code: "box4_over_max", severity: "block" }]);
-    expect(row?.box3SsWages).toBe("168600.00");
-    expect(row?.box4SsTax).toBe("10453.21");
+    expect(row?.box3SsWages).toBe("176100.00");
+    expect(row?.box4SsTax).toBe("10918.21");
     expect(row?.box6MedicareTax).toBe("2610.00");
   });
 
   it("admin PDFs 409 { error: w2_not_ready, issues: [box4_over_max] }; employee PDF 409 exactly { error: w2_not_ready }; W-3 PDF 409", async () => {
     for (const url of [
-      `/api/admin/annual-forms/w2/${t16.employeeId}/pdf?year=2024`,
-      `/api/admin/annual-forms/w2/${t16.employeeId}/print-packet?year=2024`,
+      `/api/admin/annual-forms/w2/${t16.employeeId}/pdf?year=2025`,
+      `/api/admin/annual-forms/w2/${t16.employeeId}/print-packet?year=2025`,
     ]) {
       const res = await get(url);
       expect(res.statusCode, url).toBe(409);
       expect(res.json(), url).toEqual({ error: "w2_not_ready", issues: ["box4_over_max"] });
     }
-    const mine = await get("/api/my/w2/2024/pdf", t16.session);
+    const mine = await get("/api/my/w2/2025/pdf", t16.session);
     expect(mine.statusCode).toBe(409);
     expect(mine.json()).toEqual({ error: "w2_not_ready" });
-    const w3 = await get("/api/admin/annual-forms/w3/pdf?year=2024");
+    const w3 = await get("/api/admin/annual-forms/w3/pdf?year=2025");
     expect(w3.statusCode).toBe(409);
     expect((w3.json() as { error: string }).error).toBe("w2_not_ready");
   });
 
   it("the W-3 worksheet still refreshes for a box-4 block (figures readable)", async () => {
-    const row = await w2w3Row(2024);
-    expect((row?.worksheet as Record<string, unknown> | null)?.box4SsTax).toBe("10453.21");
+    const row = await w2w3Row(2025);
+    expect((row?.worksheet as Record<string, unknown> | null)?.box4SsTax).toBe("10918.21");
   });
 
-  it("sendW2AvailableNotices holds 2024 while blocked, then sends once corrected", async () => {
-    const notices2024 = async () =>
+  it("notices: 2025 held while blocked, sent once corrected; 2024 (no bundled fw2) held although clean", async () => {
+    const notices = async (userId: string, year: number) =>
       t.db
         .select({ id: emailOutbox.id })
         .from(emailOutbox)
         .where(
-          and(
-            eq(emailOutbox.userId, t16.userId),
-            like(emailOutbox.bodyHtml, "%w2-available:2024%"),
-          ),
+          and(eq(emailOutbox.userId, userId), like(emailOutbox.bodyHtml, `%w2-available:${year}%`)),
         );
 
+    // T16b precondition: the 2024 W-2 is clean, so only the missing form can hold it.
+    const list2024 = await get("/api/admin/annual-forms/w2?year=2024");
+    const row2024 = (list2024.json() as { w2s: Record<string, unknown>[] }).w2s.find(
+      (w) => w.employeeId === t16b.employeeId,
+    );
+    expect(row2024?.issues).toEqual([]);
+    expect(row2024?.blocked).toBe(false);
+
     await sendW2AvailableNotices({ db: t.db, config: t.config }, { today: TODAY });
-    expect(await notices2024()).toHaveLength(0);
+    expect(await notices(t16.userId, 2025)).toHaveLength(0);
+    expect(await notices(t16b.userId, 2024)).toHaveLength(0);
 
     await t.db
       .update(payrollEntries)
-      .set({ amount: "10453.20" })
+      .set({ amount: "10918.20" })
       .where(eq(payrollEntries.id, t16.ssEntryId));
 
     await sendW2AvailableNotices({ db: t.db, config: t.config }, { today: TODAY });
-    expect(await notices2024()).toHaveLength(1);
-    const res = await get("/api/admin/annual-forms/w2?year=2024");
+    expect(await notices(t16.userId, 2025)).toHaveLength(1);
+    expect(await notices(t16b.userId, 2024)).toHaveLength(0);
+    const res = await get("/api/admin/annual-forms/w2?year=2025");
     const row = (res.json() as { w2s: Record<string, unknown>[] }).w2s.find(
       (w) => w.employeeId === t16.employeeId,
     );
     expect(row?.issues).toEqual([]);
     expect(row?.blocked).toBe(false);
+
+    // Idempotent: a third pass sends nothing new for either year.
+    await sendW2AvailableNotices({ db: t.db, config: t.config }, { today: TODAY });
+    expect(await notices(t16.userId, 2025)).toHaveLength(1);
+    expect(await notices(t16b.userId, 2024)).toHaveLength(0);
   });
 });
