@@ -154,7 +154,10 @@ describe("W-2 personas", () => {
   });
 
   it("Ada is W-4 exempt across the whole history", async () => {
-    const w4 = await resolveW4(ctx.db, first.w2.ada, "2026-07-01");
+    const w4 = await resolveW4(ctx.db, first.w2.ada, {
+      certificateAsOf: "2026-07-01",
+      payDate: "2026-07-01",
+    });
     expect(w4?.federalExempt).toBe(true);
     const w4rows = await ctx.db
       .select()

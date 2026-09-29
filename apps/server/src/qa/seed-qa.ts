@@ -466,23 +466,24 @@ async function seedW2People(
     { periodAmount: "5000.00", effectiveFrom: "2024-11-01", effectiveTo: null },
   ]);
 
-  // Ada: W-4 exempt — an election per history year, renewed annually with the
-  // renewal deadline far enough out that the exemption never lapses
-  // mid-history (resolveW4 honours renewal_deadline, IRC §3402(n)).
+  // Ada: W-4 exempt — an election per history year, renewed annually. The
+  // renewal deadline is Feb 16 of the following year: a Feb 15 payment is
+  // still exempt, a Feb 16 one is not (Spec 26 (PAY-173) D3 step 3; resolveW4
+  // judges the lapse by the pay date).
   const w4Rows = (federalExempt: boolean) => [
     {
       taxYear: year - 1,
       federalExempt,
       effectiveFrom: `${year - 1}-01-01`,
       filedDate: `${year - 2}-12-15`,
-      renewalDeadline: federalExempt ? `${year}-02-15` : null,
+      renewalDeadline: federalExempt ? `${year}-02-16` : null,
     },
     {
       taxYear: year,
       federalExempt,
       effectiveFrom: `${year}-01-01`,
       filedDate: `${year - 1}-12-15`,
-      renewalDeadline: federalExempt ? `${year + 1}-02-15` : null,
+      renewalDeadline: federalExempt ? `${year + 1}-02-16` : null,
     },
   ];
   await ensureW4(deps.db, ids.ada, w4Rows(true));

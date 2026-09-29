@@ -1,13 +1,16 @@
 /**
  * Temporal config resolution (spec payroll-engine "Config resolution is
- * temporal"): every lookup is "row effective on the period", computed inside
- * the run transaction. Edits to salary/tax tables never mutate existing runs.
+ * temporal"), computed inside the run transaction. Edits to salary/tax tables
+ * never mutate existing runs. Which date each resolver takes is fixed by
+ * Spec 26 (PAY-173) — see run-dates.ts: tables/YTD/W-4 gate by pay date,
+ * certificates by min(period end, pay date), compensation/work state by
+ * period start, residence by pay date.
  *
  * All functions accept a drizzle transaction or db handle (PgTransaction
  * compatible).
  */
 
-import { and, desc, eq, gt, gte, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
 import {
   compensation,
   employeeResidences,
@@ -22,6 +25,7 @@ import {
   w4Elections,
 } from "@payroll/db";
 import type { Db } from "../db.js";
+import { YTD_KEY_MAX_ID, type YtdKey } from "./run-dates.js";
 import type {
   SnapshotBracket,
   SnapshotState,
@@ -58,26 +62,51 @@ export async function resolveCompensation(
 }
 
 /**
- * W-4 election effective on `periodStart` (latest filed row with
- * effective_from <= period_start). An exempt election whose renewal_deadline
- * has passed no longer exempts (IRC §3402(n)).
+ * W-4 certificate for a payment (Spec 26 (PAY-173) D3):
+ * 1. candidates: effective_from <= certificateAsOf (= min(period end, pay
+ *    date); Treas. Reg. 31.3402(f)(3)-1) AND tax_year's Jan 1 <= payDate (a
+ *    W-4 furnished for next year does not apply to payments this year; IRC
+ *    3402(f)(2)(C));
+ * 2. order: effective start GREATEST(effective_from, tax_year-01-01) DESC,
+ *    filed_date DESC, id DESC — so a next-year form beats a mid-year change
+ *    on a payment in the new year;
+ * 3. exempt lapse, judged by the pay date: an exempt certificate stops
+ *    exempting on LEAST(renewal_deadline, Feb 16 of tax_year + 1) — a Feb 15
+ *    payment is still exempt (Treas. Reg. 31.3402(f)(4)-1(b)(1); Pub 15).
  */
 export async function resolveW4(
   db: DbLike,
   employeeId: number,
-  periodStart: string,
+  asOf: { certificateAsOf: string; payDate: string },
 ): Promise<W4Row | null> {
+  const taxYearStart = sql`make_date(${w4Elections.taxYear}, 1, 1)`;
   const rows = await db
     .select()
     .from(w4Elections)
-    .where(and(eq(w4Elections.employeeId, employeeId), lte(w4Elections.effectiveFrom, periodStart)))
-    .orderBy(desc(w4Elections.effectiveFrom))
+    .where(
+      and(
+        eq(w4Elections.employeeId, employeeId),
+        lte(w4Elections.effectiveFrom, asOf.certificateAsOf),
+        sql`${taxYearStart} <= ${asOf.payDate}::date`,
+      ),
+    )
+    .orderBy(
+      desc(sql`GREATEST(${w4Elections.effectiveFrom}, ${taxYearStart})`),
+      desc(w4Elections.filedDate),
+      desc(w4Elections.id),
+    )
     .limit(1);
   const row = rows[0] ?? null;
-  if (row?.federalExempt && row.renewalDeadline && row.renewalDeadline <= periodStart) {
+  if (row?.federalExempt && exemptLapseDate(row) <= asOf.payDate) {
     return { ...row, federalExempt: false };
   }
   return row;
+}
+
+/** LEAST(COALESCE(renewal_deadline, +∞), Feb 16 of tax_year + 1) — the first pay date that is no longer exempt. */
+export function exemptLapseDate(row: Pick<W4Row, "renewalDeadline" | "taxYear">): string {
+  const statutory = `${row.taxYear + 1}-02-16`;
+  return row.renewalDeadline && row.renewalDeadline < statutory ? row.renewalDeadline : statutory;
 }
 
 /**
@@ -144,59 +173,75 @@ export async function resolveTaxConfig(
 }
 
 /**
- * Prior-YTD gross: SUM of gross_pay payroll_entries from ISSUED runs in the
- * same calendar year before period_start (spec: never wage × period count).
+ * Prior YTD of a run (Spec 26 (PAY-173) D2): sums of payroll_entries of the
+ * employee's ISSUED runs paid in the calendar year of `key.payDate` whose
+ * (pay_date, period_start, id) sorts strictly before the run's key — wages
+ * PAID before this payment (IRC 3121(a)(1), 3102(f), 3306(b)(1)). A new draft
+ * (selfRunId null) keys as id +∞; a recomputed run passes its id and is
+ * excluded. Void runs never count. Amounts in engine units (dollars).
  */
-export async function resolvePriorYtdGross(
+export async function resolvePriorYtd(
   db: DbLike,
   employeeId: number,
-  periodStart: string,
-): Promise<number> {
-  const year = periodStart.slice(0, 4);
-  const rows = await db
-    .select({ total: sql<string>`coalesce(sum(${payrollEntries.amount}), 0)` })
-    .from(payrollEntries)
-    .innerJoin(payrollRuns, eq(payrollEntries.runId, payrollRuns.id))
-    .where(
-      and(
-        eq(payrollRuns.employeeId, employeeId),
-        eq(payrollRuns.status, "issued"),
-        eq(payrollEntries.category, "gross_pay"),
-        gte(payrollRuns.periodStart, `${year}-01-01`),
-        lt(payrollRuns.periodStart, periodStart),
-      ),
-    );
-  return Number(rows[0]?.total ?? 0);
-}
-
-/**
- * Prior-YTD sums per entry category (issued runs, same calendar year, before
- * period_start) — the basis for the snapshot's frozen YTD block (template
- * 1.1.0). Keys are payroll_entries categories.
- */
-export async function resolvePriorYtdByCategory(
-  db: DbLike,
-  employeeId: number,
-  periodStart: string,
-): Promise<Map<string, number>> {
-  const year = periodStart.slice(0, 4);
-  const rows = await db
+  key: YtdKey,
+): Promise<{ year: number; byCategory: Map<string, number>; runPublicIds: string[] }> {
+  const year = Number(key.payDate.slice(0, 4));
+  const where = and(
+    eq(payrollRuns.employeeId, employeeId),
+    eq(payrollRuns.status, "issued"),
+    gte(payrollRuns.payDate, `${year}-01-01`),
+    lt(payrollRuns.payDate, `${year + 1}-01-01`),
+    key.selfRunId === null ? undefined : ne(payrollRuns.id, key.selfRunId),
+    sql`(${payrollRuns.payDate}, ${payrollRuns.periodStart}, ${payrollRuns.id}) < (${key.payDate}::date, ${key.periodStart}::date, ${key.selfRunId ?? YTD_KEY_MAX_ID}::integer)`,
+  );
+  const runs = await db
+    .select({ publicId: payrollRuns.publicId })
+    .from(payrollRuns)
+    .where(where)
+    .orderBy(asc(payrollRuns.payDate), asc(payrollRuns.periodStart), asc(payrollRuns.id));
+  const sums = await db
     .select({
       category: payrollEntries.category,
       total: sql<string>`coalesce(sum(${payrollEntries.amount}), 0)`,
     })
     .from(payrollEntries)
     .innerJoin(payrollRuns, eq(payrollEntries.runId, payrollRuns.id))
+    .where(where)
+    .groupBy(payrollEntries.category);
+  return {
+    year,
+    byCategory: new Map(sums.map((r) => [r.category, Number(r.total)])),
+    runPublicIds: runs.map((r) => r.publicId),
+  };
+}
+
+/**
+ * D6 (Spec 26): the first issued run of the employee, paid in the same
+ * calendar year, whose D2 key sorts AFTER `key` — issuing `key` now would
+ * leave that run's frozen YTD missing this payment. null = no conflict.
+ */
+export async function findLaterIssuedRun(
+  db: DbLike,
+  employeeId: number,
+  key: YtdKey,
+): Promise<{ publicId: string; payDate: string } | null> {
+  const year = Number(key.payDate.slice(0, 4));
+  const rows = await db
+    .select({ publicId: payrollRuns.publicId, payDate: payrollRuns.payDate })
+    .from(payrollRuns)
     .where(
       and(
         eq(payrollRuns.employeeId, employeeId),
         eq(payrollRuns.status, "issued"),
-        gte(payrollRuns.periodStart, `${year}-01-01`),
-        lt(payrollRuns.periodStart, periodStart),
+        gte(payrollRuns.payDate, `${year}-01-01`),
+        lt(payrollRuns.payDate, `${year + 1}-01-01`),
+        key.selfRunId === null ? undefined : ne(payrollRuns.id, key.selfRunId),
+        sql`(${payrollRuns.payDate}, ${payrollRuns.periodStart}, ${payrollRuns.id}) > (${key.payDate}::date, ${key.periodStart}::date, ${key.selfRunId ?? YTD_KEY_MAX_ID}::integer)`,
       ),
     )
-    .groupBy(payrollEntries.category);
-  return new Map(rows.map((r) => [r.category, Number(r.total)]));
+    .orderBy(asc(payrollRuns.payDate), asc(payrollRuns.periodStart), asc(payrollRuns.id))
+    .limit(1);
+  return rows[0] ?? null;
 }
 
 export function toSnapshotW4(row: W4Row): SnapshotW4 {
@@ -273,16 +318,17 @@ export async function resolveResidence(
 }
 
 /**
- * State election for (employee, stateCode) effective on `periodStart` — the
- * latest row with effective_from <= period_start, mirroring resolveW4. State
- * exempt elections have no renewal deadline in V1 (IL-W-4/DE 4 exempt claims
- * are the employee's annual responsibility, not an enforced lapse).
+ * State election for (employee, stateCode) as of `certificateAsOf` = min(period
+ * end, pay date) (Spec 26 (PAY-173) D3a; NC G.S. 105-163.5(c), 86 Ill. Adm.
+ * Code 100.7110, 22 CCR 4340-1): the latest row with effective_from <=
+ * certificateAsOf. State exempt elections have no renewal deadline in V1
+ * (PAY-189).
  */
 export async function resolveStateElection(
   db: DbLike,
   employeeId: number,
   stateCode: string,
-  periodStart: string,
+  certificateAsOf: string,
 ): Promise<StateElectionRow | null> {
   const rows = await db
     .select()
@@ -291,7 +337,7 @@ export async function resolveStateElection(
       and(
         eq(stateWithholdingElections.employeeId, employeeId),
         eq(stateWithholdingElections.stateCode, stateCode),
-        lte(stateWithholdingElections.effectiveFrom, periodStart),
+        lte(stateWithholdingElections.effectiveFrom, certificateAsOf),
       ),
     )
     .orderBy(desc(stateWithholdingElections.effectiveFrom))

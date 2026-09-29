@@ -8,7 +8,7 @@
 import { createHash } from "node:crypto";
 import type { PayrollResult } from "@payroll/engine";
 
-export const SNAPSHOT_TEMPLATE_VERSION = "1.2.0";
+export const SNAPSHOT_TEMPLATE_VERSION = "1.3.0";
 
 /**
  * Year-to-date accumulations THROUGH this run (inclusive), employee-side.
@@ -103,6 +103,31 @@ export interface SnapshotState {
   brackets: SnapshotBracket[];
 }
 
+/**
+ * Which dates and years drove the run (template 1.3.0, Spec 26 (PAY-173) D5).
+ * Absent on snapshots up to 1.2.0 (period-start era).
+ */
+export interface SnapshotResolution {
+  /** Rule marker. */
+  basis: "pay_date";
+  /** As-of for tax tables, YTD, the W-4 next-year gate and exempt lapse. */
+  payDate: string;
+  /** = min(periodEnd, payDate); as-of for W-4 and state-election selection. */
+  certificateAsOf: string;
+  /** = periodStart; as-of for compensation and work state. */
+  earnedAsOf: string;
+  /** year(payDate); equals taxConfig.taxYear and state.taxYear. */
+  taxYear: number;
+  ytd: {
+    /** = taxYear. */
+    year: number;
+    /** The D2 key prior YTD was cut at (runId null = a new draft, id +∞). */
+    before: { payDate: string; periodStart: string; runId: number | null };
+    /** publicIds of the issued runs summed into prior YTD, in key order. */
+    runs: string[];
+  };
+}
+
 export interface RunSnapshot {
   inputs: {
     periodAmount: number;
@@ -121,6 +146,8 @@ export interface RunSnapshot {
     /** Display fields copied in at issuance so re-renders never drift (D5). */
     company: { legalName: string };
     employee: { legalName: string; preferredName: string | null };
+    /** Spec 26 (PAY-173): dates/years used (template 1.3.0). */
+    resolution?: SnapshotResolution;
   };
   result: PayrollResult;
   engineVersion: string;

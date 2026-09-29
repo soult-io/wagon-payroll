@@ -279,7 +279,7 @@ describe("legacy migration", () => {
 
     // First month of a year: YTD == the run itself.
     const jan25 = runs.get("2025-01")!.runSnapshot as RunSnapshot;
-    expect(jan25.templateVersion).toBe("1.2.0");
+    expect(jan25.templateVersion).toBe("1.3.0");
     expect(jan25.ytd).toEqual({
       gross: 4000,
       federalWithholding: 310.13,

@@ -183,7 +183,7 @@ describe("backfillLegacyYtd", () => {
       totalDeductions: 2028.99, // 12000 − 9971.01
       netPay: 9971.01,
     });
-    expect(snapshot.templateVersion).toBe("1.2.0");
+    expect(snapshot.templateVersion).toBe("1.3.0");
     expect(march!.snapshotHash).toBe(snapshotHash(snapshot));
 
     const audit = await db.select().from(auditEvents);
