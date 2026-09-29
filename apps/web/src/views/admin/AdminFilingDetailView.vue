@@ -84,11 +84,23 @@ const anyUnreadableTotals = computed(() => w2Rows.value.some(hasUnreadableTotals
 /** PAY-162: warnings stand but nothing is on hold. */
 const warnOnlyCount = computed(() => (anyW2Blocked.value ? 0 : attentionRows.value.length));
 /** PAY-162 (D1): a W-2/W-3 filing cannot be recorded while held. */
-const markFiledHeld = computed(
-  () =>
-    filing.value?.formType === "w2_w3" &&
-    (anyW2Blocked.value || w2LoadError.value || !filing.value.worksheet),
-);
+/**
+ * PAY-162 (D1): why a W-2/W-3 filing cannot be recorded yet, or null. The
+ * list load failing comes first (holds are unknown), then held W-2s, then a
+ * W-3 worksheet that has not been calculated.
+ */
+const markFiledHeldReason = computed<string | null>(() => {
+  if (filing.value?.formType !== "w2_w3") return null;
+  if (w2LoadError.value) {
+    return "Reload the page to check whether any W-2 is on hold before recording this filing.";
+  }
+  if (anyW2Blocked.value) return "You can record this filing once no W-2s are on hold.";
+  if (!filing.value.worksheet) {
+    return "You can record this filing once the W-3 has been calculated. Open this page again after the next daily update.";
+  }
+  return null;
+});
+const markFiledHeld = computed(() => markFiledHeldReason.value !== null);
 
 const FORM_LABELS: Record<string, string> = {
   "941": "Form 941",
@@ -571,7 +583,7 @@ onMounted(async () => {
       </PageHeader>
 
       <p v-if="!filed && markFiledHeld" class="muted small" style="margin: 0" data-testid="mark-filed-held">
-        You can record this filing once no W-2s are on hold.
+        {{ markFiledHeldReason }}
       </p>
 
       <Message v-if="filed" severity="success" :closable="false">
