@@ -91,7 +91,7 @@ interface GenerateDeps {
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 /**
- * Serialise run generation / approve / issue per employee (Spec 26 D4): two
+ * Serialise run generation / approve / issue / void per employee (Spec 26 D4): two
  * runs of one employee can never be issued in parallel with each other's YTD
  * missing. Transaction-scoped; released at commit/rollback.
  */
@@ -813,8 +813,8 @@ function transitionPatch(
 
 /**
  * Apply a state-machine transition with audit_events in the same transaction.
- * Approve and issue first run the Spec 26 checks (assertRunCurrent) under the
- * per-employee lock. Issue inserts the payslip_issued outbox row.
+ * Every action takes the per-employee lock; approve and issue then run the
+ * Spec 26 checks (assertRunCurrent). Issue inserts the payslip_issued outbox row.
  */
 export async function transitionRun(
   deps: GenerateDeps,
@@ -827,21 +827,26 @@ export async function transitionRun(
     return await db.transaction(async (tx) => {
       const found = await getRunByPublicId(tx, input.publicId);
       if (!found) throw new PayrollServiceError("run_not_found", `run ${input.publicId} not found`);
-      let run = found;
-      if (input.action !== "void") {
-        await lockEmployeeRuns(tx, run.employeeId);
-        // Re-read under the lock: a parallel issue may have changed it.
-        run = (await getRunByPublicId(tx, input.publicId)) ?? run;
-      }
+      await lockEmployeeRuns(tx, found.employeeId);
+      // Re-read under the lock: a parallel issue may have changed it.
+      const run = (await getRunByPublicId(tx, input.publicId)) ?? found;
       assertTransitionAllowed(rule, run, input);
       if (input.action !== "void") await assertRunCurrent(tx, deps, run, input.action);
 
+      // Conditional on the status read: a writer outside the lock can never
+      // be overwritten (e.g. an issued run turned void).
       const updated = await tx
         .update(payrollRuns)
         .set(transitionPatch(input, new Date()))
-        .where(eq(payrollRuns.id, run.id))
+        .where(and(eq(payrollRuns.id, run.id), eq(payrollRuns.status, run.status)))
         .returning();
-      const next = updated[0]!;
+      const next = updated[0];
+      if (!next) {
+        throw new PayrollServiceError(
+          "invalid_transition",
+          `cannot ${input.action} this run: its status changed from '${run.status}' while the request was running; reload and try again`,
+        );
+      }
 
       await tx.insert(auditEvents).values({
         actorId: input.actorId,
