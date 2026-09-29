@@ -1284,3 +1284,38 @@ export const stateDepositSchedules = pgTable(
     ),
   ],
 );
+
+/**
+ * Spec 24 (PAY-116) — the employer's state withholding account number, per
+ * state and first tax year. The W-2 for tax year Y uses the row with the
+ * greatest `from_tax_year` ≤ Y (box 15). IL and NY fall back to the company
+ * EIN at render time when no row applies; that default is never copied
+ * here. `state_id` is encrypted at rest ("enc:v1:", field-encryption.ts)
+ * and write-only: API reads, audit rows and the UI see a mask only. The
+ * encrypted CHECK makes a plaintext write fail in the database: 39 is the
+ * base64url length of the smallest ciphertext (12-byte IV + 16-byte tag +
+ * 1 byte).
+ */
+export const companyStateIds = pgTable(
+  "company_state_ids",
+  {
+    id: serial("id").primaryKey(),
+    companyId: integer("company_id")
+      .notNull()
+      .references(() => company.id),
+    stateCode: text("state_code").notNull(),
+    /** First tax year this ID applies to; W-2 for year Y uses max(from_tax_year) ≤ Y. */
+    fromTaxYear: integer("from_tax_year").notNull(),
+    /** Employer state account number — encrypted at rest ("enc:v1:"), write-only. Spec 24 (PAY-116). */
+    stateId: text("state_id").notNull(),
+    createdBy: text("created_by"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    unique("company_state_ids_company_state_year_uniq").on(t.companyId, t.stateCode, t.fromTaxYear),
+    check("company_state_ids_state_code_check", sql`${t.stateCode} ~ '^[A-Z]{2}$'`),
+    check("company_state_ids_year_check", sql`${t.fromTaxYear} BETWEEN 2000 AND 2100`),
+    check("company_state_ids_encrypted_check", sql`${t.stateId} ~ '^enc:v1:[A-Za-z0-9_-]{39,}$'`),
+  ],
+);

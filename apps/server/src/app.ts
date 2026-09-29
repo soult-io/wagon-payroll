@@ -25,6 +25,7 @@ import { registerMyInvoiceRoutes } from "./routes/my-invoices.js";
 import { registerAdminNotificationRoutes } from "./routes/admin-notifications.js";
 import { registerAdminEmployeeRoutes } from "./routes/admin-employees.js";
 import { registerAdminSettingsRoutes } from "./routes/admin-settings.js";
+import { registerAdminStateIdRoutes } from "./routes/admin-state-ids.js";
 import { registerAdminContractorRoutes } from "./routes/admin-contractors.js";
 import { registerAdminDepositRoutes } from "./routes/admin-deposits.js";
 import { registerAdminCalendarRoutes } from "./routes/admin-calendar.js";
@@ -45,6 +46,8 @@ export interface BuildAppDeps {
   database?: Database;
   /** Re-register scheduler cron after pay-schedule edits (wired in index.ts). */
   onScheduleChange?: () => Promise<void>;
+  /** Test override: a pino destination for the request log (default stdout). */
+  logStream?: { write(msg: string): void };
 }
 
 export async function buildApp(deps: BuildAppDeps = {}) {
@@ -55,7 +58,9 @@ export async function buildApp(deps: BuildAppDeps = {}) {
   const guards = createGuards({ auth, db });
 
   const app = Fastify({
-    logger: { level: config.logLevel },
+    logger: deps.logStream
+      ? { level: config.logLevel, stream: deps.logStream }
+      : { level: config.logLevel },
     trustProxy: true,
   });
 
@@ -91,6 +96,7 @@ export async function buildApp(deps: BuildAppDeps = {}) {
   registerAdminNotificationRoutes(app, { db, config, guards });
   registerAdminEmployeeRoutes(app, { auth, db, config, guards });
   registerAdminSettingsRoutes(app, { db, config, guards });
+  registerAdminStateIdRoutes(app, { db, config, guards });
   registerAdminContractorRoutes(app, { db, config, guards });
   registerAdminDepositRoutes(app, { db, config, guards });
   registerAdminCalendarRoutes(app, { db, guards });
