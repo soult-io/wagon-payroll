@@ -197,9 +197,14 @@ export async function addComment(
  * The effective date a W-4 approval applies (Spec 26 (PAY-173) D3 step 4).
  * - explicit override: must be inside the lawful window, else 400
  *   `invalid_w4_effective_date` with the window;
- * - no override: the requested date, clamped to the nearest allowed date. If
- *   that precedes the next un-run pay period, 409 `effective_date` proposing
- *   the nearest allowed date to that period start (never past the window).
+ * - no override, requested date outside the window: 409 `effective_date`
+ *   proposing the nearest allowed date (never applied silently; the admin
+ *   approves it through the override flow);
+ * - no override, requested date before the next un-run pay period: 409
+ *   `effective_date` proposing the nearest allowed date to that period start
+ *   (never past the window).
+ * Either proposal: the nearest allowed date, moved up to the next un-run
+ * period start when the window reaches it.
  */
 async function w4ApprovalDate(
   db: DbLike,
@@ -223,16 +228,28 @@ async function w4ApprovalDate(
     );
   }
   if (override) return override;
-  const clamped = clampToW4Window(request.effectiveFrom, window);
-  if (clamped < nextUnrun) {
-    const proposed = clampToW4Window(nextUnrun, window);
+  const requested = request.effectiveFrom;
+  const clamped = clampToW4Window(requested, window);
+  const proposed = clamped < nextUnrun ? clampToW4Window(nextUnrun, window) : clamped;
+  if (clamped !== requested) {
+    const range =
+      window.earliest === null
+        ? `on or before ${window.latest}`
+        : `between ${window.earliest} and ${window.latest}`;
     throw new ChangeRequestError(
       "effective_date",
-      `This W-4 would start on ${clamped}, but payroll has already been run for pay periods before ${nextUnrun}. Payroll that has already been run is not recalculated. Suggested start date: ${proposed}, the closest date the IRS rules allow. To approve, set "Effective from" to the date you want and approve again.`,
+      `This W-4 can't start on ${requested}. IRS rules only allow a start date ${range}, based on the date the employee filed it. Suggested start date: ${proposed}. To approve, check "Effective from" and approve again.`,
       { window, proposedEffectiveFrom: proposed },
     );
   }
-  return clamped;
+  if (requested < nextUnrun) {
+    throw new ChangeRequestError(
+      "effective_date",
+      `This W-4 would start on ${requested}, but payroll has already been run for pay periods before ${nextUnrun}. Payroll that has already been run is not recalculated. Suggested start date: ${proposed}, the closest date the IRS rules allow. To approve, set "Effective from" to the date you want and approve again.`,
+      { window, proposedEffectiveFrom: proposed },
+    );
+  }
+  return requested;
 }
 
 /**
@@ -418,9 +435,7 @@ export async function approveRequest(
               effectiveFromOverride: input.effectiveFromOverride,
               requestedEffectiveFrom: request.effectiveFrom,
             }
-          : effectiveFrom !== request.effectiveFrom
-            ? { requestedEffectiveFrom: request.effectiveFrom } // clamped to the W-4 window
-            : {}),
+          : {}),
       },
     });
 
