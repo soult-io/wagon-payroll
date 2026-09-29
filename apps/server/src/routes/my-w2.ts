@@ -13,16 +13,14 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { and, eq } from "drizzle-orm";
 import { employees } from "@payroll/db";
-import { renderW2EmployeePacket, W2FormAmountError } from "@payroll/documents";
+import { renderW2EmployeePacket } from "@payroll/documents";
 import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
 import type { Guards } from "../plugins/guards.js";
 import {
-  FormNotAvailableError,
+  annualBlockBody,
   isMyW2Ready,
   listMyW2Years,
-  MissingTaxConfigError,
-  W2BlockedError,
   w2AvailableOn,
   w2InputFor,
 } from "../filings/annual.js";
@@ -32,7 +30,6 @@ import {
   withdrawW2Consent,
 } from "../filings/w2-consent.js";
 import { FilingServiceError } from "../filings/shared.js";
-import { AnnualFiguresDefectError } from "../filings/w2-boxes.js";
 
 interface Deps {
   db: Db;
@@ -67,23 +64,16 @@ async function sendW2Pdf(
       .header("content-disposition", `inline; filename="w2-${year}.pdf"`)
       .send(pdf);
   } catch (err) {
-    // PAY-162: fixed bodies — the employee never sees issue codes or amounts.
-    if (err instanceof MissingTaxConfigError) {
+    // PAY-162: bare bodies — no year, no codes, no ids. A missing tax config
+    // keeps its own code (payroll-calc-auditor T09); every other refusal —
+    // held, unreadable, no official form, or no W-2 for this employee and
+    // year — is the same w2_not_ready.
+    const block = annualBlockBody(err);
+    if (block?.error === "missing_tax_config") {
       return reply.code(409).send({ error: "missing_tax_config" });
     }
-    if (
-      err instanceof W2BlockedError ||
-      err instanceof AnnualFiguresDefectError ||
-      err instanceof W2FormAmountError
-    ) {
+    if (block || err instanceof FilingServiceError) {
       return reply.code(409).send({ error: "w2_not_ready" });
-    }
-    if (err instanceof FormNotAvailableError) {
-      return reply.code(409).send({ error: "form_not_available", year });
-    }
-    if (err instanceof FilingServiceError) {
-      const status = err.code === "not_found" ? 404 : 409;
-      return reply.code(status).send({ error: err.code, message: err.message });
     }
     throw err;
   }

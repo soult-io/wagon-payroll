@@ -31,7 +31,13 @@ import {
 } from "@payroll/db";
 import { round2 } from "@payroll/engine/money";
 import { effectiveFutaRate } from "@payroll/engine";
-import { type FormAddress, hasTemplate, type W2Input, type W3Input } from "@payroll/documents";
+import {
+  type FormAddress,
+  hasTemplate,
+  W2FormAmountError,
+  type W2Input,
+  type W3Input,
+} from "@payroll/documents";
 import { EVENT_TYPE, w2Available as tplW2Available } from "@payroll/notifications";
 import { formatCents } from "@payroll/shared";
 import type { Db } from "../db.js";
@@ -143,6 +149,28 @@ export class FormNotAvailableError extends Error {
     super(`no bundled W-2/W-3 form for ${year}`);
     this.name = "FormNotAvailableError";
   }
+}
+
+/** A fixed 409 body for a W-2/W-3 refusal: codes and year only, never amounts or ids. */
+export type AnnualBlockBody =
+  | { error: "missing_tax_config"; year: number }
+  | { error: "w2_not_ready"; issues: readonly W2IssueCode[] }
+  | { error: "form_not_available"; year: number };
+
+/**
+ * PAY-162: the one classifier for W-2/W-3 refusals. Returns the 409 body for
+ * a known refusal, or null for anything else (the caller rethrows). Data
+ * defects map to w2_not_ready / internal_mismatch so they never 500 and
+ * never echo a value.
+ */
+export function annualBlockBody(err: unknown): AnnualBlockBody | null {
+  if (err instanceof MissingTaxConfigError) return { error: "missing_tax_config", year: err.year };
+  if (err instanceof W2BlockedError) return { error: "w2_not_ready", issues: err.issues };
+  if (err instanceof AnnualFiguresDefectError || err instanceof W2FormAmountError) {
+    return { error: "w2_not_ready", issues: ["internal_mismatch"] };
+  }
+  if (err instanceof FormNotAvailableError) return { error: "form_not_available", year: err.year };
+  return null;
 }
 
 /** The federal tax_config row for `year`, or MissingTaxConfigError. */

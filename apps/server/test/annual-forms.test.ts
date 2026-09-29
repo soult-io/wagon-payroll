@@ -972,13 +972,15 @@ describe("my W-2 routes", () => {
     expect(pdf.headers["content-type"]).toContain("application/pdf");
     expect(pdf.rawPayload.subarray(0, 5).toString()).toBe("%PDF-");
 
-    // A year without runs 404s; a not-yet-available year 409s (no enumeration).
+    // PAY-162: a year without runs and a not-yet-available year both answer
+    // the same bare 409 (no enumeration, no ids).
     const noRuns = await t.app.inject({
       method: "GET",
       url: "/api/my/w2/2020/pdf",
       headers: session,
     });
-    expect(noRuns.statusCode).toBe(404);
+    expect(noRuns.statusCode).toBe(409);
+    expect(noRuns.json()).toEqual({ error: "w2_not_ready" });
     const gated = await t.app.inject({
       method: "GET",
       url: "/api/my/w2/2099/pdf",

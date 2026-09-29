@@ -284,7 +284,6 @@ describe("S1 every employee PDF refusal is exactly 409 { error: w2_not_ready }",
   const cases: Array<[string, () => { session: Record<string, string> }, number]> = [
     ["blocked (box4_over_max)", () => blocked, 2023],
     ["figures defect (internal_mismatch)", () => defect, 2025],
-    ["missing federal tax config", () => other, 2021],
     ["no bundled W-2 form", () => other, 2024],
     ["no W-2 for the employee in the year", () => other, 2023],
   ];
@@ -295,6 +294,12 @@ describe("S1 every employee PDF refusal is exactly 409 { error: w2_not_ready }",
       expect(res.json()).toEqual({ error: "w2_not_ready" });
     });
   }
+
+  it("missing federal tax config keeps its own bare code (auditor T09)", async () => {
+    const res = await get("/api/my/w2/2021/pdf", other.session);
+    expect(res.statusCode, res.body).toBe(409);
+    expect(res.json()).toEqual({ error: "missing_tax_config" });
+  });
 
   it("unprintable amount (documents W2FormAmountError)", async () => {
     doubles.badAmount = true;

@@ -40,6 +40,7 @@ import {
   assertFederalTaxConfig,
   compute940Worksheet,
   computeW3Worksheet,
+  MissingTaxConfigError,
   refreshAnnualWorksheet,
   W2BlockedError,
   yearW2BlockCodes,
@@ -558,14 +559,34 @@ export async function listFilings(
         issues: [{ code: "missing_tax_config", severity: "block", year: row.year }],
       });
     } else {
-      const blocked = (await yearW2BlockCodes(db, row.year)).length > 0;
-      out.push({
-        ...row,
-        issues: blocked ? [{ code: "w2_blocked", severity: "block", year: row.year }] : [],
-      });
+      out.push(await w2w3ListRow(db, row));
     }
   }
   return out;
+}
+
+/**
+ * PAY-162: one w2_w3 list row whose year has a tax_config row. A filed row
+ * is never tagged (its W-2s went out; a later block is a W-2c question). A
+ * config row deleted since the list query still yields missing_tax_config,
+ * never a 500.
+ */
+async function w2w3ListRow(db: Db, row: TaxFilingRow): Promise<FilingListRow> {
+  if (row.status === "filed") return { ...row, issues: [] };
+  try {
+    const blocked = (await yearW2BlockCodes(db, row.year)).length > 0;
+    return {
+      ...row,
+      issues: blocked ? [{ code: "w2_blocked", severity: "block", year: row.year }] : [],
+    };
+  } catch (err) {
+    if (!(err instanceof MissingTaxConfigError)) throw err;
+    return {
+      ...row,
+      worksheet: null,
+      issues: [{ code: "missing_tax_config", severity: "block", year: row.year }],
+    };
+  }
 }
 
 /** Filing + its adjustment records (admin detail view). */
@@ -664,18 +685,26 @@ export async function markFiled(
 
   return db.transaction(async (tx) => {
     // Spec 24 (PAY-116): state ID writes check filed w2_w3 years under this lock.
+    if (before.formType === "w2_w3") await tx.execute(W2W3_FILING_LOCK);
+    // PAY-162: re-read under the transaction (row-locked); a concurrent
+    // mark-filed that won the race is refused here, not recorded twice.
+    const current = (
+      await tx
+        .select({ status: taxFilings.status, worksheet: taxFilings.worksheet })
+        .from(taxFilings)
+        .where(eq(taxFilings.id, filingId))
+        .limit(1)
+        .for("update")
+    )[0];
+    if (!current || current.status === "filed") {
+      throw new FilingServiceError("invalid_transition", "filing is already recorded");
+    }
     if (before.formType === "w2_w3") {
-      await tx.execute(W2W3_FILING_LOCK);
       // PAY-162: a year without federal tax_config, with a blocked W-2, or
       // whose W-3 worksheet was never computed cannot be recorded filed.
       await assertFederalTaxConfig(tx, before.year);
       const codes = await yearW2BlockCodes(tx, before.year);
-      const current = await tx
-        .select({ worksheet: taxFilings.worksheet })
-        .from(taxFilings)
-        .where(eq(taxFilings.id, filingId))
-        .limit(1);
-      if (codes.length > 0 || !current[0]?.worksheet) throw new W2BlockedError(codes);
+      if (codes.length > 0 || !current.worksheet) throw new W2BlockedError(codes);
     }
     const updated = await tx
       .update(taxFilings)
@@ -686,8 +715,10 @@ export async function markFiled(
         filingReference: reference || null,
         updatedAt: new Date(),
       })
-      .where(eq(taxFilings.id, filingId))
+      .where(and(eq(taxFilings.id, filingId), ne(taxFilings.status, "filed")))
       .returning();
+    const filed = updated[0];
+    if (!filed) throw new FilingServiceError("invalid_transition", "filing is already recorded");
 
     await tx.insert(auditEvents).values({
       actorId,
@@ -702,7 +733,7 @@ export async function markFiled(
         filingReference: reference || null,
       },
     });
-    return updated[0]!;
+    return filed;
   });
 }
 

@@ -265,7 +265,8 @@ describe("R5 no bundled form -> 409 form_not_available on every PDF route", () =
     }
     const mine = await get("/api/my/w2/2024/pdf", good.session);
     expect(mine.statusCode).toBe(409);
-    expect((mine.json() as { error: string }).error).toBe("form_not_available");
+    // PAY-162 round 2 (S1): the employee gets the bare w2_not_ready body.
+    expect(mine.json()).toEqual({ error: "w2_not_ready" });
   });
 });
 

@@ -177,5 +177,7 @@ export function w3Totals(boxes: readonly W2BoxesCents[]): W3TotalsCents {
   for (const b of boxes) {
     for (const k of BOX_KEYS) totals[k] += b[k];
   }
+  // Never hand formatCents an unsafe total (its error message carries the value).
+  if (BOX_KEYS.some((k) => !Number.isSafeInteger(totals[k]))) throw new AnnualFiguresDefectError();
   return totals;
 }
