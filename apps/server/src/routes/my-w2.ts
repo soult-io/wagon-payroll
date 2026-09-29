@@ -13,11 +13,17 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { and, eq } from "drizzle-orm";
 import { employees } from "@payroll/db";
-import { renderW2EmployeePacket } from "@payroll/documents";
+import { hasTemplate, renderW2EmployeePacket } from "@payroll/documents";
 import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
 import type { Guards } from "../plugins/guards.js";
-import { listMyW2Years, w2AvailableOn, w2InputFor } from "../filings/annual.js";
+import {
+  listMyW2Years,
+  MissingTaxConfigError,
+  W2BlockedError,
+  w2AvailableOn,
+  w2InputFor,
+} from "../filings/annual.js";
 import {
   consentToElectronicW2,
   w2ConsentStatus,
@@ -50,12 +56,21 @@ async function sendW2Pdf(
 ) {
   try {
     const input = await w2InputFor(deps, employeeId, year);
+    // PAY-162: no official form bundled for the year → 409 before rendering.
+    if (!hasTemplate(input.taxYear, "fw2")) {
+      return reply.code(409).send({ error: "form_not_available", year });
+    }
     const pdf = await renderW2EmployeePacket(input);
     return reply
       .header("content-type", "application/pdf")
       .header("content-disposition", `inline; filename="w2-${year}.pdf"`)
       .send(pdf);
   } catch (err) {
+    // PAY-162: fixed bodies — the employee never sees issue codes or amounts.
+    if (err instanceof MissingTaxConfigError) {
+      return reply.code(409).send({ error: "missing_tax_config" });
+    }
+    if (err instanceof W2BlockedError) return reply.code(409).send({ error: "w2_not_ready" });
     if (err instanceof FilingServiceError) {
       const status = err.code === "not_found" ? 404 : 409;
       return reply.code(status).send({ error: err.code, message: err.message });

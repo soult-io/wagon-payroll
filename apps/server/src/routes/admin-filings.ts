@@ -16,6 +16,7 @@ import type { AppConfig } from "../config.js";
 import type { Guards } from "../plugins/guards.js";
 import { f940PdfInputFor } from "../filings/form-940-pdf.js";
 import { f941PdfInputFor } from "../filings/form-941-pdf.js";
+import { MissingTaxConfigError, W2BlockedError } from "../filings/annual.js";
 import {
   addAdjustment,
   DEFAULT_FILING_REMINDER_OFFSETS,
@@ -86,6 +87,13 @@ function serviceError(
   err: unknown,
   reply: { code: (n: number) => { send: (b: unknown) => unknown } },
 ) {
+  // PAY-162: fixed bodies, codes and year only — never a message or amount.
+  if (err instanceof MissingTaxConfigError) {
+    return reply.code(409).send({ error: "missing_tax_config", year: err.year });
+  }
+  if (err instanceof W2BlockedError) {
+    return reply.code(409).send({ error: "w2_not_ready", issues: err.issues });
+  }
   if (err instanceof FilingServiceError) {
     const status = err.code === "not_found" ? 404 : err.code === "invalid_input" ? 400 : 409;
     return reply.code(status).send({ error: err.code, message: err.message });
