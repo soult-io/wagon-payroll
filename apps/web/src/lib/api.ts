@@ -1260,18 +1260,53 @@ export interface WorksheetW3 {
 
 export type FilingWorksheet = Worksheet941 | Worksheet940 | WorksheetW3;
 
-/** PAY-11 — one employee's W-2 box figures (admin review list; no PII). */
+/** PAY-162 — W-2 check codes (never amounts). */
+export type W2IssueCode =
+  | "internal_mismatch"
+  | "negative_amount"
+  | "box4_over_max"
+  | "box4_without_box3"
+  | "box6_without_box5"
+  | "box4_off_rate"
+  | "box6_off_rate";
+
+export interface W2Issue {
+  code: W2IssueCode;
+  severity: "block" | "warn";
+}
+
+/**
+ * PAY-11 — one employee's W-2 box figures (admin review list; no PII).
+ * PAY-162: boxes are money strings ("8000.00"); null while the figures are
+ * unreadable or negative. `blocked` = a block issue stands.
+ */
 export interface W2FiguresRow {
   employeeId: number;
   legalName: string;
-  box1Wages: number;
-  box2FederalWithheld: number;
-  box3SsWages: number;
-  box4SsTax: number;
-  box5MedicareWages: number;
-  box6MedicareTax: number;
+  box1Wages: string | null;
+  box2FederalWithheld: string | null;
+  box3SsWages: string | null;
+  box4SsTax: string | null;
+  box5MedicareWages: string | null;
+  box6MedicareTax: string | null;
+  issues: W2Issue[];
+  blocked: boolean;
   /** PAY-19 — active electronic-delivery consent on file. */
   consented: boolean;
+}
+
+/** PAY-162 — one W-2 year on the employee's list; `ready` = downloadable now. */
+export interface MyW2Year {
+  year: number;
+  availableOn: string;
+  ready: boolean;
+}
+
+/** PAY-162 — a filing-level block issue on the tax-filings list. */
+export interface FilingIssue {
+  code: "missing_tax_config" | "w2_blocked";
+  severity: "block";
+  year: number;
 }
 
 export interface TaxFilingRow {
@@ -1291,6 +1326,8 @@ export interface TaxFilingRow {
   remindersSent: number[];
   createdAt: string | null;
   updatedAt: string | null;
+  /** PAY-162 — list rows only: filing-level block issues (codes + year). */
+  issues?: FilingIssue[];
 }
 
 export interface TaxAdjustmentRow {
@@ -1381,9 +1418,14 @@ export const adminFilingsApi = {
     put<{ offsets: number[] }>("/api/admin/tax-filings/reminder-schedule", { offsets }),
   // PAY-11 — annual W-2/W-3 (on-demand PDFs, never stored)
   w2List: (year: number) =>
-    get<{ year: number; available: boolean; availableOn: string; w2s: W2FiguresRow[] }>(
-      `/api/admin/annual-forms/w2?year=${year}`,
-    ),
+    get<{
+      year: number;
+      available: boolean;
+      availableOn: string;
+      /** PAY-162: the official W-2/W-3 form is bundled for the year. */
+      formAvailable: boolean;
+      w2s: W2FiguresRow[];
+    }>(`/api/admin/annual-forms/w2?year=${year}`),
   w2PdfUrl: (employeeId: number, year: number) =>
     `/api/admin/annual-forms/w2/${employeeId}/pdf?year=${year}`,
   w2PrintPacketUrl: (employeeId: number, year: number) =>
@@ -1432,7 +1474,7 @@ export interface W2ConsentStatus {
 
 /** PAY-11 — employee's own W-2s (available from January of the next year). */
 export const myW2Api = {
-  list: () => get<{ w2s: { year: number; availableOn: string }[] }>("/api/my/w2"),
+  list: () => get<{ w2s: MyW2Year[] }>("/api/my/w2"),
   pdfUrl: (year: number) => `/api/my/w2/${year}/pdf`,
   // PAY-19 — electronic-delivery consent (Pub 1141 §2.4)
   consent: () => get<W2ConsentStatus>("/api/my/w2/consent"),

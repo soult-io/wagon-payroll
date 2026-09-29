@@ -12,12 +12,20 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import Button from "primevue/button";
+import Message from "primevue/message";
 import DataTable from "primevue/datatable";
 import Column from "primevue/column";
 import SelectButton from "primevue/selectbutton";
 import PageHeader from "../../components/PageHeader.vue";
 import EmptyState from "../../components/EmptyState.vue";
-import { myW2Api, payslipsApi, type PayslipSummary, type W2ConsentStatus } from "../../lib/api";
+import {
+  type MyW2Year,
+  myW2Api,
+  payslipsApi,
+  type PayslipSummary,
+  type W2ConsentStatus,
+} from "../../lib/api";
+import { myW2NotReadyText } from "../../lib/w2-issues";
 import { useMoney } from "../../composables/useMoney";
 import { useDates } from "../../composables/useDates";
 import { useNotify } from "../../composables/useNotify";
@@ -31,7 +39,7 @@ const notify = useNotify();
 const loading = ref(true);
 const payslips = ref<PayslipSummary[]>([]);
 /** PAY-11: tax years with a downloadable W-2 (empty for contractors). */
-const w2Years = ref<{ year: number; availableOn: string }[]>([]);
+const w2Years = ref<MyW2Year[]>([]);
 /** PAY-19: electronic-delivery consent (null while unknown / not a W-2 employee). */
 const w2Consent = ref<W2ConsentStatus | null>(null);
 const consentBusy = ref(false);
@@ -177,9 +185,13 @@ onMounted(async () => {
       <template v-else-if="w2Consent?.consented">
         <div v-for="w2 in w2Years" :key="w2.year" class="row" style="justify-content: space-between">
           <span><strong>{{ w2.year }}</strong> <span class="muted small">· available since {{ date(w2.availableOn) }}</span></span>
-          <a :href="myW2Api.pdfUrl(w2.year)" target="_blank" rel="noopener">
+          <a v-if="w2.ready" :href="myW2Api.pdfUrl(w2.year)" target="_blank" rel="noopener">
             <Button label="Download PDF" icon="pi pi-download" size="small" text />
           </a>
+          <!-- PAY-162: not ready (held, or the form is not in the app yet) — no reason given. -->
+          <Message v-else severity="info" :closable="false" role="status">
+            {{ myW2NotReadyText(w2.year) }}
+          </Message>
         </div>
         <p class="muted small" style="margin: 0">
           Receiving W-2s electronically since {{ dateTime(w2Consent.consentedAt) }} ·

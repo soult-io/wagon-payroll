@@ -47,6 +47,7 @@ import {
 import { effectiveFutaRate } from "@payroll/engine";
 import { round2 } from "@payroll/engine/money";
 import { EVENT_TYPE } from "@payroll/notifications";
+import { formatCents } from "@payroll/shared";
 import {
   pdfStructure,
   prepareW2EmployeePacket,
@@ -480,29 +481,32 @@ describe("W-2 figures and the W-3 worksheet", () => {
     const ss = await perEmployeeCategory(2025, "social_security");
     const medicare = await perEmployeeCategory(2025, "medicare");
     const byId = new Map(figures.map((f) => [f.employeeId, f]));
+    // PAY-162: boxes are integer cents; compare as printed strings.
+    const printed = (cents: number | null) => (cents === null ? null : formatCents(cents));
+    const dollars = (n: number) => round2(n).toFixed(2);
     for (const [employeeId, box1] of gross) {
       const f = byId.get(employeeId);
       if (!f) throw new Error(`missing W-2 figures for employee ${employeeId}`);
-      expect(f.box1Wages).toBe(box1);
-      expect(f.box2FederalWithheld).toBe(round2(fed.get(employeeId) ?? 0));
+      expect(printed(f.box1Cents)).toBe(dollars(box1));
+      expect(printed(f.box2Cents)).toBe(dollars(fed.get(employeeId) ?? 0));
       // Box 3 applies the 2025 SS wage cap ($176,100 — nobody here reaches it).
-      expect(f.box3SsWages).toBe(round2(Math.min(box1, 176_100)));
-      expect(f.box4SsTax).toBe(round2(ss.get(employeeId) ?? 0));
-      expect(f.box5MedicareWages).toBe(box1); // Medicare wages are uncapped
-      expect(f.box6MedicareTax).toBe(round2(medicare.get(employeeId) ?? 0));
+      expect(printed(f.box3Cents)).toBe(dollars(Math.min(box1, 176_100)));
+      expect(printed(f.box4Cents)).toBe(dollars(ss.get(employeeId) ?? 0));
+      expect(printed(f.box5Cents)).toBe(dollars(box1)); // Medicare wages are uncapped
+      expect(printed(f.box6Cents)).toBe(dollars(medicare.get(employeeId) ?? 0));
     }
 
     // W-3 = the box-by-box aggregate across all W-2s.
     const w3 = await computeW3Worksheet(t.db, 2025);
     expect(w3.employeeCount).toBe(13);
-    const sum = (pick: (f: (typeof figures)[number]) => number) =>
-      round2(figures.reduce((acc, f) => acc + pick(f), 0)).toFixed(2);
-    expect(w3.box1Wages).toBe(sum((f) => f.box1Wages));
-    expect(w3.box2FederalWithheld).toBe(sum((f) => f.box2FederalWithheld));
-    expect(w3.box3SsWages).toBe(sum((f) => f.box3SsWages));
-    expect(w3.box4SsTax).toBe(sum((f) => f.box4SsTax));
-    expect(w3.box5MedicareWages).toBe(sum((f) => f.box5MedicareWages));
-    expect(w3.box6MedicareTax).toBe(sum((f) => f.box6MedicareTax));
+    const sum = (pick: (f: (typeof figures)[number]) => number | null) =>
+      formatCents(figures.reduce((acc, f) => acc + (pick(f) ?? 0), 0));
+    expect(w3.box1Wages).toBe(sum((f) => f.box1Cents));
+    expect(w3.box2FederalWithheld).toBe(sum((f) => f.box2Cents));
+    expect(w3.box3SsWages).toBe(sum((f) => f.box3Cents));
+    expect(w3.box4SsTax).toBe(sum((f) => f.box4Cents));
+    expect(w3.box5MedicareWages).toBe(sum((f) => f.box5Cents));
+    expect(w3.box6MedicareTax).toBe(sum((f) => f.box6Cents));
     // The contractor's $5,000 legacy gross is excluded from the aggregate.
     expect(w3.box1Wages).toBe("109333.32");
   });
@@ -543,7 +547,7 @@ describe("W-2/W-3 PDF rendering", () => {
     expect(input.employee.ssn).toBe("123-45-6789"); // 9 stored digits → ###-##-####
     expect(input.employee.legalName).toBe("Annual Acct A");
     expect(input.controlNumber).toBe(String(acctA.employeeId)); // box d (D5)
-    expect(input.box1Wages).toBe(8000);
+    expect(input.box1Wages).toBe("8000.00");
   });
 
   it("places every figure in the exact AcroForm fields, pre-flatten", async () => {
@@ -567,12 +571,12 @@ describe("W-2/W-3 PDF rendering", () => {
       expect(text(map.employeeAddress)).toContain("Apt 4");
       expect(text(map.employeeAddress)).toContain("Cupertino, CA 95014");
       // Money boxes — to the cent, IRS convention (no $, no commas).
-      expect(text(map.box1Wages)).toBe(input.box1Wages.toFixed(2));
-      expect(text(map.box2FederalWithheld)).toBe(input.box2FederalWithheld.toFixed(2));
-      expect(text(map.box3SsWages)).toBe(input.box3SsWages.toFixed(2));
-      expect(text(map.box4SsTax)).toBe(input.box4SsTax.toFixed(2));
-      expect(text(map.box5MedicareWages)).toBe(input.box5MedicareWages.toFixed(2));
-      expect(text(map.box6MedicareTax)).toBe(input.box6MedicareTax.toFixed(2));
+      expect(text(map.box1Wages)).toBe(input.box1Wages);
+      expect(text(map.box2FederalWithheld)).toBe(input.box2FederalWithheld);
+      expect(text(map.box3SsWages)).toBe(input.box3SsWages);
+      expect(text(map.box4SsTax)).toBe(input.box4SsTax);
+      expect(text(map.box5MedicareWages)).toBe(input.box5MedicareWages);
+      expect(text(map.box6MedicareTax)).toBe(input.box6MedicareTax);
     }
   });
 
@@ -593,7 +597,7 @@ describe("W-2/W-3 PDF rendering", () => {
     const input = await w3InputFor({ db: t.db, config: t.config }, 2025);
     expect(input.taxYear).toBe(2025);
     expect(input.employeeCount).toBe(13);
-    expect(input.box1Wages).toBe(109333.32);
+    expect(input.box1Wages).toBe("109333.32");
 
     const doc = await prepareW3(input);
     const form = doc.getForm();
@@ -961,7 +965,7 @@ describe("my W-2 routes", () => {
 
     const list = await t.app.inject({ method: "GET", url: "/api/my/w2", headers: session });
     expect(list.statusCode, list.body).toBe(200);
-    expect(list.json()).toEqual({ w2s: [{ year: 2025, availableOn: "2026-01-01" }] });
+    expect(list.json()).toEqual({ w2s: [{ year: 2025, availableOn: "2026-01-01", ready: true }] });
 
     const pdf = await t.app.inject({
       method: "GET",
@@ -972,13 +976,15 @@ describe("my W-2 routes", () => {
     expect(pdf.headers["content-type"]).toContain("application/pdf");
     expect(pdf.rawPayload.subarray(0, 5).toString()).toBe("%PDF-");
 
-    // A year without runs 404s; a not-yet-available year 409s (no enumeration).
+    // PAY-162: a year without runs and a not-yet-available year both answer
+    // the same bare 409 (no enumeration, no ids).
     const noRuns = await t.app.inject({
       method: "GET",
       url: "/api/my/w2/2020/pdf",
       headers: session,
     });
-    expect(noRuns.statusCode).toBe(404);
+    expect(noRuns.statusCode).toBe(409);
+    expect(noRuns.json()).toEqual({ error: "w2_not_ready" });
     const gated = await t.app.inject({
       method: "GET",
       url: "/api/my/w2/2099/pdf",

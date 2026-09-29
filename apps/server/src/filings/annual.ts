@@ -18,7 +18,7 @@
  * available on January 1 of the following year (w2AvailableOn gate).
  */
 
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import {
   appSettings,
   company,
@@ -31,8 +31,15 @@ import {
 } from "@payroll/db";
 import { round2 } from "@payroll/engine/money";
 import { effectiveFutaRate } from "@payroll/engine";
-import type { FormAddress, W2Input, W3Input } from "@payroll/documents";
+import {
+  type FormAddress,
+  hasTemplate,
+  W2FormAmountError,
+  type W2Input,
+  type W3Input,
+} from "@payroll/documents";
 import { EVENT_TYPE, w2Available as tplW2Available } from "@payroll/notifications";
+import { formatCents } from "@payroll/shared";
 import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
 import { templateContext } from "../notify/outbox.js";
@@ -46,6 +53,19 @@ import {
   todayIso,
   worksheetHash,
 } from "./shared.js";
+import {
+  AnnualFiguresDefectError,
+  checkW2Boxes,
+  type FicaParams,
+  parseRate5,
+  sumCents,
+  type W2BoxesCents,
+  type W2Issue,
+  type W2IssueCode,
+  type W2Sums,
+  w2Boxes,
+  w3Totals,
+} from "./w2-boxes.js";
 
 // ---------------------------------------------------------------------------
 // Pure date math
@@ -73,7 +93,7 @@ export function isW2Available(year: number, today: string = todayIso()): boolean
 async function federalCaps(
   db: Db,
   year: number,
-): Promise<{ ssWageCap: number; futaRate: number; futaWageCap: number; sutaCreditRate: number }> {
+): Promise<{ futaRate: number; futaWageCap: number; sutaCreditRate: number }> {
   const rows = await db
     .select()
     .from(taxConfig)
@@ -84,7 +104,6 @@ async function federalCaps(
   // has a tax_config row (generation requires it).
   const sutaCreditRate = Number(row?.sutaCreditRate ?? 0.054);
   return {
-    ssWageCap: Number(row?.socialSecurityWageCap ?? 176_100),
     // PAY-18: the net FUTA rate derives from the configured SUTA credit
     // (0.06 − credit), never from the legacy mirrored futa_rate column.
     futaRate: effectiveFutaRate(sutaCreditRate),
@@ -93,8 +112,120 @@ async function federalCaps(
   };
 }
 
-/** Per-employee sums of the given entry categories, issued runs in the year, W-2 employees only. */
-async function perEmployeeSums(db: Db, year: number): Promise<Map<number, Record<string, number>>> {
+// ---------------------------------------------------------------------------
+// PAY-162: fail-closed federal tax_config lookup + W-2 block errors
+// ---------------------------------------------------------------------------
+
+/**
+ * PAY-162: no federal tax_config row for a year whose W-2s are requested.
+ * Fixed message, year only. Every W-2/W-3 surface maps it to 409
+ * { error: "missing_tax_config", year }.
+ */
+export class MissingTaxConfigError extends Error {
+  constructor(public readonly year: number) {
+    super(`no federal tax config for ${year}`);
+    this.name = "MissingTaxConfigError";
+  }
+}
+
+/**
+ * PAY-162: a W-2 (or the W-3 of its year) cannot be issued while a block
+ * issue stands. Fixed message; carries issue codes only, never amounts.
+ * Deliberately not a FilingServiceError (whose mappers copy err.message).
+ */
+export class W2BlockedError extends Error {
+  constructor(public readonly issues: readonly W2IssueCode[]) {
+    super("W-2 not ready");
+    this.name = "W2BlockedError";
+  }
+}
+
+/**
+ * PAY-162: the year has no bundled official W-2/W-3 form, so no PDF can be
+ * made. Raised before any PII is read. Maps to 409 form_not_available.
+ */
+export class FormNotAvailableError extends Error {
+  constructor(public readonly year: number) {
+    super(`no bundled W-2/W-3 form for ${year}`);
+    this.name = "FormNotAvailableError";
+  }
+}
+
+/** A fixed 409 body for a W-2/W-3 refusal: codes and year only, never amounts or ids. */
+export type AnnualBlockBody =
+  | { error: "missing_tax_config"; year: number }
+  | { error: "w2_not_ready"; issues: readonly W2IssueCode[] }
+  | { error: "form_not_available"; year: number };
+
+/**
+ * PAY-162: the one classifier for W-2/W-3 refusals. Returns the 409 body for
+ * a known refusal, or null for anything else (the caller rethrows). Data
+ * defects map to w2_not_ready / internal_mismatch so they never 500 and
+ * never echo a value.
+ */
+export function annualBlockBody(err: unknown): AnnualBlockBody | null {
+  if (err instanceof MissingTaxConfigError) return { error: "missing_tax_config", year: err.year };
+  if (err instanceof W2BlockedError) return { error: "w2_not_ready", issues: err.issues };
+  if (err instanceof AnnualFiguresDefectError || err instanceof W2FormAmountError) {
+    return { error: "w2_not_ready", issues: ["internal_mismatch"] };
+  }
+  if (err instanceof FormNotAvailableError) return { error: "form_not_available", year: err.year };
+  return null;
+}
+
+/** The federal tax_config row for `year`, or MissingTaxConfigError. */
+async function federalConfigRow(db: Pick<Db, "select">, year: number) {
+  const rows = await db
+    .select()
+    .from(taxConfig)
+    .where(and(eq(taxConfig.jurisdiction, "federal"), eq(taxConfig.taxYear, year)))
+    .limit(1);
+  const row = rows[0];
+  if (!row) throw new MissingTaxConfigError(year);
+  return row;
+}
+
+/** PAY-162: throw MissingTaxConfigError unless `year` has a federal tax_config row. */
+export async function assertFederalTaxConfig(db: Pick<Db, "select">, year: number): Promise<void> {
+  await federalConfigRow(db, year);
+}
+
+/**
+ * PAY-162: the year's FICA rates/limits as exact integers — the pay year's
+ * own tax_config row, never a fallback (fails closed when missing).
+ */
+async function ficaParams(db: Pick<Db, "select">, year: number): Promise<FicaParams> {
+  const row = await federalConfigRow(db, year);
+  return {
+    ssWageCapCents: sumCents(row.socialSecurityWageCap),
+    ssRate5: parseRate5(row.socialSecurityRate),
+    medicareRate5: parseRate5(row.medicareRate),
+    addlMedicareRate5: parseRate5(row.medicareAdditionalRate),
+    addlMedicareThresholdCents: sumCents(row.medicareAdditionalThreshold),
+  };
+}
+
+/** One employee-year: category sums as SQL numeric text + issued-run count. */
+interface EmployeeYearSums {
+  sums: Record<string, string>;
+  runCount: number;
+}
+
+/**
+ * Per-employee sums of every entry category, issued runs paid in the year,
+ * W-2 employees only. Sums stay SQL text (PAY-162: no Number() of money);
+ * runCount = distinct issued runs (the box 4/6 check tolerance).
+ */
+async function perEmployeeSums(
+  db: Pick<Db, "select">,
+  year: number,
+): Promise<Map<number, EmployeeYearSums>> {
+  const inYear = and(
+    eq(payrollRuns.status, "issued"),
+    eq(employees.employmentType, "w2"),
+    sql`${payrollRuns.payDate} >= ${`${year}-01-01`}`,
+    sql`${payrollRuns.payDate} <= ${`${year}-12-31`}`,
+  );
   const rows = await db
     .select({
       employeeId: payrollRuns.employeeId,
@@ -104,19 +235,25 @@ async function perEmployeeSums(db: Db, year: number): Promise<Map<number, Record
     .from(payrollEntries)
     .innerJoin(payrollRuns, eq(payrollEntries.runId, payrollRuns.id))
     .innerJoin(employees, eq(payrollRuns.employeeId, employees.id))
-    .where(
-      and(
-        eq(payrollRuns.status, "issued"),
-        eq(employees.employmentType, "w2"),
-        sql`${payrollRuns.payDate} >= ${`${year}-01-01`}`,
-        sql`${payrollRuns.payDate} <= ${`${year}-12-31`}`,
-      ),
-    )
+    .where(inYear)
     .groupBy(payrollRuns.employeeId, payrollEntries.category);
-  const byEmployee = new Map<number, Record<string, number>>();
+  const counts = await db
+    .select({
+      employeeId: payrollRuns.employeeId,
+      runCount: sql<number>`count(distinct ${payrollRuns.id})::int`,
+    })
+    .from(payrollRuns)
+    .innerJoin(employees, eq(payrollRuns.employeeId, employees.id))
+    .where(inYear)
+    .groupBy(payrollRuns.employeeId);
+  const runCounts = new Map(counts.map((c) => [c.employeeId, c.runCount]));
+  const byEmployee = new Map<number, EmployeeYearSums>();
   for (const row of rows) {
-    const entry = byEmployee.get(row.employeeId) ?? {};
-    entry[row.category] = Number(row.total);
+    const entry = byEmployee.get(row.employeeId) ?? {
+      sums: {},
+      runCount: runCounts.get(row.employeeId) ?? 0,
+    };
+    entry.sums[row.category] = row.total;
     byEmployee.set(row.employeeId, entry);
   }
   return byEmployee;
@@ -169,7 +306,14 @@ export interface Worksheet940 {
  */
 export async function compute940Worksheet(db: Db, year: number): Promise<Worksheet940> {
   const caps = await federalCaps(db, year);
-  const byEmployee = await perEmployeeSums(db, year);
+  // PAY-162: the 940 keeps its Number arithmetic (cents move is a follow-up),
+  // converting the text sums here exactly as before.
+  const byEmployee = new Map(
+    [...(await perEmployeeSums(db, year))].map(([id, e]) => [
+      id,
+      Object.fromEntries(Object.entries(e.sums).map(([k, v]) => [k, Number(v)])),
+    ]),
+  );
 
   const line3 = round2([...byEmployee.values()].reduce((acc, e) => acc + (e.gross_pay ?? 0), 0));
   const line7 = round2(
@@ -242,28 +386,82 @@ export async function compute940Worksheet(db: Db, year: number): Promise<Workshe
 // W-2 figures (per employee) + W-3 aggregate worksheet
 // ---------------------------------------------------------------------------
 
-/** One employee's annual W-2 box figures — NO PII (PII joins at PDF render). */
-export interface W2Figures {
+/** Six null boxes: the W-2's figures are unreadable or negative (never printed). */
+interface W2BoxesWithheld {
+  box1Cents: null;
+  box2Cents: null;
+  box3Cents: null;
+  box4Cents: null;
+  box5Cents: null;
+  box6Cents: null;
+}
+
+const WITHHELD_BOXES: W2BoxesWithheld = {
+  box1Cents: null,
+  box2Cents: null,
+  box3Cents: null,
+  box4Cents: null,
+  box5Cents: null,
+  box6Cents: null,
+};
+
+/**
+ * One employee's annual W-2 box figures in integer cents — NO PII (PII joins
+ * at PDF render). PAY-162: boxes are null when an internal_mismatch or
+ * negative_amount issue stands; `issues` carry codes only.
+ */
+export type W2Figures = {
   employeeId: number;
   legalName: string;
-  box1Wages: number;
-  box2FederalWithheld: number;
-  box3SsWages: number;
-  box4SsTax: number;
-  box5MedicareWages: number;
-  box6MedicareTax: number;
+  /** Distinct issued runs in the year (box 4/6 check tolerance). */
+  runCount: number;
+  issues: W2Issue[];
+} & (W2BoxesCents | W2BoxesWithheld);
+
+/** True when any block issue stands (the W-2 cannot be issued). */
+export function isW2Blocked(f: Pick<W2Figures, "issues">): boolean {
+  return f.issues.some((i) => i.severity === "block");
+}
+
+/** The block issue codes of the given W-2s, deduplicated, in first-seen order. */
+function blockCodes(figures: readonly Pick<W2Figures, "issues">[]): W2IssueCode[] {
+  const codes: W2IssueCode[] = [];
+  for (const f of figures) {
+    for (const i of f.issues) {
+      if (i.severity === "block" && !codes.includes(i.code)) codes.push(i.code);
+    }
+  }
+  return codes;
+}
+
+/** Boxes and issues for one employee-year; a data defect is contained per employee. */
+function figuresFor(
+  sums: EmployeeYearSums,
+  params: FicaParams,
+): Pick<W2Figures, "issues"> & (W2BoxesCents | W2BoxesWithheld) {
+  let boxes: W2BoxesCents;
+  try {
+    boxes = w2Boxes(sums.sums as W2Sums, params);
+  } catch (err) {
+    if (!(err instanceof AnnualFiguresDefectError)) throw err;
+    return { ...WITHHELD_BOXES, issues: [{ code: "internal_mismatch", severity: "block" }] };
+  }
+  const issues = checkW2Boxes(boxes, sums.runCount, params);
+  if (issues.some((i) => i.code === "negative_amount")) return { ...WITHHELD_BOXES, issues };
+  return { ...boxes, issues };
 }
 
 /**
  * Annual W-2 figures per W-2 employee from frozen issued-run entries.
  * Contractors never appear (employment_type = 'w2' only). Box 3 applies the
- * year's Social Security wage cap; box 5 is uncapped (= box 1).
+ * pay year's Social Security wage base from tax_config; a year with issued
+ * runs and no federal tax_config row throws MissingTaxConfigError (PAY-162).
  */
-export async function w2FiguresForYear(db: Db, year: number): Promise<W2Figures[]> {
-  const caps = await federalCaps(db, year);
+export async function w2FiguresForYear(db: Pick<Db, "select">, year: number): Promise<W2Figures[]> {
   const byEmployee = await perEmployeeSums(db, year);
   const employeeIds = [...byEmployee.keys()];
   if (employeeIds.length === 0) return [];
+  const params = await ficaParams(db, year);
   const rows = await db
     .select({ id: employees.id, legalName: employees.legalName })
     .from(employees)
@@ -277,22 +475,36 @@ export async function w2FiguresForYear(db: Db, year: number): Promise<W2Figures[
 
   const figures: W2Figures[] = [];
   for (const [employeeId, sums] of byEmployee) {
-    const box1 = round2(sums.gross_pay ?? 0);
     figures.push({
       employeeId,
       legalName: names.get(employeeId) ?? `#${employeeId}`,
-      box1Wages: box1,
-      box2FederalWithheld: round2(sums.federal_withholding ?? 0),
-      box3SsWages: round2(Math.min(box1, caps.ssWageCap)),
-      box4SsTax: round2(sums.social_security ?? 0),
-      box5MedicareWages: box1,
-      box6MedicareTax: round2(sums.medicare ?? 0),
+      runCount: sums.runCount,
+      ...figuresFor(sums, params),
     });
   }
   // Deterministic code-point sort (localeCompare is host-dependent).
   return figures.sort((a, b) =>
     a.legalName < b.legalName ? -1 : a.legalName > b.legalName ? 1 : 0,
   );
+}
+
+/** The six W-2 boxes as printed ("8000.00"), via formatCents only. */
+export function w2BoxStrings(b: W2BoxesCents): {
+  box1Wages: string;
+  box2FederalWithheld: string;
+  box3SsWages: string;
+  box4SsTax: string;
+  box5MedicareWages: string;
+  box6MedicareTax: string;
+} {
+  return {
+    box1Wages: formatCents(b.box1Cents),
+    box2FederalWithheld: formatCents(b.box2Cents),
+    box3SsWages: formatCents(b.box3Cents),
+    box4SsTax: formatCents(b.box4Cents),
+    box5MedicareWages: formatCents(b.box5Cents),
+    box6MedicareTax: formatCents(b.box6Cents),
+  };
 }
 
 export interface WorksheetW3 {
@@ -308,22 +520,23 @@ export interface WorksheetW3 {
   box6MedicareTax: string;
 }
 
-/** W-3 transmittal worksheet — the box-by-box aggregate across all W-2s. */
+/** The readable W-2s, or W2BlockedError when any W-2's figures are withheld. */
+function readableFigures(figures: readonly W2Figures[]): (W2Figures & W2BoxesCents)[] {
+  const withheld = figures.filter((f) => f.box1Cents === null);
+  if (withheld.length > 0) throw new W2BlockedError(blockCodes(withheld));
+  return figures as (W2Figures & W2BoxesCents)[];
+}
+
+/**
+ * W-3 transmittal worksheet — the box-by-box aggregate across all W-2s,
+ * exact integer sums (PAY-162; keys and value strings unchanged). Throws
+ * W2BlockedError while any W-2 has internal_mismatch / negative_amount, so
+ * the stored worksheet is not refreshed until the defect is gone.
+ */
 export async function computeW3Worksheet(db: Db, year: number): Promise<WorksheetW3> {
-  const figures = await w2FiguresForYear(db, year);
-  const sum = (pick: (f: W2Figures) => number) =>
-    toMoney(round2(figures.reduce((acc, f) => acc + pick(f), 0)));
-  return {
-    form: "w2_w3",
-    year,
-    employeeCount: figures.length,
-    box1Wages: sum((f) => f.box1Wages),
-    box2FederalWithheld: sum((f) => f.box2FederalWithheld),
-    box3SsWages: sum((f) => f.box3SsWages),
-    box4SsTax: sum((f) => f.box4SsTax),
-    box5MedicareWages: sum((f) => f.box5MedicareWages),
-    box6MedicareTax: sum((f) => f.box6MedicareTax),
-  };
+  const figures = readableFigures(await w2FiguresForYear(db, year));
+  const totals = w3Totals(figures);
+  return { form: "w2_w3", year, employeeCount: totals.employeeCount, ...w2BoxStrings(totals) };
 }
 
 // ---------------------------------------------------------------------------
@@ -336,17 +549,34 @@ export async function computeW3Worksheet(db: Db, year: number): Promise<Workshee
  * caller checks status, same as the 941 path).
  */
 export async function refreshAnnualWorksheet(db: Db, filing: TaxFilingRow): Promise<boolean> {
-  const worksheet =
-    filing.formType === "940"
-      ? await compute940Worksheet(db, filing.year)
-      : await computeW3Worksheet(db, filing.year);
+  let worksheet: Worksheet940 | WorksheetW3;
+  if (filing.formType === "940") {
+    worksheet = await compute940Worksheet(db, filing.year);
+  } else {
+    // PAY-162: no refresh while the year's figures cannot be computed — the
+    // stored worksheet and hash stay exactly as they were.
+    try {
+      worksheet = await computeW3Worksheet(db, filing.year);
+    } catch (err) {
+      if (err instanceof W2BlockedError) return false;
+      if (err instanceof MissingTaxConfigError || err instanceof AnnualFiguresDefectError) {
+        // Fixed messages only (year, or no detail) — sync never stops here.
+        console.warn(`[filings] W-3 worksheet not refreshed: ${err.message}`);
+        return false;
+      }
+      throw err;
+    }
+  }
   const hash = worksheetHash(worksheet);
   if (hash === filing.worksheetHash) return false;
-  await db
+  // PAY-162: `filing` may be a stale read — a mark-filed that committed
+  // since then must never have its frozen worksheet overwritten.
+  const updated = await db
     .update(taxFilings)
     .set({ worksheet, worksheetHash: hash, updatedAt: new Date() })
-    .where(eq(taxFilings.id, filing.id));
-  return true;
+    .where(and(eq(taxFilings.id, filing.id), ne(taxFilings.status, "filed")))
+    .returning({ id: taxFilings.id });
+  return updated.length > 0;
 }
 
 export interface AnnualSyncResult {
@@ -494,7 +724,7 @@ export async function w2InputFor(
   deps: Deps,
   employeeId: number,
   year: number,
-  opts: { today?: string } = {},
+  opts: { today?: string; requireBundledForm?: boolean } = {},
 ): Promise<W2Input> {
   const { db, config } = deps;
   if (!isW2Available(year, opts.today)) {
@@ -507,6 +737,13 @@ export async function w2InputFor(
   if (!figures) {
     throw new FilingServiceError("not_found", `no W-2 for employee ${employeeId} in ${year}`);
   }
+  // PAY-162: a blocked W-2 is never rendered.
+  if (isW2Blocked(figures) || figures.box1Cents === null) {
+    throw new W2BlockedError(blockCodes([figures]));
+  }
+  // PAY-162: PDF callers stop here when the year has no official form —
+  // before any PII is read or decrypted.
+  if (opts.requireBundledForm && !hasTemplate(year, "fw2")) throw new FormNotAvailableError(year);
   const rows = await db.select().from(employees).where(eq(employees.id, employeeId)).limit(1);
   const employee = rows[0];
   if (!employee) throw new FilingServiceError("not_found", `employee ${employeeId} not found`);
@@ -526,12 +763,7 @@ export async function w2InputFor(
     },
     // Box d control number = the employee ID (D5).
     controlNumber: String(employee.id),
-    box1Wages: figures.box1Wages,
-    box2FederalWithheld: figures.box2FederalWithheld,
-    box3SsWages: figures.box3SsWages,
-    box4SsTax: figures.box4SsTax,
-    box5MedicareWages: figures.box5MedicareWages,
-    box6MedicareTax: figures.box6MedicareTax,
+    ...w2BoxStrings(figures),
   };
 }
 
@@ -539,7 +771,7 @@ export async function w2InputFor(
 export async function w3InputFor(
   deps: Deps,
   year: number,
-  opts: { today?: string } = {},
+  opts: { today?: string; requireBundledForm?: boolean } = {},
 ): Promise<W3Input> {
   const { db, config } = deps;
   if (!isW2Available(year, opts.today)) {
@@ -548,20 +780,20 @@ export async function w3InputFor(
       `W-3 for ${year} becomes available on ${w2AvailableOn(year)}`,
     );
   }
-  const w3 = await computeW3Worksheet(db, year);
-  if (w3.employeeCount === 0) {
+  const figures = await w2FiguresForYear(db, year);
+  if (figures.length === 0) {
     throw new FilingServiceError("not_found", `no W-2s for ${year}`);
   }
+  // PAY-162: no W-3 while any W-2 of the year is blocked.
+  const blocked = blockCodes(figures);
+  if (blocked.length > 0) throw new W2BlockedError(blocked);
+  if (opts.requireBundledForm && !hasTemplate(year, "fw3")) throw new FormNotAvailableError(year);
+  const totals = w3Totals(readableFigures(figures));
   return {
     taxYear: year,
     employer: await employerBlock(db, config),
-    employeeCount: w3.employeeCount,
-    box1Wages: Number(w3.box1Wages),
-    box2FederalWithheld: Number(w3.box2FederalWithheld),
-    box3SsWages: Number(w3.box3SsWages),
-    box4SsTax: Number(w3.box4SsTax),
-    box5MedicareWages: Number(w3.box5MedicareWages),
-    box6MedicareTax: Number(w3.box6MedicareTax),
+    employeeCount: totals.employeeCount,
+    ...w2BoxStrings(totals),
   };
 }
 
@@ -629,6 +861,54 @@ async function w2RecipientsForYear(db: Db, year: number): Promise<string[]> {
   return rows.map((r) => r.userId).filter((id): id is string => id !== null);
 }
 
+/** PAY-162: every W-2 of the year computes and none is blocked. */
+async function w2sIssuable(db: Db, year: number): Promise<boolean> {
+  // PAY-162: no notice while the year's official W-2 form is not bundled —
+  // the employee could not download it.
+  if (!hasTemplate(year, "fw2")) return false;
+  try {
+    return (await yearW2BlockCodes(db, year)).length === 0;
+  } catch (err) {
+    if (err instanceof MissingTaxConfigError) return false;
+    throw err;
+  }
+}
+
+/**
+ * PAY-162: the block codes standing on any W-2 of the year (empty when every
+ * W-2 is issuable). Unreadable config figures count as internal_mismatch.
+ * MissingTaxConfigError propagates — callers report it on its own.
+ */
+export async function yearW2BlockCodes(
+  db: Pick<Db, "select">,
+  year: number,
+): Promise<W2IssueCode[]> {
+  try {
+    return blockCodes(await w2FiguresForYear(db, year));
+  } catch (err) {
+    if (err instanceof AnnualFiguresDefectError) return ["internal_mismatch"];
+    throw err;
+  }
+}
+
+/**
+ * PAY-162 (D2): the employee's W-2 for the year can be downloaded — it
+ * computes, is not blocked, and the year's official form is bundled. A bare
+ * boolean: no reason codes reach the employee.
+ */
+export async function isMyW2Ready(db: Db, employeeId: number, year: number): Promise<boolean> {
+  if (!hasTemplate(year, "fw2")) return false;
+  try {
+    const figures = (await w2FiguresForYear(db, year)).find((f) => f.employeeId === employeeId);
+    return figures !== undefined && figures.box1Cents !== null && !isW2Blocked(figures);
+  } catch (err) {
+    if (err instanceof MissingTaxConfigError || err instanceof AnnualFiguresDefectError) {
+      return false;
+    }
+    throw err;
+  }
+}
+
 /**
  * Mail every W-2 employee when their W-2 for a tax year becomes available
  * (January of the following year). Fires at most once per year per employee:
@@ -653,6 +933,9 @@ export async function sendW2AvailableNotices(
   let sent = 0;
   for (const { year } of years) {
     if (!isW2Available(year, today) || notified.includes(year)) continue;
+    // PAY-162: hold the year's notice while any of its W-2s is blocked (or
+    // its figures cannot be computed); a later tick sends once resolved.
+    if (!(await w2sIssuable(db, year))) continue;
     const rendered = tplW2Available(ctx, { taxYear: year });
     const marker = `w2-available:${year}`;
     for (const userId of await w2RecipientsForYear(db, year)) {

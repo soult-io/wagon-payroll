@@ -437,6 +437,7 @@ export {
   renderW3Pdf,
   pdfStructure,
   splitLegalName,
+  W2FormAmountError,
   type FormAddress,
   type W2Input,
   type W3Input,
@@ -455,7 +456,12 @@ export {
   type W2FieldMap,
 } from "./forms/field-map-2025.js";
 
-export { templateBytes, templateYears, type FormKind } from "./forms/templates.js";
+export {
+  hasTemplate,
+  templateBytes,
+  templateYears,
+  type FormKind,
+} from "./forms/templates.js";
 
 export {
   prepareF941,

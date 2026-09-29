@@ -60,17 +60,17 @@ export interface W2Input {
   /** Box d control number — the employee ID (D5). */
   controlNumber: string;
   /** Box 1 — wages, tips, other compensation. */
-  box1Wages: number;
+  box1Wages: string;
   /** Box 2 — federal income tax withheld. */
-  box2FederalWithheld: number;
+  box2FederalWithheld: string;
   /** Box 3 — Social Security wages (capped). */
-  box3SsWages: number;
+  box3SsWages: string;
   /** Box 4 — Social Security tax withheld (employee share). */
-  box4SsTax: number;
+  box4SsTax: string;
   /** Box 5 — Medicare wages and tips (no cap). */
-  box5MedicareWages: number;
+  box5MedicareWages: string;
   /** Box 6 — Medicare tax withheld (employee share). */
-  box6MedicareTax: number;
+  box6MedicareTax: string;
 }
 
 /** W-3 transmittal — the box-by-box aggregate across all W-2s of the year. */
@@ -79,21 +79,34 @@ export interface W3Input {
   employer: W2Input["employer"];
   /** Number of W-2 statements summarized. */
   employeeCount: number;
-  box1Wages: number;
-  box2FederalWithheld: number;
-  box3SsWages: number;
-  box4SsTax: number;
-  box5MedicareWages: number;
-  box6MedicareTax: number;
+  box1Wages: string;
+  box2FederalWithheld: string;
+  box3SsWages: string;
+  box4SsTax: string;
+  box5MedicareWages: string;
+  box6MedicareTax: string;
 }
 
 // ---------------------------------------------------------------------------
 // Formatting helpers (official forms: plain figures, no $ or thousands commas)
 // ---------------------------------------------------------------------------
 
-/** "8000.00" — IRS information-return convention (no $, no commas). */
-function money(amount: number): string {
-  return amount.toFixed(2);
+/** Fixed-message rejection of a W-2/W-3 box value. Never echoes the value. */
+export class W2FormAmountError extends Error {
+  constructor() {
+    super("W-2/W-3 box amount is not an unsigned money string");
+    this.name = "W2FormAmountError";
+  }
+}
+
+/**
+ * "8000.00" — IRS information-return convention (no $, no commas). PAY-162:
+ * boxes arrive as formatCents strings; only unsigned "d+.dd" is printable
+ * (W-2 money boxes are unsigned), anything else throws without echoing it.
+ */
+function money(amount: string): string {
+  if (!/^\d+\.\d{2}$/.test(amount)) throw new W2FormAmountError();
+  return amount;
 }
 
 /** "123456789" → "12-3456789"; anything already formatted passes through. */

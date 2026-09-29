@@ -17,7 +17,13 @@ import { renderW2EmployeePacket } from "@payroll/documents";
 import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
 import type { Guards } from "../plugins/guards.js";
-import { listMyW2Years, w2AvailableOn, w2InputFor } from "../filings/annual.js";
+import {
+  annualBlockBody,
+  isMyW2Ready,
+  listMyW2Years,
+  w2AvailableOn,
+  w2InputFor,
+} from "../filings/annual.js";
 import {
   consentToElectronicW2,
   w2ConsentStatus,
@@ -49,16 +55,21 @@ async function sendW2Pdf(
   reply: FastifyReply,
 ) {
   try {
-    const input = await w2InputFor(deps, employeeId, year);
+    // PAY-162: requireBundledForm stops before any PII is read when the
+    // year has no official form.
+    const input = await w2InputFor(deps, employeeId, year, { requireBundledForm: true });
     const pdf = await renderW2EmployeePacket(input);
     return reply
       .header("content-type", "application/pdf")
       .header("content-disposition", `inline; filename="w2-${year}.pdf"`)
       .send(pdf);
   } catch (err) {
-    if (err instanceof FilingServiceError) {
-      const status = err.code === "not_found" ? 404 : 409;
-      return reply.code(status).send({ error: err.code, message: err.message });
+    // PAY-162: every refusal is the same bare body — no year, no codes, no
+    // ids — whether the W-2 is held, unreadable, unconfigured, has no
+    // official form, or does not exist for this employee and year.
+    const block = annualBlockBody(err);
+    if (block || err instanceof FilingServiceError) {
+      return reply.code(409).send({ error: "w2_not_ready" });
     }
     throw err;
   }
@@ -68,8 +79,16 @@ export function registerMyW2Routes(app: FastifyInstance, deps: Deps): void {
   const { db, config, guards } = deps;
 
   app.get("/api/my/w2", { preHandler: guards.requireAuth }, async (req) => {
-    const years = await listMyW2Years(db, req.authUser!.id);
-    return { w2s: years.map((year) => ({ year, availableOn: w2AvailableOn(year) })) };
+    const userId = req.authUser!.id;
+    const years = await listMyW2Years(db, userId);
+    const employee = years.length > 0 ? await myEmployee(db, userId) : null;
+    const w2s = [];
+    for (const year of years) {
+      // PAY-162 (D2): a bare ready flag — never why a W-2 is not ready.
+      const ready = employee ? await isMyW2Ready(db, employee.id, year) : false;
+      w2s.push({ year, availableOn: w2AvailableOn(year), ready });
+    }
+    return { w2s };
   });
 
   /** Consent status + the disclosure text shown before the consent button. */

@@ -16,6 +16,7 @@ import type { AppConfig } from "../config.js";
 import type { Guards } from "../plugins/guards.js";
 import { f940PdfInputFor } from "../filings/form-940-pdf.js";
 import { f941PdfInputFor } from "../filings/form-941-pdf.js";
+import { annualBlockBody } from "../filings/annual.js";
 import {
   addAdjustment,
   DEFAULT_FILING_REMINDER_OFFSETS,
@@ -86,6 +87,9 @@ function serviceError(
   err: unknown,
   reply: { code: (n: number) => { send: (b: unknown) => unknown } },
 ) {
+  // PAY-162: W-2/W-3 refusals — fixed bodies, codes and year only.
+  const block = annualBlockBody(err);
+  if (block) return reply.code(409).send(block);
   if (err instanceof FilingServiceError) {
     const status = err.code === "not_found" ? 404 : err.code === "invalid_input" ? 400 : 409;
     return reply.code(status).send({ error: err.code, message: err.message });

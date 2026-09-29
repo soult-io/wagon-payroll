@@ -49,6 +49,11 @@ export function templateYears(): number[] {
   return Object.keys(TEMPLATES).map(Number);
 }
 
+/** True when `year` bundles an official template for `form` (no file read). */
+export function hasTemplate(year: number, form: FormKind): boolean {
+  return TEMPLATES[year]?.[`${form}Sha256` as const] !== undefined;
+}
+
 /**
  * Load + verify a bundled template. Throws when the year has no bundled
  * template for the form or the file's checksum does not match the vetted
