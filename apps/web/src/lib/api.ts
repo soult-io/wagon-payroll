@@ -1260,18 +1260,46 @@ export interface WorksheetW3 {
 
 export type FilingWorksheet = Worksheet941 | Worksheet940 | WorksheetW3;
 
-/** PAY-11 — one employee's W-2 box figures (admin review list; no PII). */
+/** PAY-162 — W-2 check codes (never amounts). */
+export type W2IssueCode =
+  | "internal_mismatch"
+  | "negative_amount"
+  | "box4_over_max"
+  | "box4_without_box3"
+  | "box6_without_box5"
+  | "box4_off_rate"
+  | "box6_off_rate";
+
+export interface W2Issue {
+  code: W2IssueCode;
+  severity: "block" | "warn";
+}
+
+/**
+ * PAY-11 — one employee's W-2 box figures (admin review list; no PII).
+ * PAY-162: boxes are money strings ("8000.00"); null while the figures are
+ * unreadable or negative. `blocked` = a block issue stands.
+ */
 export interface W2FiguresRow {
   employeeId: number;
   legalName: string;
-  box1Wages: number;
-  box2FederalWithheld: number;
-  box3SsWages: number;
-  box4SsTax: number;
-  box5MedicareWages: number;
-  box6MedicareTax: number;
+  box1Wages: string | null;
+  box2FederalWithheld: string | null;
+  box3SsWages: string | null;
+  box4SsTax: string | null;
+  box5MedicareWages: string | null;
+  box6MedicareTax: string | null;
+  issues: W2Issue[];
+  blocked: boolean;
   /** PAY-19 — active electronic-delivery consent on file. */
   consented: boolean;
+}
+
+/** PAY-162 — a filing-level block issue on the tax-filings list. */
+export interface FilingIssue {
+  code: "missing_tax_config";
+  severity: "block";
+  year: number;
 }
 
 export interface TaxFilingRow {
@@ -1291,6 +1319,8 @@ export interface TaxFilingRow {
   remindersSent: number[];
   createdAt: string | null;
   updatedAt: string | null;
+  /** PAY-162 — list rows only: filing-level block issues (codes + year). */
+  issues?: FilingIssue[];
 }
 
 export interface TaxAdjustmentRow {

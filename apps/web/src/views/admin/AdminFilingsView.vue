@@ -15,6 +15,7 @@ import InputText from "primevue/inputtext";
 import Message from "primevue/message";
 import Select from "primevue/select";
 import Skeleton from "primevue/skeleton";
+import Tag from "primevue/tag";
 import PageHeader from "../../components/PageHeader.vue";
 import EmptyState from "../../components/EmptyState.vue";
 import StatusChip from "../../components/StatusChip.vue";
@@ -26,6 +27,7 @@ import {
 } from "../../lib/api";
 import { useDates } from "../../composables/useDates";
 import { useNotify } from "../../composables/useNotify";
+import { missingTaxConfigText } from "../../lib/w2-issues";
 import {
   useQueryEnum,
   useQueryNumber,
@@ -54,6 +56,14 @@ function periodLabel(row: TaxFilingRow): string {
 
 const loading = ref(true);
 const rows = ref<TaxFilingRow[]>([]);
+/** PAY-162: years whose W-2/W-3 is blocked by missing federal tax settings. */
+const missingConfigYears = computed(() => [
+  ...new Set(
+    rows.value.flatMap((r) =>
+      (r.issues ?? []).filter((i) => i.code === "missing_tax_config").map((i) => i.year),
+    ),
+  ),
+]);
 
 // PAY-17: filters live in the route query (?year=&form=&status=) so list state
 // is bookmarkable and survives detail → back navigation.
@@ -194,6 +204,16 @@ onMounted(async () => {
       <Select v-model="statusSelect" :options="statusOptions" option-label="label" option-value="value" size="small" />
     </PageHeader>
 
+    <Message
+      v-for="year in missingConfigYears"
+      :key="year"
+      severity="error"
+      :closable="false"
+      data-testid="missing-tax-config-banner"
+    >
+      {{ missingTaxConfigText(year) }}
+    </Message>
+
     <section class="card table-scroll">
       <Skeleton v-if="loading" height="10rem" />
       <DataTable
@@ -222,7 +242,10 @@ onMounted(async () => {
           <template #body="{ data }">{{ date(data.dueDate) }}</template>
         </Column>
         <Column header="Status" style="width: 8rem">
-          <template #body="{ data }"><StatusChip :status="data.status" /></template>
+          <template #body="{ data }">
+            <StatusChip :status="data.status" />
+            <Tag v-if="data.issues?.length" value="On hold" severity="danger" style="margin-left: 0.25rem" />
+          </template>
         </Column>
         <Column header="Filed">
           <template #body="{ data }">

@@ -25,6 +25,7 @@ import BackButton from "../../components/BackButton.vue";
 import StatusChip from "../../components/StatusChip.vue";
 import {
   adminFilingsApi,
+  ApiError,
   type AdjustmentInput,
   type FilingAttachment,
   type FilingCorrection,
@@ -39,6 +40,12 @@ import {
 import { useDates } from "../../composables/useDates";
 import { useMoney } from "../../composables/useMoney";
 import { useNotify } from "../../composables/useNotify";
+import {
+  missingTaxConfigText,
+  w2BlockedText,
+  w2IssueLabel,
+  w2IssueText,
+} from "../../lib/w2-issues";
 
 const route = useRoute();
 const { date, toIso } = useDates();
@@ -58,6 +65,10 @@ const attachments = ref<FilingAttachment[]>([]);
 const corrections = ref<FilingCorrection[]>([]);
 
 const filed = computed(() => filing.value?.status === "filed");
+/** PAY-162: the year whose federal tax settings are missing (409 on load). */
+const missingConfigYear = ref<number | null>(null);
+/** PAY-162: any W-2 of the year blocked → the W-3 is held too. */
+const anyW2Blocked = computed(() => w2Rows.value.some((r) => r.blocked));
 
 const FORM_LABELS: Record<string, string> = {
   "941": "Form 941",
@@ -88,6 +99,7 @@ function periodLabel(): string {
 
 async function load() {
   loading.value = true;
+  missingConfigYear.value = null;
   try {
     const res = await adminFilingsApi.detail(filingId);
     filing.value = res.filing;
@@ -98,7 +110,13 @@ async function load() {
       w2Rows.value = (await adminFilingsApi.w2List(res.filing.year)).w2s;
     }
   } catch (err) {
-    notify.error(err, "Could not load the filing");
+    // PAY-162: a fixed 409 code → the block banner, built from the code + year.
+    const year = err instanceof ApiError ? err.body?.year : undefined;
+    if (err instanceof ApiError && err.code === "missing_tax_config" && typeof year === "number") {
+      missingConfigYear.value = year;
+    } else {
+      notify.error(err, "Could not load the filing");
+    }
   } finally {
     loading.value = false;
   }
@@ -474,6 +492,14 @@ onMounted(async () => {
 <template>
   <div class="page stack">
     <Skeleton v-if="loading" height="16rem" />
+    <template v-else-if="missingConfigYear !== null">
+      <PageHeader :title="`Forms W-2/W-3 — ${missingConfigYear}`">
+        <BackButton to="admin-filings" label="Back to filings" />
+      </PageHeader>
+      <Message severity="error" :closable="false" data-testid="missing-tax-config-banner">
+        {{ missingTaxConfigText(missingConfigYear) }}
+      </Message>
+    </template>
     <template v-else-if="filing">
       <PageHeader
         :title="`${formLabel(filing.formType)} — ${periodLabel()}`"
@@ -614,7 +640,12 @@ onMounted(async () => {
             W-3 transmittal totals <StatusChip :status="filing.status" style="margin-left: 0.5rem" />
           </h3>
           <!-- PAY-23: the W-3 action belongs with the transmittal, not the W-2 list. -->
-          <a :href="adminFilingsApi.w3PdfUrl(filing.year)" target="_blank" rel="noopener">
+          <a
+            v-if="!anyW2Blocked"
+            :href="adminFilingsApi.w3PdfUrl(filing.year)"
+            target="_blank"
+            rel="noopener"
+          >
             <Button label="Download W-3 PDF" icon="pi pi-download" size="small" text />
           </a>
         </div>
@@ -623,6 +654,10 @@ onMounted(async () => {
           <Column field="label" header="Description" />
           <Column field="value" header="Amount" style="width: 10rem; text-align: right" />
         </DataTable>
+
+        <Message v-if="anyW2Blocked" severity="error" :closable="false" data-testid="w2-blocked-banner">
+          {{ w2BlockedText(filing.year) }}
+        </Message>
 
         <h4 style="margin: 0">Employee W-2s</h4>
         <!-- PAY-23: full column titles; the card scrolls horizontally instead
@@ -642,6 +677,21 @@ onMounted(async () => {
           <Column header="Medicare tax" style="text-align: right">
             <template #body="{ data }">{{ money(data.box6MedicareTax) }}</template>
           </Column>
+          <!-- PAY-162: check results — codes rendered as fixed copy, never amounts. -->
+          <Column header="Checks" style="min-width: 10rem">
+            <template #body="{ data }">
+              <div v-if="data.issues.length" class="row" style="gap: 0.25rem; flex-wrap: wrap">
+                <Tag
+                  v-for="issue in data.issues"
+                  :key="issue.code"
+                  :title="w2IssueText(issue)"
+                  :value="w2IssueLabel(issue)"
+                  :severity="issue.severity === 'block' ? 'danger' : 'warn'"
+                />
+              </div>
+              <span v-else class="muted">OK</span>
+            </template>
+          </Column>
           <Column header="Delivery" style="width: 8rem">
             <template #body="{ data }">
               <Tag
@@ -654,7 +704,8 @@ onMounted(async () => {
                Copy D" reads as an action, not a label. -->
           <Column header="Documents" style="width: 17rem">
             <template #body="{ data }">
-              <div class="row" style="gap: 0.25rem">
+              <span v-if="data.blocked" class="muted small">On hold</span>
+              <div v-else class="row" style="gap: 0.25rem">
                 <a
                   :href="adminFilingsApi.w2PdfUrl(data.employeeId, filing.year)"
                   target="_blank"
