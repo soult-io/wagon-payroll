@@ -197,12 +197,52 @@ describe("T10 a forced defect for one employee is contained (fail first)", () =>
     expect(row?.worksheet).toEqual(storedWorksheet);
   });
 
-  it("no response body and no captured log line contains a fixture amount", () => {
+  it("no defect-row field, PDF body or log line contains a fixture amount", () => {
+    // bodies[0] is the W-2 list; bodies[1..] are the three 409 PDF bodies.
     expect(bodies.length).toBeGreaterThanOrEqual(4);
-    const logged = [...logLines, ...consoleLines];
-    for (const text of [...bodies.map((b) => b.replace(/"employeeId":\d+/g, "")), ...logged]) {
-      for (const a of AMOUNTS) expect(text, `leaks ${a}`).not.toContain(a);
+    const [listBody = "", ...pdfBodies] = bodies;
+
+    // The list legitimately carries the twelve unaffected W-2s ("8000.00",
+    // "1061.17", ...). The defect employee's own figures (13333.32 wages,
+    // 1111.11 per run, 826.68 / 193.32 withheld) and the W-3 total (109333.32)
+    // must appear nowhere in the list body; the defect row itself must carry
+    // no amount at all.
+    for (const a of ["1111", "13333", "826.68", "193.32", "109333"]) {
+      expect(listBody, `list leaks ${a}`).not.toContain(a);
     }
-    for (const text of logged) expect(text).not.toContain('"x"');
+    const rows = (JSON.parse(listBody) as { w2s: Record<string, unknown>[] }).w2s;
+    const defectRow = rows.find((w) => w.employeeId === roundingId);
+    expect(defectRow).toBeDefined();
+    const { employeeId: _id, ...defectFields } = defectRow ?? {};
+    const defectText = JSON.stringify(defectFields);
+    for (const a of AMOUNTS) expect(defectText, `defect row leaks ${a}`).not.toContain(a);
+    expect(defectText).not.toMatch(/\d+\.\d\d/);
+
+    // PDF 409 bodies carry codes only.
+    for (const body of pdfBodies) {
+      for (const a of AMOUNTS) expect(body, `pdf body leaks ${a}`).not.toContain(a);
+      expect(body).not.toMatch(/\d+\.\d\d/);
+    }
+
+    // Logs: pino adds clock/host fields ("time" epoch ms, "responseTime"
+    // float, "pid", "hostname") whose digits can contain "8000" by chance;
+    // drop those, then check everything else. The check must not be vacuous.
+    expect(logLines.length).toBeGreaterThan(0);
+    const NOISE = new Set(["time", "responseTime", "pid", "hostname"]);
+    const scrubbed = logLines.map((line) => {
+      try {
+        const obj = JSON.parse(line) as Record<string, unknown>;
+        return JSON.stringify(
+          Object.fromEntries(Object.entries(obj).filter(([k]) => !NOISE.has(k))),
+        );
+      } catch {
+        return line;
+      }
+    });
+    for (const text of [...scrubbed, ...consoleLines]) {
+      for (const a of AMOUNTS) expect(text, `log leaks ${a}`).not.toContain(a);
+      expect(text).not.toContain('"x"');
+      expect(text).not.toContain("not a money string");
+    }
   });
 });
