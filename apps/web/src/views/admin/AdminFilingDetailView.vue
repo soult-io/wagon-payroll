@@ -8,7 +8,7 @@
  * dialog with self-filing instructions.
  */
 import { computed, onMounted, ref } from "vue";
-import { useRoute } from "vue-router";
+import { RouterLink, useRoute } from "vue-router";
 import Button from "primevue/button";
 import DataTable from "primevue/datatable";
 import Column from "primevue/column";
@@ -41,10 +41,15 @@ import { useDates } from "../../composables/useDates";
 import { useMoney } from "../../composables/useMoney";
 import { useNotify } from "../../composables/useNotify";
 import {
+  formNotAvailableText,
+  hasUnreadableTotals,
   missingTaxConfigText,
+  STALE_TOTALS_TEXT,
   w2BlockedText,
   w2IssueLabel,
   w2IssueText,
+  w2LoadErrorText,
+  w2WarningsOnlyText,
 } from "../../lib/w2-issues";
 
 const route = useRoute();
@@ -69,6 +74,23 @@ const filed = computed(() => filing.value?.status === "filed");
 const missingConfigYear = ref<number | null>(null);
 /** PAY-162: any W-2 of the year blocked → the W-3 is held too. */
 const anyW2Blocked = computed(() => w2Rows.value.some((r) => r.blocked));
+/** PAY-162: the W-2 list failed to load — hold everything that depends on it. */
+const w2LoadError = ref(false);
+/** PAY-162 (D3): the official W-2/W-3 form is bundled for the year. */
+const w2FormAvailable = ref(true);
+/** PAY-162: W-2s with any issue, for the "need attention" list. */
+const attentionRows = computed(() => w2Rows.value.filter((r) => r.issues.length > 0));
+const anyUnreadableTotals = computed(() => w2Rows.value.some(hasUnreadableTotals));
+/** PAY-162: warnings stand but nothing is on hold. */
+const warnOnlyCount = computed(() =>
+  anyW2Blocked.value ? 0 : w2Rows.value.filter((r) => r.issues.length > 0).length,
+);
+/** PAY-162 (D1): a W-2/W-3 filing cannot be recorded while held. */
+const markFiledHeld = computed(
+  () =>
+    filing.value?.formType === "w2_w3" &&
+    (anyW2Blocked.value || w2LoadError.value || !filing.value.worksheet),
+);
 
 const FORM_LABELS: Record<string, string> = {
   "941": "Form 941",
@@ -100,6 +122,9 @@ function periodLabel(): string {
 async function load() {
   loading.value = true;
   missingConfigYear.value = null;
+  w2Rows.value = [];
+  w2LoadError.value = false;
+  w2FormAvailable.value = true;
   try {
     const res = await adminFilingsApi.detail(filingId);
     filing.value = res.filing;
@@ -107,7 +132,13 @@ async function load() {
     corrections.value = res.corrections;
     attachments.value = (await adminFilingsApi.listAttachments(filingId)).attachments;
     if (res.filing.formType === "w2_w3") {
-      w2Rows.value = (await adminFilingsApi.w2List(res.filing.year)).w2s;
+      try {
+        const list = await adminFilingsApi.w2List(res.filing.year);
+        w2Rows.value = list.w2s;
+        w2FormAvailable.value = list.formAvailable;
+      } catch {
+        w2LoadError.value = true;
+      }
     }
   } catch (err) {
     // PAY-162: a fixed 409 code → the block banner, built from the code + year.
@@ -497,7 +528,12 @@ onMounted(async () => {
         <BackButton to="admin-filings" label="Back to filings" />
       </PageHeader>
       <Message severity="error" :closable="false" data-testid="missing-tax-config-banner">
-        {{ missingTaxConfigText(missingConfigYear) }}
+        <div class="stack">
+          <span>{{ missingTaxConfigText(missingConfigYear) }}</span>
+          <RouterLink :to="{ name: 'admin-config' }">
+            <Button label="Open Tax tables" icon="pi pi-cog" size="small" />
+          </RouterLink>
+        </div>
       </Message>
     </template>
     <template v-else-if="filing">
@@ -538,9 +574,14 @@ onMounted(async () => {
           label="Mark as filed"
           icon="pi pi-check"
           size="small"
+          :disabled="markFiledHeld"
           @click="fileDialog = true"
         />
       </PageHeader>
+
+      <p v-if="!filed && markFiledHeld" class="muted small" style="margin: 0" data-testid="mark-filed-held">
+        You can record this filing once no W-2s are on hold.
+      </p>
 
       <Message v-if="filed" severity="success" :closable="false">
         Filed {{ date(filing.filedOn) }}<template v-if="filing.filingMethod"> via {{ filing.filingMethod }}</template><template v-if="filing.filingReference"> · ref {{ filing.filingReference }}</template>.
@@ -634,101 +675,150 @@ onMounted(async () => {
         </DataTable>
       </section>
 
-      <section v-if="worksheetW3" class="card table-scroll stack">
+      <!-- PAY-162: the W-2/W-3 section renders even when the W-3 worksheet is
+           null (W-2s blocked from the start), so the holds stay visible. -->
+      <section v-if="filing.formType === 'w2_w3'" class="card table-scroll stack">
         <div class="row" style="justify-content: space-between; align-items: center">
           <h3 style="margin: 0">
             W-3 transmittal totals <StatusChip :status="filing.status" style="margin-left: 0.5rem" />
           </h3>
           <!-- PAY-23: the W-3 action belongs with the transmittal, not the W-2 list. -->
-          <a
-            v-if="!anyW2Blocked"
-            :href="adminFilingsApi.w3PdfUrl(filing.year)"
-            target="_blank"
-            rel="noopener"
-          >
-            <Button label="Download W-3 PDF" icon="pi pi-download" size="small" text />
-          </a>
+          <template v-if="!w2LoadError">
+            <span v-if="anyW2Blocked" class="muted small">W-3 PDF on hold</span>
+            <a
+              v-else-if="w2FormAvailable && worksheetW3"
+              :href="adminFilingsApi.w3PdfUrl(filing.year)"
+              target="_blank"
+              rel="noopener"
+            >
+              <Button label="Download W-3 PDF" icon="pi pi-download" size="small" text />
+            </a>
+          </template>
         </div>
-        <DataTable :value="worksheetW3Lines" data-key="line" striped-rows>
+
+        <Message v-if="w2LoadError" severity="error" :closable="false" data-testid="w2-load-error">
+          {{ w2LoadErrorText(filing.year) }}
+        </Message>
+        <Message v-else-if="anyW2Blocked" severity="error" :closable="false" data-testid="w2-blocked-banner">
+          <div class="stack">
+            <span>{{ w2BlockedText(filing.year) }}</span>
+            <span v-if="anyUnreadableTotals">{{ STALE_TOTALS_TEXT }}</span>
+          </div>
+        </Message>
+        <Message v-else-if="warnOnlyCount > 0" severity="info" :closable="false" data-testid="w2-warn-banner">
+          {{ w2WarningsOnlyText(warnOnlyCount, filing.year) }}
+        </Message>
+        <Message
+          v-if="!w2LoadError && !w2FormAvailable"
+          severity="warn"
+          :closable="false"
+          data-testid="w2-form-unavailable"
+        >
+          {{ formNotAvailableText(filing.year) }}
+        </Message>
+
+        <DataTable v-if="worksheetW3" :value="worksheetW3Lines" data-key="line" striped-rows>
           <Column field="line" header="Box" style="width: 4rem" />
           <Column field="label" header="Description" />
           <Column field="value" header="Amount" style="width: 10rem; text-align: right" />
         </DataTable>
-
-        <Message v-if="anyW2Blocked" severity="error" :closable="false" data-testid="w2-blocked-banner">
-          {{ w2BlockedText(filing.year) }}
-        </Message>
-
-        <h4 style="margin: 0">Employee W-2s</h4>
-        <!-- PAY-23: full column titles; the card scrolls horizontally instead
-             of abbreviating or double-wrapping headers. -->
-        <DataTable :value="w2Rows" data-key="employeeId" striped-rows class="w2-table">
-          <template #empty><p class="muted">No W-2 employees were paid in {{ filing.year }}.</p></template>
-          <Column field="legalName" header="Employee" />
-          <Column header="Wages, tips, other compensation" style="text-align: right">
-            <template #body="{ data }">{{ money(data.box1Wages) }}</template>
-          </Column>
-          <Column header="Federal income tax withheld" style="text-align: right">
-            <template #body="{ data }">{{ money(data.box2FederalWithheld) }}</template>
-          </Column>
-          <Column header="Social Security tax" style="text-align: right">
-            <template #body="{ data }">{{ money(data.box4SsTax) }}</template>
-          </Column>
-          <Column header="Medicare tax" style="text-align: right">
-            <template #body="{ data }">{{ money(data.box6MedicareTax) }}</template>
-          </Column>
-          <!-- PAY-162: check results — codes rendered as fixed copy, never amounts. -->
-          <Column header="Checks" style="min-width: 10rem">
-            <template #body="{ data }">
-              <div v-if="data.issues.length" class="row" style="gap: 0.25rem; flex-wrap: wrap">
-                <Tag
-                  v-for="issue in data.issues"
-                  :key="issue.code"
-                  :title="w2IssueText(issue)"
-                  :value="w2IssueLabel(issue)"
-                  :severity="issue.severity === 'block' ? 'danger' : 'warn'"
-                />
-              </div>
-              <span v-else class="muted">OK</span>
-            </template>
-          </Column>
-          <Column header="Delivery" style="width: 8rem">
-            <template #body="{ data }">
-              <Tag
-                :value="data.consented ? 'electronic' : 'paper'"
-                :severity="data.consented ? 'success' : 'warn'"
-              />
-            </template>
-          </Column>
-          <!-- PAY-23: actions live in their own Documents column — "Download
-               Copy D" reads as an action, not a label. -->
-          <Column header="Documents" style="width: 17rem">
-            <template #body="{ data }">
-              <span v-if="data.blocked" class="muted small">On hold</span>
-              <div v-else class="row" style="gap: 0.25rem">
-                <a
-                  :href="adminFilingsApi.w2PdfUrl(data.employeeId, filing.year)"
-                  target="_blank"
-                  rel="noopener"
-                >
-                  <Button label="Download Copy D" icon="pi pi-download" size="small" text />
-                </a>
-                <a
-                  :href="adminFilingsApi.w2PrintPacketUrl(data.employeeId, filing.year)"
-                  target="_blank"
-                  rel="noopener"
-                >
-                  <Button label="Print packet" icon="pi pi-print" size="small" text />
-                </a>
-              </div>
-            </template>
-          </Column>
-        </DataTable>
-        <p class="muted small" style="margin: 0">
-          PDFs render on demand — SSNs and addresses are decrypted at render time and never stored.
-          Print the packet (Copies B/C/2 + instructions) for employees on paper delivery; employees
-          who consented download their own.
+        <p v-else class="muted" style="margin: 0">
+          {{ anyW2Blocked ? "W-3 not calculated: W-2s on hold" : "W-3 not calculated yet." }}
         </p>
+
+        <template v-if="!w2LoadError">
+          <template v-if="attentionRows.length">
+            <h4 id="w2-attention" style="margin: 0">W-2s that need attention</h4>
+            <ul class="stack" style="margin: 0; padding-left: 1.25rem" aria-labelledby="w2-attention">
+              <li v-for="row in attentionRows" :key="row.employeeId">
+                <div class="row" style="gap: 0.5rem; align-items: center">
+                  <strong>{{ row.legalName }}</strong>
+                  <Tag
+                    v-if="row.blocked"
+                    value="On hold"
+                    icon="pi pi-lock"
+                    severity="danger"
+                  />
+                  <Tag v-else value="Please check" icon="pi pi-exclamation-triangle" severity="warn" />
+                </div>
+                <p v-for="issue in row.issues" :key="issue.code" class="small" style="margin: 0.25rem 0 0">
+                  {{ w2IssueText(issue) }}
+                </p>
+              </li>
+            </ul>
+          </template>
+
+          <h4 style="margin: 0">Employee W-2s</h4>
+          <!-- PAY-23: full column titles; the card scrolls horizontally instead
+               of abbreviating or double-wrapping headers. -->
+          <DataTable :value="w2Rows" data-key="employeeId" striped-rows class="w2-table">
+            <template #empty><p class="muted">No W-2 employees were paid in {{ filing.year }}.</p></template>
+            <Column field="legalName" header="Employee" />
+            <Column header="Wages, tips, other compensation" style="text-align: right">
+              <template #body="{ data }">{{ money(data.box1Wages) }}</template>
+            </Column>
+            <Column header="Federal income tax withheld" style="text-align: right">
+              <template #body="{ data }">{{ money(data.box2FederalWithheld) }}</template>
+            </Column>
+            <Column header="Social Security tax" style="text-align: right">
+              <template #body="{ data }">{{ money(data.box4SsTax) }}</template>
+            </Column>
+            <Column header="Medicare tax" style="text-align: right">
+              <template #body="{ data }">{{ money(data.box6MedicareTax) }}</template>
+            </Column>
+            <!-- PAY-162: check results — codes rendered as fixed copy, never amounts. -->
+            <Column header="Checks" style="min-width: 10rem">
+              <template #body="{ data }">
+                <div v-if="data.issues.length" class="row" style="gap: 0.25rem; flex-wrap: wrap">
+                  <Tag
+                    v-for="issue in data.issues"
+                    :key="issue.code"
+                    :value="w2IssueLabel(issue)"
+                    :severity="issue.severity === 'block' ? 'danger' : 'warn'"
+                  />
+                </div>
+                <span v-else class="muted">No problems found</span>
+              </template>
+            </Column>
+            <Column header="Delivery" style="width: 8rem">
+              <template #body="{ data }">
+                <Tag
+                  :value="data.consented ? 'electronic' : 'paper'"
+                  :severity="data.consented ? 'success' : 'warn'"
+                />
+              </template>
+            </Column>
+            <!-- PAY-23: actions live in their own Documents column — "Download
+                 Copy D" reads as an action, not a label. -->
+            <Column header="Documents" style="width: 17rem">
+              <template #body="{ data }">
+                <span v-if="data.blocked" class="muted small">On hold – see above</span>
+                <span v-else-if="!w2FormAvailable" class="muted">—</span>
+                <div v-else class="row" style="gap: 0.25rem">
+                  <a
+                    :href="adminFilingsApi.w2PdfUrl(data.employeeId, filing.year)"
+                    target="_blank"
+                    rel="noopener"
+                  >
+                    <Button label="Download Copy D" icon="pi pi-download" size="small" text />
+                  </a>
+                  <a
+                    :href="adminFilingsApi.w2PrintPacketUrl(data.employeeId, filing.year)"
+                    target="_blank"
+                    rel="noopener"
+                  >
+                    <Button label="Print packet" icon="pi pi-print" size="small" text />
+                  </a>
+                </div>
+              </template>
+            </Column>
+          </DataTable>
+          <p class="muted small" style="margin: 0">
+            PDFs render on demand — SSNs and addresses are decrypted at render time and never stored.
+            Print the packet (Copies B/C/2 + instructions) for employees on paper delivery; employees
+            who consented download their own.
+          </p>
+        </template>
       </section>
 
       <section class="card table-scroll stack">

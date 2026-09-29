@@ -7,7 +7,7 @@
  * Record-only: the app never files; the admin files and records it here.
  */
 import { computed, onMounted, ref, watch } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { RouterLink, useRoute, useRouter } from "vue-router";
 import Button from "primevue/button";
 import DataTable from "primevue/datatable";
 import Column from "primevue/column";
@@ -211,7 +211,12 @@ onMounted(async () => {
       :closable="false"
       data-testid="missing-tax-config-banner"
     >
-      {{ missingTaxConfigText(year) }}
+      <div class="stack">
+        <span>{{ missingTaxConfigText(year) }}</span>
+        <RouterLink :to="{ name: 'admin-config' }">
+          <Button label="Open Tax tables" icon="pi pi-cog" size="small" />
+        </RouterLink>
+      </div>
     </Message>
 
     <section class="card table-scroll">
@@ -244,7 +249,14 @@ onMounted(async () => {
         <Column header="Status" style="width: 8rem">
           <template #body="{ data }">
             <StatusChip :status="data.status" />
-            <Tag v-if="data.issues?.length" value="On hold" severity="danger" style="margin-left: 0.25rem" />
+            <!-- PAY-162: missing_tax_config or w2_blocked (codes only). -->
+            <Tag
+              v-if="data.issues?.length"
+              value="On hold – open for details"
+              icon="pi pi-lock"
+              severity="danger"
+              style="margin-left: 0.25rem"
+            />
           </template>
         </Column>
         <Column header="Filed">
