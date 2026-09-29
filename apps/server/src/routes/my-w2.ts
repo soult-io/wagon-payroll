@@ -93,8 +93,9 @@ export function registerMyW2Routes(app: FastifyInstance, deps: Deps): void {
   const { db, config, guards } = deps;
 
   app.get("/api/my/w2", { preHandler: guards.requireAuth }, async (req) => {
-    const years = await listMyW2Years(db, req.authUser!.id);
-    const employee = years.length > 0 ? await myEmployee(db, req.authUser!.id) : null;
+    const userId = req.authUser!.id;
+    const years = await listMyW2Years(db, userId);
+    const employee = years.length > 0 ? await myEmployee(db, userId) : null;
     const w2s = [];
     for (const year of years) {
       // PAY-162 (D2): a bare ready flag — never why a W-2 is not ready.
