@@ -39,23 +39,36 @@ interface AdminPayrollDeps {
   clock?: () => Date;
 }
 
+/** Exhaustive: a new PayrollServiceError code must be given a status here. */
+function payrollErrorStatus(err: PayrollServiceError): number {
+  switch (err.code) {
+    case "run_not_found":
+      return 404;
+    case "invalid_transition":
+    case "void_reason_required":
+    // Spec 26 (PAY-173) D4 / D6 / D9: fixed bodies, field names and dates only.
+    case "stale_draft":
+    case "ytd_order_conflict":
+    case "past_pay_date_other_year":
+      return 409;
+    case "no_compensation":
+    case "no_tax_config":
+    case "unsupported_frequency":
+    case "not_w2_employee":
+    case "no_company":
+    case "no_state_tax_config":
+    case "futa_cap_exceeded":
+    case "invalid_period":
+      return 400;
+  }
+}
+
 const serviceError = (
   err: unknown,
   reply: { code: (n: number) => { send: (b: unknown) => unknown } },
 ) => {
   if (err instanceof PayrollServiceError) {
-    const status =
-      err.code === "run_not_found"
-        ? 404
-        : err.code === "invalid_transition" ||
-            err.code === "void_reason_required" ||
-            // Spec 26 (PAY-173) D4 / D6 / D9: fixed bodies, field names and dates only.
-            err.code === "stale_draft" ||
-            err.code === "ytd_order_conflict" ||
-            err.code === "past_pay_date_other_year"
-          ? 409
-          : 400;
-    return reply.code(status).send({ error: err.code, message: err.message });
+    return reply.code(payrollErrorStatus(err)).send({ error: err.code, message: err.message });
   }
   throw err;
 };

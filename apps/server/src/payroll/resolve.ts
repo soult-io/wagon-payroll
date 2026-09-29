@@ -173,6 +173,27 @@ export async function resolveTaxConfig(
 }
 
 /**
+ * Issued runs of the employee paid in the calendar year of `key.payDate` whose
+ * D2 key (pay_date, period_start, id) sorts strictly before / after `key`
+ * (row comparison mirrors compareYtdKey; null selfRunId = id +∞).
+ */
+function issuedSameYearRuns(employeeId: number, key: YtdKey, side: "before" | "after") {
+  const year = Number(key.payDate.slice(0, 4));
+  const op = sql.raw(side === "before" ? "<" : ">");
+  return and(
+    eq(payrollRuns.employeeId, employeeId),
+    eq(payrollRuns.status, "issued"),
+    gte(payrollRuns.payDate, `${year}-01-01`),
+    lt(payrollRuns.payDate, `${year + 1}-01-01`),
+    key.selfRunId === null ? undefined : ne(payrollRuns.id, key.selfRunId),
+    sql`(${payrollRuns.payDate}, ${payrollRuns.periodStart}, ${payrollRuns.id}) ${op} (${key.payDate}::date, ${key.periodStart}::date, ${key.selfRunId ?? YTD_KEY_MAX_ID}::integer)`,
+  );
+}
+
+/** D2 order: (pay_date, period_start, id) ascending. */
+const YTD_KEY_ORDER = [asc(payrollRuns.payDate), asc(payrollRuns.periodStart), asc(payrollRuns.id)];
+
+/**
  * Prior YTD of a run (Spec 26 (PAY-173) D2): sums of payroll_entries of the
  * employee's ISSUED runs paid in the calendar year of `key.payDate` whose
  * (pay_date, period_start, id) sorts strictly before the run's key — wages
@@ -186,19 +207,12 @@ export async function resolvePriorYtd(
   key: YtdKey,
 ): Promise<{ year: number; byCategory: Map<string, number>; runPublicIds: string[] }> {
   const year = Number(key.payDate.slice(0, 4));
-  const where = and(
-    eq(payrollRuns.employeeId, employeeId),
-    eq(payrollRuns.status, "issued"),
-    gte(payrollRuns.payDate, `${year}-01-01`),
-    lt(payrollRuns.payDate, `${year + 1}-01-01`),
-    key.selfRunId === null ? undefined : ne(payrollRuns.id, key.selfRunId),
-    sql`(${payrollRuns.payDate}, ${payrollRuns.periodStart}, ${payrollRuns.id}) < (${key.payDate}::date, ${key.periodStart}::date, ${key.selfRunId ?? YTD_KEY_MAX_ID}::integer)`,
-  );
+  const where = issuedSameYearRuns(employeeId, key, "before");
   const runs = await db
     .select({ publicId: payrollRuns.publicId })
     .from(payrollRuns)
     .where(where)
-    .orderBy(asc(payrollRuns.payDate), asc(payrollRuns.periodStart), asc(payrollRuns.id));
+    .orderBy(...YTD_KEY_ORDER);
   const sums = await db
     .select({
       category: payrollEntries.category,
@@ -225,21 +239,11 @@ export async function findLaterIssuedRun(
   employeeId: number,
   key: YtdKey,
 ): Promise<{ publicId: string; payDate: string } | null> {
-  const year = Number(key.payDate.slice(0, 4));
   const rows = await db
     .select({ publicId: payrollRuns.publicId, payDate: payrollRuns.payDate })
     .from(payrollRuns)
-    .where(
-      and(
-        eq(payrollRuns.employeeId, employeeId),
-        eq(payrollRuns.status, "issued"),
-        gte(payrollRuns.payDate, `${year}-01-01`),
-        lt(payrollRuns.payDate, `${year + 1}-01-01`),
-        key.selfRunId === null ? undefined : ne(payrollRuns.id, key.selfRunId),
-        sql`(${payrollRuns.payDate}, ${payrollRuns.periodStart}, ${payrollRuns.id}) > (${key.payDate}::date, ${key.periodStart}::date, ${key.selfRunId ?? YTD_KEY_MAX_ID}::integer)`,
-      ),
-    )
-    .orderBy(asc(payrollRuns.payDate), asc(payrollRuns.periodStart), asc(payrollRuns.id))
+    .where(issuedSameYearRuns(employeeId, key, "after"))
+    .orderBy(...YTD_KEY_ORDER)
     .limit(1);
   return rows[0] ?? null;
 }

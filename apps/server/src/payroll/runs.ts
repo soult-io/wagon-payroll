@@ -50,43 +50,19 @@ import {
   toSnapshotW4,
   type DbLike,
 } from "./resolve.js";
-import { localDate, runDates, type YtdKey } from "./run-dates.js";
+import { PayrollServiceError } from "./errors.js";
+import { localDate, type Period, type RunDates, runDates, ytdKeyOf } from "./run-dates.js";
 import {
   fingerprintDiff,
   SNAPSHOT_TEMPLATE_VERSION,
   snapshotHash,
   type RunSnapshot,
+  type RunSnapshotYtd,
 } from "./snapshot.js";
 
-export class PayrollServiceError extends Error {
-  constructor(
-    public code:
-      | "no_compensation"
-      | "no_tax_config"
-      | "run_not_found"
-      | "invalid_transition"
-      | "void_reason_required"
-      | "unsupported_frequency"
-      | "not_w2_employee"
-      | "no_company"
-      | "no_state_tax_config"
-      | "futa_cap_exceeded"
-      // Spec 26 (PAY-173)
-      | "invalid_period"
-      | "stale_draft"
-      | "ytd_order_conflict"
-      | "past_pay_date_other_year",
-    message: string,
-  ) {
-    super(message);
-  }
-}
-
-export interface Period {
-  periodStart: string;
-  periodEnd: string;
-  payDate: string;
-}
+// Re-exported: callers and tests import these from runs.js.
+export { PayrollServiceError };
+export type { Period };
 
 /** Monthly schedule → period = calendar month; pay_date = pay_day_of_month. */
 export function monthlyPeriod(year: number, month: number, payDayOfMonth: number): Period {
@@ -261,6 +237,150 @@ function stateEngineInput(
   };
 }
 
+/**
+ * State withholding from the employee's effective-dated WORK state
+ * (services performed → period start, Spec 26 S4). PAY-13: no work-state row
+ * → legacy flat stateWithholdingRate path (both results undefined,
+ * bit-identical for every run predating PAY-13). A work state with no config
+ * for the pay-date year fails loudly — kind='none' (TX) is the explicit
+ * zero-tax row; absence never silently means $0 (Spec 26 S2).
+ */
+async function resolveStateInput(
+  tx: DbLike,
+  employeeId: number,
+  dates: RunDates,
+  federalFilingStatus: string,
+): Promise<{
+  stateInput: { config: StateTaxConfig; election?: StateElectionInput } | undefined;
+  stateSnapshot: RunSnapshot["inputs"]["state"];
+}> {
+  const workState = await resolveWorkState(tx, employeeId, dates.earnedAsOf);
+  if (!workState) return { stateInput: undefined, stateSnapshot: undefined };
+  const stateElection = await resolveStateElection(
+    tx,
+    employeeId,
+    workState.stateCode,
+    dates.certificateAsOf,
+  );
+  // Filing status: the state election's own status when filed, else the
+  // federal W-4's; married_separate falls back to the single table.
+  const mappedStatus = mapStateFilingStatus(
+    (stateElection?.filingStatus ?? federalFilingStatus) as Parameters<
+      typeof mapStateFilingStatus
+    >[0],
+  );
+  const taxYear = dates.taxYear;
+  const stateTax = await resolveStateTaxConfig(tx, workState.stateCode, taxYear, mappedStatus);
+  if (!stateTax) {
+    throw new PayrollServiceError(
+      "no_state_tax_config",
+      `no state tax config/brackets for ${workState.stateCode} in ${taxYear} (employee ${employeeId} works there) — seed or configure state_tax_configs; use kind='none' for explicit zero-tax states`,
+    );
+  }
+  return {
+    stateInput: stateEngineInput(workState.stateCode, stateTax, stateElection),
+    stateSnapshot: toSnapshotState({
+      stateCode: workState.stateCode,
+      jurisdiction: stateTax.config.jurisdiction,
+      taxYear: stateTax.config.taxYear,
+      config: stateTax.config,
+      brackets: stateTax.brackets,
+      election: stateElection,
+    }),
+  };
+}
+
+/** Engine TaxConfig from the resolved federal tax_config row + brackets. */
+function engineTaxConfig(
+  tax: NonNullable<Awaited<ReturnType<typeof resolveTaxConfig>>>,
+): TaxConfig {
+  return {
+    year: tax.config.taxYear,
+    standardDeduction: tax.config.standardDeduction,
+    federalBrackets: tax.brackets.map((b) => ({
+      min: b.min,
+      max: b.max ?? Infinity,
+      rate: b.rate,
+    })),
+    socialSecurityRate: tax.config.socialSecurityRate,
+    socialSecurityWageCap: tax.config.socialSecurityWageCap,
+    medicareRate: tax.config.medicareRate,
+    medicareAdditionalRate: tax.config.medicareAdditionalRate,
+    medicareAdditionalThreshold: tax.config.medicareAdditionalThreshold,
+    stateWithholdingRate: tax.config.stateWithholdingRate,
+    employerSocialSecurityRate: tax.config.employerSocialSecurityRate,
+    employerMedicareRate: tax.config.employerMedicareRate,
+    futaRate: tax.config.futaRate,
+    futaWageCap: tax.config.futaWageCap,
+    sutaCreditRate: tax.config.sutaCreditRate,
+  };
+}
+
+/**
+ * PAY-26: per-employee annual employer_futa must never exceed
+ * futaWageCap × futaRate for the run's tax year (the PAY-date year, Spec 26
+ * R4). The engine formula is correct, but a misconfigured rate (PAY-18/22
+ * incident: 0.6% instead of 6%) would silently write wrong entries — assert
+ * the invariant at write time against issued-run YTD + this run.
+ */
+function assertFutaCap(input: {
+  employeeId: number;
+  taxYear: number;
+  engineConfig: TaxConfig;
+  periodsPerYear: number;
+  priorYtd: Map<string, number>;
+  result: RunSnapshot["result"];
+}): void {
+  const { employeeId, taxYear, engineConfig, periodsPerYear, priorYtd, result } = input;
+  const futaAnnualCap = round2(engineConfig.futaWageCap * engineConfig.futaRate);
+  // Per-period cent rounding can accumulate up to half a cent per period
+  // past the exact cap (the 940 worksheet reconciles this as
+  // roundingDelta) — the guard targets material violations like the
+  // incident's 10× rate error, not rounding noise.
+  const futaCapTolerance = round2(0.005 * periodsPerYear);
+  const priorFutaYtd = priorYtd.get("employer_futa") ?? 0;
+  const projectedFuta = round2(priorFutaYtd + result.employerFUTA);
+  if (projectedFuta > futaAnnualCap + futaCapTolerance) {
+    throw new PayrollServiceError(
+      "futa_cap_exceeded",
+      `employer_futa annual cap exceeded for employee ${employeeId} in ${taxYear}: ` +
+        `${projectedFuta.toFixed(2)} (issued YTD ${priorFutaYtd.toFixed(2)} + this run ${result.employerFUTA.toFixed(2)}) ` +
+        `> cap ${futaAnnualCap.toFixed(2)} (futa_wage_cap × futa_rate, +${futaCapTolerance.toFixed(2)} rounding tolerance) — check tax_config for ${taxYear}`,
+    );
+  }
+}
+
+/** Engine W-4 inputs; no W-4 on file = not exempt, all amounts 0. */
+function w4EngineInput(w4Row: Awaited<ReturnType<typeof resolveW4>>) {
+  return {
+    federalExempt: w4Row?.federalExempt ?? false,
+    w4: {
+      dependentsAmount: w4Row ? Number(w4Row.dependentsAmount) : 0,
+      otherIncome: w4Row ? Number(w4Row.otherIncome) : 0,
+      deductionsAmount: w4Row ? Number(w4Row.deductionsAmount) : 0,
+      extraWithholding: w4Row ? Number(w4Row.extraWithholding) : 0,
+    },
+  };
+}
+
+/** Snapshot YTD THROUGH this run: prior issued YTD per category + this run. */
+function ytdThrough(priorYtd: Map<string, number>, result: RunSnapshot["result"]): RunSnapshotYtd {
+  const priorYtdGross = priorYtd.get("gross_pay") ?? 0;
+  return {
+    gross: round2(priorYtdGross + result.grossPay),
+    federalWithholding: round2(
+      (priorYtd.get("federal_withholding") ?? 0) + result.federalWithholding,
+    ),
+    socialSecurity: round2((priorYtd.get("social_security") ?? 0) + result.socialSecurity),
+    medicare: round2((priorYtd.get("medicare") ?? 0) + result.medicare),
+    stateWithholding: round2((priorYtd.get("state_withholding") ?? 0) + result.stateWithholding),
+    totalDeductions: round2(
+      priorYtdGross - (priorYtd.get("net_pay") ?? 0) + result.totalDeductions,
+    ),
+    netPay: round2((priorYtd.get("net_pay") ?? 0) + result.netPay),
+  };
+}
+
 export interface ComputedRun {
   snapshot: RunSnapshot;
   entries: [EntryCategory, number][];
@@ -274,7 +394,6 @@ export interface ComputedRun {
  * writes. `selfRunId` = null for a new draft; the run's own id when a stored
  * draft is recomputed for the freshness check.
  */
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: guard chain is the spec's resolution order
 export async function computeRun(
   tx: DbLike,
   input: { employeeId: number; period: Period; selfRunId: number | null },
@@ -332,79 +451,25 @@ export async function computeRun(
     throw new PayrollServiceError("no_tax_config", `no federal tax config/brackets for ${taxYear}`);
   }
   // Spec 26 D2: wages PAID earlier in the pay-date year, by (pay_date, period_start, id).
-  const ytdKey: YtdKey = {
-    payDate: dates.payDate,
-    periodStart: period.periodStart,
-    selfRunId: input.selfRunId,
-  };
+  const ytdKey = ytdKeyOf(period, input.selfRunId);
   const prior = await resolvePriorYtd(tx, employeeId, ytdKey);
   const priorYtd = prior.byCategory;
   const priorYtdGross = priorYtd.get("gross_pay") ?? 0;
 
-  // PAY-13: state withholding from the employee's effective-dated WORK
-  // state (services performed → period start, Spec 26 S4). No work-state row
-  // → legacy flat stateWithholdingRate path (bit-identical for every run
-  // predating PAY-13). A work state with no config for the pay-date year
-  // fails loudly — kind='none' (TX) is the explicit zero-tax row; absence
-  // never silently means $0 (Spec 26 S2).
-  const workState = await resolveWorkState(tx, employeeId, dates.earnedAsOf);
-  let stateInput: { config: StateTaxConfig; election?: StateElectionInput } | undefined;
-  let stateSnapshot: RunSnapshot["inputs"]["state"];
-  if (workState) {
-    const stateElection = await resolveStateElection(
-      tx,
-      employeeId,
-      workState.stateCode,
-      dates.certificateAsOf,
-    );
-    // Filing status: the state election's own status when filed, else the
-    // federal W-4's; married_separate falls back to the single table.
-    const mappedStatus = mapStateFilingStatus(
-      (stateElection?.filingStatus ?? filingStatus) as Parameters<typeof mapStateFilingStatus>[0],
-    );
-    const stateTax = await resolveStateTaxConfig(tx, workState.stateCode, taxYear, mappedStatus);
-    if (!stateTax) {
-      throw new PayrollServiceError(
-        "no_state_tax_config",
-        `no state tax config/brackets for ${workState.stateCode} in ${taxYear} (employee ${employeeId} works there) — seed or configure state_tax_configs; use kind='none' for explicit zero-tax states`,
-      );
-    }
-    stateInput = stateEngineInput(workState.stateCode, stateTax, stateElection);
-    stateSnapshot = toSnapshotState({
-      stateCode: workState.stateCode,
-      jurisdiction: stateTax.config.jurisdiction,
-      taxYear: stateTax.config.taxYear,
-      config: stateTax.config,
-      brackets: stateTax.brackets,
-      election: stateElection,
-    });
-  }
+  // PAY-13 / Spec 26 S4: work state by period start; undefined = legacy flat rate.
+  const { stateInput, stateSnapshot } = await resolveStateInput(
+    tx,
+    employeeId,
+    dates,
+    filingStatus,
+  );
 
   // Spec 26 D5: a table year other than the pay-date year is a programming error.
   if (tax.config.taxYear !== taxYear || (stateSnapshot && stateSnapshot.taxYear !== taxYear)) {
     throw new Error(`resolved table year does not match the pay-date year ${taxYear}`);
   }
 
-  const engineConfig: TaxConfig = {
-    year: tax.config.taxYear,
-    standardDeduction: tax.config.standardDeduction,
-    federalBrackets: tax.brackets.map((b) => ({
-      min: b.min,
-      max: b.max ?? Infinity,
-      rate: b.rate,
-    })),
-    socialSecurityRate: tax.config.socialSecurityRate,
-    socialSecurityWageCap: tax.config.socialSecurityWageCap,
-    medicareRate: tax.config.medicareRate,
-    medicareAdditionalRate: tax.config.medicareAdditionalRate,
-    medicareAdditionalThreshold: tax.config.medicareAdditionalThreshold,
-    stateWithholdingRate: tax.config.stateWithholdingRate,
-    employerSocialSecurityRate: tax.config.employerSocialSecurityRate,
-    employerMedicareRate: tax.config.employerMedicareRate,
-    futaRate: tax.config.futaRate,
-    futaWageCap: tax.config.futaWageCap,
-    sutaCreditRate: tax.config.sutaCreditRate,
-  };
+  const engineConfig = engineTaxConfig(tax);
 
   const periodAmount = Number(comp.periodAmount);
   const result = calculatePayroll({
@@ -412,38 +477,13 @@ export async function computeRun(
     periodsPerYear: periodsPerYear as 12 | 24 | 26 | 52,
     priorYtdGross,
     taxConfig: engineConfig,
-    federalExempt: w4Row?.federalExempt ?? false,
-    w4: {
-      dependentsAmount: w4Row ? Number(w4Row.dependentsAmount) : 0,
-      otherIncome: w4Row ? Number(w4Row.otherIncome) : 0,
-      deductionsAmount: w4Row ? Number(w4Row.deductionsAmount) : 0,
-      extraWithholding: w4Row ? Number(w4Row.extraWithholding) : 0,
-    },
+    ...w4EngineInput(w4Row),
     // Absent when no work state → legacy flat-rate path, bit-identical.
     ...(stateInput ? { state: stateInput } : {}),
   });
 
-  // PAY-26: per-employee annual employer_futa must never exceed
-  // futaWageCap × futaRate for the run's tax year (the PAY-date year, Spec 26
-  // R4). The engine formula is correct, but a misconfigured rate (PAY-18/22
-  // incident: 0.6% instead of 6%) would silently write wrong entries — assert
-  // the invariant at write time against issued-run YTD + this run.
-  const futaAnnualCap = round2(engineConfig.futaWageCap * engineConfig.futaRate);
-  // Per-period cent rounding can accumulate up to half a cent per period
-  // past the exact cap (the 940 worksheet reconciles this as
-  // roundingDelta) — the guard targets material violations like the
-  // incident's 10× rate error, not rounding noise.
-  const futaCapTolerance = round2(0.005 * periodsPerYear);
-  const priorFutaYtd = priorYtd.get("employer_futa") ?? 0;
-  const projectedFuta = round2(priorFutaYtd + result.employerFUTA);
-  if (projectedFuta > futaAnnualCap + futaCapTolerance) {
-    throw new PayrollServiceError(
-      "futa_cap_exceeded",
-      `employer_futa annual cap exceeded for employee ${employeeId} in ${taxYear}: ` +
-        `${projectedFuta.toFixed(2)} (issued YTD ${priorFutaYtd.toFixed(2)} + this run ${result.employerFUTA.toFixed(2)}) ` +
-        `> cap ${futaAnnualCap.toFixed(2)} (futa_wage_cap × futa_rate, +${futaCapTolerance.toFixed(2)} rounding tolerance) — check tax_config for ${taxYear}`,
-    );
-  }
+  // PAY-26: employer_futa annual cap for the pay-date year (Spec 26 R4).
+  assertFutaCap({ employeeId, taxYear, engineConfig, periodsPerYear, priorYtd, result });
 
   const snapshot: RunSnapshot = {
     inputs: {
@@ -480,19 +520,7 @@ export async function computeRun(
     result,
     engineVersion: ENGINE_VERSION,
     templateVersion: SNAPSHOT_TEMPLATE_VERSION,
-    ytd: {
-      gross: round2(priorYtdGross + result.grossPay),
-      federalWithholding: round2(
-        (priorYtd.get("federal_withholding") ?? 0) + result.federalWithholding,
-      ),
-      socialSecurity: round2((priorYtd.get("social_security") ?? 0) + result.socialSecurity),
-      medicare: round2((priorYtd.get("medicare") ?? 0) + result.medicare),
-      stateWithholding: round2((priorYtd.get("state_withholding") ?? 0) + result.stateWithholding),
-      totalDeductions: round2(
-        priorYtdGross - (priorYtd.get("net_pay") ?? 0) + result.totalDeductions,
-      ),
-      netPay: round2((priorYtd.get("net_pay") ?? 0) + result.netPay),
-    },
+    ytd: ytdThrough(priorYtd, result),
   };
 
   return { snapshot, entries: entryAmounts(result), employee, companyRow };
@@ -539,11 +567,7 @@ export async function generateDraft(
       // approve/issue refuse it), but when the DB FUTA trigger — which sums
       // every issued run of the year — rejects its entries, answer with the
       // same 409 instead of a raw database error.
-      const laterIssued = await findLaterIssuedRun(tx, input.employeeId, {
-        payDate: period.payDate,
-        periodStart: period.periodStart,
-        selfRunId: null,
-      });
+      const laterIssued = await findLaterIssuedRun(tx, input.employeeId, ytdKeyOf(period, null));
 
       const inserted = await tx
         .insert(payrollRuns)
@@ -746,11 +770,7 @@ async function assertRunCurrent(
       );
     }
   }
-  const later = await findLaterIssuedRun(tx, run.employeeId, {
-    payDate: run.payDate,
-    periodStart: run.periodStart,
-    selfRunId: run.id,
-  });
+  const later = await findLaterIssuedRun(tx, run.employeeId, ytdKeyOf(run, run.id));
   if (later) throw ytdOrderConflict(later);
 
   const recomputed = await computeRun(tx, {
@@ -760,6 +780,35 @@ async function assertRunCurrent(
   });
   const fields = fingerprintDiff(run.runSnapshot as RunSnapshot, recomputed.snapshot);
   if (fields.length > 0) throw new StaleDraftError(fields, run.publicId);
+}
+
+/** Status precondition of the transition, and void's required reason. */
+function assertTransitionAllowed(
+  rule: { from: string[] },
+  run: RunRow,
+  input: { action: RunAction; reason?: string },
+): void {
+  if (!rule.from.includes(run.status)) {
+    throw new PayrollServiceError(
+      "invalid_transition",
+      `cannot ${input.action} a run in status '${run.status}'`,
+    );
+  }
+  if (input.action === "void" && !input.reason?.trim()) {
+    throw new PayrollServiceError("void_reason_required", "voiding a run requires a reason");
+  }
+}
+
+/** Column patch for the transition (void's reason is checked by assertTransitionAllowed). */
+function transitionPatch(
+  input: { action: RunAction; actorId: string; reason?: string },
+  now: Date,
+) {
+  return input.action === "approve"
+    ? { status: "approved", approvedBy: input.actorId, approvedAt: now, updatedAt: now }
+    : input.action === "issue"
+      ? { status: "issued", issuedAt: now, updatedAt: now }
+      : { status: "void", voidedAt: now, voidReason: input.reason!.trim(), updatedAt: now };
 }
 
 /**
@@ -775,7 +824,6 @@ export async function transitionRun(
   const rule = TRANSITIONS[input.action];
   if (!rule) throw new PayrollServiceError("invalid_transition", `unknown action ${input.action}`);
   try {
-    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: state-machine transition transaction; kept linear with audit in the same tx
     return await db.transaction(async (tx) => {
       const found = await getRunByPublicId(tx, input.publicId);
       if (!found) throw new PayrollServiceError("run_not_found", `run ${input.publicId} not found`);
@@ -785,28 +833,12 @@ export async function transitionRun(
         // Re-read under the lock: a parallel issue may have changed it.
         run = (await getRunByPublicId(tx, input.publicId)) ?? run;
       }
-      if (!rule.from.includes(run.status)) {
-        throw new PayrollServiceError(
-          "invalid_transition",
-          `cannot ${input.action} a run in status '${run.status}'`,
-        );
-      }
-      if (input.action === "void" && !input.reason?.trim()) {
-        throw new PayrollServiceError("void_reason_required", "voiding a run requires a reason");
-      }
+      assertTransitionAllowed(rule, run, input);
       if (input.action !== "void") await assertRunCurrent(tx, deps, run, input.action);
-
-      const now = new Date();
-      const patch =
-        input.action === "approve"
-          ? { status: "approved", approvedBy: input.actorId, approvedAt: now, updatedAt: now }
-          : input.action === "issue"
-            ? { status: "issued", issuedAt: now, updatedAt: now }
-            : { status: "void", voidedAt: now, voidReason: input.reason!.trim(), updatedAt: now };
 
       const updated = await tx
         .update(payrollRuns)
-        .set(patch)
+        .set(transitionPatch(input, new Date()))
         .where(eq(payrollRuns.id, run.id))
         .returning();
       const next = updated[0]!;

@@ -11,7 +11,14 @@
  * the result (inputs.resolution, template 1.3.0).
  */
 
-import { PayrollServiceError, type Period } from "./runs.js";
+import { PayrollServiceError } from "./errors.js";
+
+/** A pay period and its payment date (YYYY-MM-DD). */
+export interface Period {
+  periodStart: string;
+  periodEnd: string;
+  payDate: string;
+}
 
 export interface RunDates {
   /** The payment date. As-of for: tax tables (federal + state), YTD window, W-4 next-year gate and exempt lapse, residence. */
@@ -63,6 +70,14 @@ export interface YtdKey {
   payDate: string;
   periodStart: string;
   selfRunId: number | null;
+}
+
+/** The D2 key of a run with this period; selfRunId null = a new draft. */
+export function ytdKeyOf(
+  period: Pick<Period, "payDate" | "periodStart">,
+  selfRunId: number | null,
+): YtdKey {
+  return { payDate: period.payDate, periodStart: period.periodStart, selfRunId };
 }
 
 /** SQL stand-in for "+∞" in the D2 key: the `serial` maximum. */
