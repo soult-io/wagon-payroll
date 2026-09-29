@@ -338,9 +338,13 @@ export function registerAdminPayrollRoutes(app: FastifyInstance, deps: AdminPayr
     if (!body.success)
       return reply.code(400).send({ error: "invalid_body", details: body.error.issues });
     // Spec 26 (PAY-173) D3 step 4: effective date inside the lawful window.
-    const violation = await validateW4Dates(db, employeeId, body.data);
-    if (violation) {
-      return reply.code(400).send({ error: "invalid_w4_effective_date", message: violation });
+    const check = await validateW4Dates(db, employeeId, body.data);
+    if (check.violation) {
+      return reply.code(400).send({
+        error: "invalid_w4_effective_date",
+        message: check.violation,
+        window: check.window,
+      });
     }
     const inserted = await db
       .insert(w4Elections)

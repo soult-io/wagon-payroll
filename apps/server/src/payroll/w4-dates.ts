@@ -36,6 +36,35 @@ function addDays(d: string, days: number): string {
   return date.toISOString().slice(0, 10);
 }
 
+/** Allowed effective_from range. `earliest` null = no lower bound (next-year W-4). */
+export interface W4Window {
+  earliest: string | null;
+  latest: string;
+}
+
+/**
+ * The lawful effective_from window for a W-4 filed on `filedDate`. For a
+ * next-year W-4 the rule bounds GREATEST(effective_from, tax_year-01-01); the
+ * bound is itself >= tax_year-01-01, so it bounds effective_from directly.
+ */
+export function w4DateWindow(taxYear: number, filedDate: string, hasEarlierW4: boolean): W4Window {
+  // Start of the monthly period containing filed + 30 days = first period ending on/after it.
+  const w = monthStart(addDays(filedDate, 30));
+  if (taxYear > Number(filedDate.slice(0, 4))) {
+    return { earliest: null, latest: max(`${taxYear}-01-01`, hasEarlierW4 ? w : filedDate) };
+  }
+  return hasEarlierW4
+    ? { earliest: filedDate, latest: w }
+    : { earliest: monthStart(filedDate), latest: filedDate };
+}
+
+/** The allowed date nearest to `date`. */
+export function clampToW4Window(date: string, window: W4Window): string {
+  if (date > window.latest) return window.latest;
+  if (window.earliest !== null && date < window.earliest) return window.earliest;
+  return date;
+}
+
 /**
  * Pure rule. Returns null when the dates are allowed, else a message naming
  * the allowed window (dates only).
@@ -44,26 +73,20 @@ export function w4DateViolation(w: W4Dates, hasEarlierW4: boolean): string | nul
   if (!isIsoDate(w.filedDate) || !isIsoDate(w.effectiveFrom)) {
     return "filedDate and effectiveFrom must be valid YYYY-MM-DD dates";
   }
-  const filedYear = Number(w.filedDate.slice(0, 4));
-  // Start of the monthly period containing filed + 30 days = first period ending on/after it.
-  const window = monthStart(addDays(w.filedDate, 30));
-  if (w.taxYear > filedYear) {
-    const yearStart = `${w.taxYear}-01-01`;
-    const start = max(w.effectiveFrom, yearStart);
-    const latest = max(yearStart, hasEarlierW4 ? window : w.filedDate);
-    return start <= latest
-      ? null
-      : `a W-4 for ${w.taxYear} filed on ${w.filedDate} must take effect no later than ${latest}`;
+  const window = w4DateWindow(w.taxYear, w.filedDate, hasEarlierW4);
+  if (clampToW4Window(w.effectiveFrom, window) === w.effectiveFrom) return null;
+  if (window.earliest === null) {
+    return `a W-4 for ${w.taxYear} filed on ${w.filedDate} must take effect no later than ${window.latest}`;
   }
-  if (!hasEarlierW4) {
-    const earliest = monthStart(w.filedDate);
-    return w.effectiveFrom >= earliest && w.effectiveFrom <= w.filedDate
-      ? null
-      : `a first W-4 filed on ${w.filedDate} must take effect between ${earliest} and ${w.filedDate}`;
-  }
-  return w.effectiveFrom >= w.filedDate && w.effectiveFrom <= window
-    ? null
-    : `a replacement W-4 filed on ${w.filedDate} must take effect between ${w.filedDate} and ${window}`;
+  const kind = hasEarlierW4 ? "a replacement W-4" : "a first W-4";
+  return `${kind} filed on ${w.filedDate} must take effect between ${window.earliest} and ${window.latest}`;
+}
+
+export interface W4DateCheck {
+  /** null when the dates are allowed. */
+  violation: string | null;
+  /** null only when filedDate is not a valid date. */
+  window: W4Window | null;
 }
 
 /** The rule against the employee's stored W-4s (any earlier row = replacement). */
@@ -71,11 +94,15 @@ export async function validateW4Dates(
   db: DbLike,
   employeeId: number,
   w: W4Dates,
-): Promise<string | null> {
+): Promise<W4DateCheck> {
   const earlier = await db
     .select({ id: w4Elections.id })
     .from(w4Elections)
     .where(eq(w4Elections.employeeId, employeeId))
     .limit(1);
-  return w4DateViolation(w, earlier.length > 0);
+  const hasEarlier = earlier.length > 0;
+  return {
+    violation: w4DateViolation(w, hasEarlier),
+    window: isIsoDate(w.filedDate) ? w4DateWindow(w.taxYear, w.filedDate, hasEarlier) : null,
+  };
 }

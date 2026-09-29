@@ -100,7 +100,9 @@ function errorStatus(err: ChangeRequestError): number {
 
 function serviceError(err: unknown, reply: FastifyReply): unknown {
   if (err instanceof ChangeRequestError) {
-    return reply.code(errorStatus(err)).send({ error: err.code, message: err.message });
+    return reply
+      .code(errorStatus(err))
+      .send({ ...err.details, error: err.code, message: err.message });
   }
   throw err;
 }

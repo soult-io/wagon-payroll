@@ -34,7 +34,7 @@ import { encryptField, isEncrypted, maskLast4 } from "../crypto/field-encryption
 import { addressForStorage } from "../crypto/address-encryption.js";
 import { templateContext } from "../notify/outbox.js";
 import type { DbLike } from "../payroll/resolve.js";
-import { validateW4Dates } from "../payroll/w4-dates.js";
+import { clampToW4Window, validateW4Dates } from "../payroll/w4-dates.js";
 
 export class ChangeRequestError extends Error {
   constructor(
@@ -48,6 +48,8 @@ export class ChangeRequestError extends Error {
       // Spec 26 (PAY-173) D3 step 4
       | "invalid_w4_effective_date",
     message: string,
+    /** Extra response fields (dates only — never amounts or PII). */
+    public details?: Record<string, unknown>,
   ) {
     super(message);
   }
@@ -192,6 +194,47 @@ export async function addComment(
 }
 
 /**
+ * The effective date a W-4 approval applies (Spec 26 (PAY-173) D3 step 4).
+ * - explicit override: must be inside the lawful window, else 400
+ *   `invalid_w4_effective_date` with the window;
+ * - no override: the requested date, clamped to the nearest allowed date. If
+ *   that precedes the next un-run pay period, 409 `effective_date` proposing
+ *   the nearest allowed date to that period start (never past the window).
+ */
+async function w4ApprovalDate(
+  db: DbLike,
+  request: ChangeRequestRow,
+  override: string | undefined,
+  nextUnrun: string,
+): Promise<string> {
+  const payload = request.payload as Record<string, unknown>;
+  const check = await validateW4Dates(db, request.employeeId, {
+    taxYear: Number(payload["taxYear"]),
+    filedDate: String(payload["filedDate"]),
+    effectiveFrom: override ?? request.effectiveFrom,
+  });
+  const window = check.window;
+  if (!window || (override && check.violation)) {
+    throw new ChangeRequestError(
+      "invalid_w4_effective_date",
+      check.violation ?? "invalid W-4 dates",
+      { window },
+    );
+  }
+  if (override) return override;
+  const clamped = clampToW4Window(request.effectiveFrom, window);
+  if (clamped < nextUnrun) {
+    const proposed = clampToW4Window(nextUnrun, window);
+    throw new ChangeRequestError(
+      "effective_date",
+      `effective_from ${clamped} precedes the next un-run pay period (${nextUnrun}); pass an explicit override to approve anyway — proposed ${proposed}, inside the W-4 window ${window.earliest ?? "(no lower bound)"} to ${window.latest}`,
+      { window, proposedEffectiveFrom: proposed },
+    );
+  }
+  return clamped;
+}
+
+/**
  * Approve + apply, one transaction: target write → status → audit → outbox.
  */
 export async function approveRequest(
@@ -217,9 +260,12 @@ export async function approveRequest(
       throw new ChangeRequestError("not_pending", `request is '${request.status}', not pending`);
     }
 
-    const effectiveFrom = input.effectiveFromOverride ?? request.effectiveFrom;
     const earliest = await nextUnrunPeriodStart(tx as DbLike, request.employeeId);
-    if (effectiveFrom < earliest && !input.effectiveFromOverride) {
+    const effectiveFrom =
+      request.requestType === "w4"
+        ? await w4ApprovalDate(tx as DbLike, request, input.effectiveFromOverride, earliest)
+        : (input.effectiveFromOverride ?? request.effectiveFrom);
+    if (effectiveFrom < earliest && !input.effectiveFromOverride && request.requestType !== "w4") {
       throw new ChangeRequestError(
         "effective_date",
         `effective_from ${effectiveFrom} precedes the next un-run pay period (${earliest}); pass an explicit override to approve anyway`,
@@ -292,14 +338,7 @@ export async function approveRequest(
         break;
       }
       case "w4": {
-        // Spec 26 (PAY-173) D3 step 4: the applied effective date (after any
-        // override) must fall inside the lawful window for the filed date.
-        const violation = await validateW4Dates(tx as DbLike, employee.id, {
-          taxYear: Number(payload["taxYear"]),
-          filedDate: String(payload["filedDate"]),
-          effectiveFrom,
-        });
-        if (violation) throw new ChangeRequestError("invalid_w4_effective_date", violation);
+        // effectiveFrom is inside the lawful window (w4ApprovalDate).
         // Append-only: INSERT a new election, never UPDATE history.
         const inserted = await tx
           .insert(w4Elections)
@@ -378,7 +417,9 @@ export async function approveRequest(
               effectiveFromOverride: input.effectiveFromOverride,
               requestedEffectiveFrom: request.effectiveFrom,
             }
-          : {}),
+          : effectiveFrom !== request.effectiveFrom
+            ? { requestedEffectiveFrom: request.effectiveFrom } // clamped to the W-4 window
+            : {}),
       },
     });
 
