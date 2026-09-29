@@ -32,12 +32,15 @@ import {
   type ChangeRequestRow,
 } from "../change-requests/service.js";
 import { decryptField, maskLast4 } from "../crypto/field-encryption.js";
+import { FILED_DATE_IN_FUTURE, isFiledDateInFuture } from "../payroll/w4-dates.js";
 import { decryptAddress } from "../crypto/address-encryption.js";
 
 interface Deps {
   db: Db;
   config: AppConfig;
   guards: Guards;
+  /** Wall clock for the W-4 filed-date check; default now. */
+  clock?: () => Date;
 }
 
 /**
@@ -93,13 +96,16 @@ function errorStatus(err: ChangeRequestError): number {
     case "effective_date":
       return 409;
     case "reason_required":
+    case "invalid_w4_effective_date":
       return 400;
   }
 }
 
 function serviceError(err: unknown, reply: FastifyReply): unknown {
   if (err instanceof ChangeRequestError) {
-    return reply.code(errorStatus(err)).send({ error: err.code, message: err.message });
+    return reply
+      .code(errorStatus(err))
+      .send({ ...err.details, error: err.code, message: err.message });
   }
   throw err;
 }
@@ -143,6 +149,16 @@ export function registerChangeRequestRoutes(app: FastifyInstance, deps: Deps): v
     const parsed = changeRequestPayloads[requestType].safeParse(body.data.payload);
     if (!parsed.success) {
       return reply.code(400).send({ error: "invalid_payload", details: parsed.error.issues });
+    }
+    if (
+      requestType === "w4" &&
+      isFiledDateInFuture(
+        (parsed.data as { filedDate: string }).filedDate,
+        (deps.clock ?? (() => new Date()))(),
+        config.appTz,
+      )
+    ) {
+      return reply.code(400).send(FILED_DATE_IN_FUTURE);
     }
     // Top-level effective_from is authoritative (W-4 / state-election payloads carry one too).
     const payload =
@@ -295,7 +311,7 @@ export function registerChangeRequestRoutes(app: FastifyInstance, deps: Deps): v
       return reply.code(400).send({ error: "invalid_body", details: body.error.issues });
     try {
       const row = await approveRequest(
-        { db, config },
+        { db, config, ...(deps.clock ? { clock: deps.clock } : {}) },
         {
           publicId,
           adminId: req.authUser!.id,

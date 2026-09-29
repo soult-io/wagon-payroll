@@ -27,8 +27,12 @@ import { round2 } from "@payroll/engine/money";
 let t: TestContext;
 let adminCookie: string;
 
+// History runs paid in 2025 are issued "in" late 2025: issuing a past pay
+// date in another calendar year is refused (Spec 26 (PAY-173) D9).
+const ISSUE_CLOCK = () => new Date("2025-12-31T12:00:00Z");
+
 beforeAll(async () => {
-  t = await createTestApp();
+  t = await createTestApp({}, { clock: ISSUE_CLOCK });
   await seedDatabase(t.db as unknown as SeedDb);
   await inviteAndOnboard(t, { email: "payroll-admin@example.com", role: "admin" });
   const adminLogin = await login(t, "payroll-admin@example.com", TEST_PASSWORD);

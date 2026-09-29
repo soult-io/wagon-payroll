@@ -5,6 +5,55 @@
 import { useToast } from "primevue/usetoast";
 import { ApiError } from "../lib/api";
 
+/**
+ * Spec 26 (PAY-173) §5 copy for the payroll-run refusals. ytd_order_conflict
+ * shows the server text when there is any (it names the pay date); the
+ * fallback is used only when the server sent none.
+ */
+const STALE_DRAFT_MESSAGE =
+  "This draft is out of date, so it was not approved or issued. Something it depends on changed after it was made — for example, another payroll was issued, or a tax table or W-4 was updated. To fix it, void this draft, then generate it again from Config → Pay schedule → Generate drafts now so the numbers are recalculated.";
+
+const YTD_ORDER_FALLBACK =
+  "This employee already has a payroll issued with a later pay date. Payrolls must be issued in the order they are paid. Nothing was approved or issued. Void this draft and generate it again with the date you actually pay it.";
+
+const PAST_YEAR_FALLBACK =
+  "This payroll's pay date is in a year that has ended. Wagon Payroll can't record a payroll in a past year yet, so nothing was issued. If that's the date you paid your team, keep it. Don't change it. Keep your own record of the payment and make sure it's included in that year's payroll tax filings.";
+
+/** The server's own message, or null when the body carried none (err.message is then a generic default). */
+function serverMessage(err: ApiError): string | null {
+  const message = err.body?.["message"];
+  return typeof message === "string" && message.trim() !== "" ? message : null;
+}
+
+function payrollRunMessage(err: ApiError): string | null {
+  if (err.code === "stale_draft") return STALE_DRAFT_MESSAGE;
+  if (err.code === "ytd_order_conflict") return serverMessage(err) ?? YTD_ORDER_FALLBACK;
+  if (err.code === "past_pay_date_other_year") return serverMessage(err) ?? PAST_YEAR_FALLBACK;
+  return null;
+}
+
+/** 400 invalid_w4_effective_date: the allowed window (dates only) from the body. */
+function w4WindowMessage(err: ApiError): string | null {
+  if (err.code !== "invalid_w4_effective_date") return null;
+  const allowed = err.body?.["window"] as { earliest?: string | null; latest?: string } | null;
+  if (!allowed?.latest) return err.message;
+  return allowed.earliest
+    ? `The "Effective from" date must be between ${allowed.earliest} and ${allowed.latest}. IRS rules set this range from the date the employee filed this W-4 ("Date filed"). Change "Effective from", or check "Date filed", then try again.`
+    : `For a W-4 for next year, the "Effective from" date must be ${allowed.latest} or earlier. Change "Effective from", or check "Date filed" and "Tax year", then try again.`;
+}
+
+/**
+ * Long refusals that tell the admin what to do next stay on screen until
+ * closed (WCAG 2.2.1): a 5-second toast is too short to read them.
+ */
+const STICKY_ERROR_CODES = new Set([
+  "stale_draft",
+  "ytd_order_conflict",
+  "past_pay_date_other_year",
+  "invalid_w4_effective_date",
+  "effective_date",
+]);
+
 export function useNotify() {
   const toast = useToast();
 
@@ -25,14 +74,21 @@ export function useNotify() {
       if (err.status === 404) return "Not found.";
       if (err.code === "duplicate_pending") return "A pending request of this type already exists.";
       if (err.code === "effective_date") return err.message;
-      return err.message;
+      return payrollRunMessage(err) ?? w4WindowMessage(err) ?? err.message;
     }
     if (err instanceof Error) return err.message;
     return "Something went wrong.";
   }
 
   function error(err: unknown, summary = "Error") {
-    toast.add({ severity: "error", summary, detail: errorMessage(err), life: 5000 });
+    const sticky = err instanceof ApiError && STICKY_ERROR_CODES.has(err.code);
+    const pastYear = err instanceof ApiError && err.code === "past_pay_date_other_year";
+    toast.add({
+      severity: "error",
+      summary: pastYear ? "Payroll not issued" : summary,
+      detail: errorMessage(err),
+      ...(sticky ? {} : { life: 5000 }),
+    });
   }
 
   return { success, info, error, errorMessage };

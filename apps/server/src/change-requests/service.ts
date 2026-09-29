@@ -34,6 +34,7 @@ import { encryptField, isEncrypted, maskLast4 } from "../crypto/field-encryption
 import { addressForStorage } from "../crypto/address-encryption.js";
 import { templateContext } from "../notify/outbox.js";
 import type { DbLike } from "../payroll/resolve.js";
+import { clampToW4Window, validateW4Dates } from "../payroll/w4-dates.js";
 
 export class ChangeRequestError extends Error {
   constructor(
@@ -43,8 +44,12 @@ export class ChangeRequestError extends Error {
       | "duplicate_pending"
       | "forbidden"
       | "effective_date"
-      | "reason_required",
+      | "reason_required"
+      // Spec 26 (PAY-173) D3 step 4
+      | "invalid_w4_effective_date",
     message: string,
+    /** Extra response fields (dates only — never amounts or PII). */
+    public details?: Record<string, unknown>,
   ) {
     super(message);
   }
@@ -55,6 +60,8 @@ export type ChangeRequestRow = typeof changeRequests.$inferSelect;
 interface Deps {
   db: Db;
   config: AppConfig;
+  /** Wall clock for the no-run default of the next un-run period; default now. */
+  clock?: () => Date;
 }
 
 /** All active admins (recipients of submitted/notifications per spec catalog). */
@@ -69,7 +76,11 @@ async function activeAdmins(db: DbLike): Promise<{ id: string }[]> {
  * First day of the next un-run pay period for an employee: the month after
  * their latest non-void run, or the current month when nothing has run.
  */
-export async function nextUnrunPeriodStart(db: DbLike, employeeId: number): Promise<string> {
+export async function nextUnrunPeriodStart(
+  db: DbLike,
+  employeeId: number,
+  now: Date = new Date(),
+): Promise<string> {
   const rows = await db
     .select({ periodStart: payrollRuns.periodStart })
     .from(payrollRuns)
@@ -77,7 +88,7 @@ export async function nextUnrunPeriodStart(db: DbLike, employeeId: number): Prom
     .orderBy(desc(payrollRuns.periodStart))
     .limit(1);
   const base = rows[0]?.periodStart;
-  const date = base ? new Date(`${base}T00:00:00Z`) : new Date();
+  const date = base ? new Date(`${base}T00:00:00Z`) : now;
   const year = date.getUTCFullYear();
   const month = date.getUTCMonth() + (base ? 2 : 1); // next month if a run exists
   const y = month > 12 ? year + 1 : year;
@@ -189,6 +200,69 @@ export async function addComment(
 }
 
 /**
+ * The effective date a W-4 approval applies (Spec 26 (PAY-173) D3 step 4).
+ * - explicit override: must be inside the lawful window, else 400
+ *   `invalid_w4_effective_date` with the window;
+ * - no override, requested date outside the window: 409 `effective_date`
+ *   proposing the nearest allowed date (never applied silently; the admin
+ *   approves it through the override flow);
+ * - no override, requested date before the next un-run pay period: 409
+ *   `effective_date` proposing the nearest allowed date to that period start
+ *   (never past the window).
+ * Either proposal: the nearest allowed date, moved up to the next un-run
+ * period start when the window reaches it.
+ */
+async function w4ApprovalDate(
+  db: DbLike,
+  request: ChangeRequestRow,
+  override: string | undefined,
+  nextUnrun: string,
+): Promise<string> {
+  const payload = request.payload as Record<string, unknown>;
+  const check = await validateW4Dates(db, request.employeeId, {
+    taxYear: Number(payload["taxYear"]),
+    filedDate: String(payload["filedDate"]),
+    effectiveFrom: override ?? request.effectiveFrom,
+  });
+  const window = check.window;
+  if (!window || (override && check.violation)) {
+    throw new ChangeRequestError(
+      "invalid_w4_effective_date",
+      check.violation ??
+        "The \"Date filed\" on this W-4 request isn't a valid date, so it can't be approved. Ask the employee to submit the W-4 again.",
+      { window },
+    );
+  }
+  if (override) return override;
+  const requested = request.effectiveFrom;
+  const clamped = clampToW4Window(requested, window);
+  const proposed = clamped < nextUnrun ? clampToW4Window(nextUnrun, window) : clamped;
+  if (clamped !== requested) {
+    const range =
+      window.earliest === null
+        ? `on or before ${window.latest}`
+        : `between ${window.earliest} and ${window.latest}`;
+    throw new ChangeRequestError(
+      "effective_date",
+      `This W-4 can't start on ${requested}. IRS rules only allow a start date ${range}, based on the date the employee filed it. Suggested start date: ${proposed}.${
+        proposed < nextUnrun ? ` Payroll already run before ${nextUnrun} is not recalculated.` : ""
+      } The suggested date is filled in under "Effective from". Approve again to use it, or pick another date.`,
+      { window, proposedEffectiveFrom: proposed },
+    );
+  }
+  if (requested < nextUnrun) {
+    throw new ChangeRequestError(
+      "effective_date",
+      `This W-4 would start on ${requested}, but payroll has already been run for pay periods before ${nextUnrun}. Payroll already run is not recalculated.${
+        proposed !== requested ? ` Suggested start date: ${proposed}.` : ""
+      } The date is filled in under "Effective from". Approve again to confirm it, or pick another date.`,
+      { window, proposedEffectiveFrom: proposed },
+    );
+  }
+  return requested;
+}
+
+/**
  * Approve + apply, one transaction: target write → status → audit → outbox.
  */
 export async function approveRequest(
@@ -214,12 +288,19 @@ export async function approveRequest(
       throw new ChangeRequestError("not_pending", `request is '${request.status}', not pending`);
     }
 
-    const effectiveFrom = input.effectiveFromOverride ?? request.effectiveFrom;
-    const earliest = await nextUnrunPeriodStart(tx as DbLike, request.employeeId);
-    if (effectiveFrom < earliest && !input.effectiveFromOverride) {
+    const earliest = await nextUnrunPeriodStart(
+      tx as DbLike,
+      request.employeeId,
+      (deps.clock ?? (() => new Date()))(),
+    );
+    const effectiveFrom =
+      request.requestType === "w4"
+        ? await w4ApprovalDate(tx as DbLike, request, input.effectiveFromOverride, earliest)
+        : (input.effectiveFromOverride ?? request.effectiveFrom);
+    if (effectiveFrom < earliest && !input.effectiveFromOverride && request.requestType !== "w4") {
       throw new ChangeRequestError(
         "effective_date",
-        `effective_from ${effectiveFrom} precedes the next un-run pay period (${earliest}); pass an explicit override to approve anyway`,
+        `This change would start on ${effectiveFrom}, but payroll has already been run for pay periods before ${earliest}. Payroll that has already been run is not recalculated. Approve again to confirm the date under "Effective from", or pick another date.`,
       );
     }
 
@@ -289,6 +370,7 @@ export async function approveRequest(
         break;
       }
       case "w4": {
+        // effectiveFrom is inside the lawful window (w4ApprovalDate).
         // Append-only: INSERT a new election, never UPDATE history.
         const inserted = await tx
           .insert(w4Elections)

@@ -20,6 +20,7 @@ import { effectiveFutaRate } from "@payroll/engine";
 import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
 import type { Guards } from "../plugins/guards.js";
+import { FILED_DATE_IN_FUTURE, isFiledDateInFuture, validateW4Dates } from "../payroll/w4-dates.js";
 import {
   generateDraftsForPeriod,
   getRunByPublicId,
@@ -34,6 +35,32 @@ interface AdminPayrollDeps {
   guards: Guards;
   /** Re-register pg-boss cron after a pay-schedule change (no-op without scheduler). */
   onScheduleChange?: () => Promise<void>;
+  /** Wall clock for the issue-time pay-date check (Spec 26 (PAY-173) D9); default now. */
+  clock?: () => Date;
+}
+
+/** Exhaustive: a new PayrollServiceError code must be given a status here. */
+function payrollErrorStatus(err: PayrollServiceError): number {
+  switch (err.code) {
+    case "run_not_found":
+      return 404;
+    case "invalid_transition":
+    case "void_reason_required":
+    // Spec 26 (PAY-173) D4 / D6 / D9: fixed bodies, field names and dates only.
+    case "stale_draft":
+    case "ytd_order_conflict":
+    case "past_pay_date_other_year":
+      return 409;
+    case "no_compensation":
+    case "no_tax_config":
+    case "unsupported_frequency":
+    case "not_w2_employee":
+    case "no_company":
+    case "no_state_tax_config":
+    case "futa_cap_exceeded":
+    case "invalid_period":
+      return 400;
+  }
 }
 
 const serviceError = (
@@ -41,13 +68,7 @@ const serviceError = (
   reply: { code: (n: number) => { send: (b: unknown) => unknown } },
 ) => {
   if (err instanceof PayrollServiceError) {
-    const status =
-      err.code === "run_not_found"
-        ? 404
-        : err.code === "invalid_transition" || err.code === "void_reason_required"
-          ? 409
-          : 400;
-    return reply.code(status).send({ error: err.code, message: err.message });
+    return reply.code(payrollErrorStatus(err)).send({ error: err.code, message: err.message });
   }
   throw err;
 };
@@ -80,9 +101,11 @@ export function registerAdminPayrollRoutes(app: FastifyInstance, deps: AdminPayr
     const conditions: SQL[] = [];
     if (q.status) conditions.push(eq(payrollRuns.status, q.status));
     if (q.employeeId) conditions.push(eq(payrollRuns.employeeId, q.employeeId));
+    // Spec 26 (PAY-173): `year` is the PAY-date year, like the W-2, 941, 940
+    // and export.
     if (q.year) {
-      conditions.push(gte(payrollRuns.periodStart, `${q.year}-01-01`));
-      conditions.push(lte(payrollRuns.periodStart, `${q.year}-12-31`));
+      conditions.push(gte(payrollRuns.payDate, `${q.year}-01-01`));
+      conditions.push(lte(payrollRuns.payDate, `${q.year}-12-31`));
     }
     const rows = await db
       .select({
@@ -100,7 +123,7 @@ export function registerAdminPayrollRoutes(app: FastifyInstance, deps: AdminPayr
       })
       .from(payrollRuns)
       .where(conditions.length ? and(...conditions) : undefined)
-      .orderBy(desc(payrollRuns.periodStart));
+      .orderBy(desc(payrollRuns.payDate), desc(payrollRuns.periodStart), desc(payrollRuns.id));
     return { runs: rows };
   });
 
@@ -153,7 +176,7 @@ export function registerAdminPayrollRoutes(app: FastifyInstance, deps: AdminPayr
         if (!body.success) return reply.code(400).send({ error: "invalid_body" });
         try {
           const run = await transitionRun(
-            { db, config },
+            { db, config, ...(deps.clock ? { clock: deps.clock } : {}) },
             {
               publicId,
               action,
@@ -314,6 +337,20 @@ export function registerAdminPayrollRoutes(app: FastifyInstance, deps: AdminPayr
       .safeParse(req.body);
     if (!body.success)
       return reply.code(400).send({ error: "invalid_body", details: body.error.issues });
+    if (
+      isFiledDateInFuture(body.data.filedDate, (deps.clock ?? (() => new Date()))(), config.appTz)
+    ) {
+      return reply.code(400).send(FILED_DATE_IN_FUTURE);
+    }
+    // Spec 26 (PAY-173) D3 step 4: effective date inside the lawful window.
+    const check = await validateW4Dates(db, employeeId, body.data);
+    if (check.violation) {
+      return reply.code(400).send({
+        error: "invalid_w4_effective_date",
+        message: check.violation,
+        window: check.window,
+      });
+    }
     const inserted = await db
       .insert(w4Elections)
       .values({

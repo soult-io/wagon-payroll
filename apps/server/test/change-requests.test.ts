@@ -25,6 +25,7 @@ import { createTestApp, type TestContext } from "./helpers.js";
 import { inviteAndOnboard, login, sessionHeader, TEST_PASSWORD } from "./flow-helpers.js";
 import { decryptField } from "../src/crypto/field-encryption.js";
 import { decryptAddress } from "../src/crypto/address-encryption.js";
+import { w4DateWindow } from "../src/payroll/w4-dates.js";
 
 let t: TestContext;
 let adminCookie: string;
@@ -33,6 +34,16 @@ let employeeCookie: string;
 let employeeUserId: string;
 let employeeId: number;
 let intruderCookie: string;
+
+/**
+ * One fixed instant for the whole file, injected as the app clock with APP_TZ
+ * pinned to UTC, so the tests' "today" (UTC day of NOW) is the server's
+ * "today" for the W-4 filed-date check and the no-run default of
+ * nextUnrunPeriodStart. Mid-month on purpose: a W-4 filed "today" can then
+ * never be forced past the next un-run period by a month boundary.
+ */
+const NOW = new Date("2026-09-15T12:00:00Z");
+const TODAY = NOW.toISOString().slice(0, 10);
 
 const ADDRESS_PAYLOAD = {
   line1: "1 Main St",
@@ -43,9 +54,8 @@ const ADDRESS_PAYLOAD = {
 };
 
 function nextMonthStart(): string {
-  const now = new Date();
-  const year = now.getUTCFullYear();
-  const month = now.getUTCMonth() + 2; // next month
+  const year = NOW.getUTCFullYear();
+  const month = NOW.getUTCMonth() + 2; // next month
   const y = month > 12 ? year + 1 : year;
   const m = ((month - 1) % 12) + 1;
   return `${y}-${String(m).padStart(2, "0")}-01`;
@@ -93,7 +103,7 @@ async function outboxFor(userId: string, eventType: string) {
 }
 
 beforeAll(async () => {
-  t = await createTestApp();
+  t = await createTestApp({ appTz: "UTC" }, { clock: () => NOW });
   await seedDatabase(t.db as unknown as SeedDb);
 
   const admin = await inviteAndOnboard(t, { email: "cr-admin@example.com", role: "admin" });
@@ -284,6 +294,32 @@ describe("deny / withdraw / duplicate", () => {
   });
 });
 
+function addDaysIso(d: string, days: number): string {
+  const date = new Date(`${d}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function isoDaysFromToday(days: number): string {
+  return addDaysIso(TODAY, days);
+}
+
+/** First day of the month `offset` months after NOW's UTC month. */
+function monthStartOffset(offset: number): string {
+  const d = new Date(Date.UTC(NOW.getUTCFullYear(), NOW.getUTCMonth() + offset, 1));
+  return d.toISOString().slice(0, 10);
+}
+
+async function latestW4(empId: number, filedDate: string) {
+  const rows = await t.db
+    .select()
+    .from(w4Elections)
+    .where(and(eq(w4Elections.employeeId, empId), eq(w4Elections.filedDate, filedDate)))
+    .orderBy(desc(w4Elections.id))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
 async function requestId(publicId: string): Promise<number | null> {
   const rows = await t.db
     .select({ id: changeRequests.id })
@@ -303,14 +339,17 @@ describe("W-4 append-only", () => {
       filedDate: "2024-01-01",
     });
 
-    const effectiveFrom = nextMonthStart();
+    // Filed today, requesting the latest date the replacement window allows
+    // (Spec 26 (PAY-173) D3 step 4): next month's start mid-month, but today
+    // itself when filed on the 1st of a 31-day month.
+    const effectiveFrom = w4DateWindow(2026, TODAY, true).latest;
     const res = await submit(employeeCookie, {
       requestType: "w4",
       payload: {
         taxYear: 2026,
         filingStatus: "married_joint",
         effectiveFrom, // payload copy; top-level is authoritative
-        filedDate: "2026-01-05",
+        filedDate: TODAY,
       },
       effectiveFrom,
     });
@@ -352,6 +391,302 @@ describe("W-4 append-only", () => {
     expect(profile.statusCode).toBe(200);
     const body = profile.json() as { profile: { w4: { filingStatus: string } | null } };
     expect(body.profile.w4?.filingStatus).toBe("married_joint");
+  });
+
+  it("an explicit override outside the lawful window → 400 with the window; no override → 409 proposing a date inside it (Spec 26 (PAY-173) D3 step 4)", async () => {
+    const before = await t.db
+      .select({ id: w4Elections.id })
+      .from(w4Elections)
+      .where(eq(w4Elections.employeeId, employeeId));
+    // Replacement filed 2026-01-05: allowed window 2026-01-05..2026-02-01
+    // (W = start of the first monthly period ending on/after filed + 30 days).
+    const effectiveFrom = nextMonthStart();
+    const res = await submit(employeeCookie, {
+      requestType: "w4",
+      payload: { taxYear: 2026, filingStatus: "single", effectiveFrom, filedDate: "2026-01-05" },
+      effectiveFrom,
+    });
+    expect(res.statusCode).toBe(201);
+    const publicId = (res.json() as { request: { publicId: string } }).request.publicId;
+
+    const override = await t.app.inject({
+      method: "POST",
+      url: `/api/change-requests/${publicId}/approve`,
+      headers: sessionHeader(adminCookie),
+      payload: { effectiveFromOverride: effectiveFrom },
+    });
+    const overrideBody = override.json() as { error?: string; window?: unknown };
+    expect({
+      status: override.statusCode,
+      error: overrideBody.error,
+      window: overrideBody.window,
+    }).toEqual({
+      status: 400,
+      error: "invalid_w4_effective_date",
+      window: { earliest: "2026-01-05", latest: "2026-02-01" },
+    });
+
+    // No override: the requested date is outside the window, so 409 proposing
+    // the nearest allowed date, 2026-02-01 (never applied silently).
+    const plain = await t.app.inject({
+      method: "POST",
+      url: `/api/change-requests/${publicId}/approve`,
+      headers: sessionHeader(adminCookie),
+      payload: {},
+    });
+    const plainBody = plain.json() as {
+      error?: string;
+      proposedEffectiveFrom?: string;
+      window?: unknown;
+    };
+    expect({
+      status: plain.statusCode,
+      error: plainBody.error,
+      proposed: plainBody.proposedEffectiveFrom,
+      window: plainBody.window,
+    }).toEqual({
+      status: 409,
+      error: "effective_date",
+      proposed: "2026-02-01",
+      window: { earliest: "2026-01-05", latest: "2026-02-01" },
+    });
+
+    const after = await t.db
+      .select({ id: w4Elections.id })
+      .from(w4Elections)
+      .where(eq(w4Elections.employeeId, employeeId));
+    expect(after).toHaveLength(before.length);
+    const status = await t.db
+      .select({ status: changeRequests.status })
+      .from(changeRequests)
+      .where(eq(changeRequests.publicId, publicId));
+    expect(status[0]?.status).toBe("pending");
+
+    // Clean up: leave no pending W-4 request for later tests.
+    const cleanup = await t.app.inject({
+      method: "POST",
+      url: `/api/change-requests/${publicId}/deny`,
+      headers: sessionHeader(adminCookie),
+      payload: { reason: "Cleanup." },
+    });
+    expect(cleanup.statusCode).toBe(200);
+  });
+
+  it("a late replacement: 409 proposing the window end W, then approved with it as the override (Spec 26 (PAY-173) D3 step 4)", async () => {
+    // Direct row insert (the submit path is covered above; this avoids another
+    // sign-in against the auth rate limit).
+    const lateEmployeeId = await createEmployeeFor(null, "Cr Late W4");
+    await t.db.insert(w4Elections).values({
+      employeeId: lateEmployeeId,
+      taxYear: 2024,
+      filingStatus: "single",
+      effectiveFrom: "2024-01-01",
+      filedDate: "2024-01-01",
+    });
+    // Filed 20 days ago; requested three months out, past W.
+    const filedDate = isoDaysFromToday(-20);
+    const expected = `${addDaysIso(filedDate, 30).slice(0, 7)}-01`;
+    const requested = monthStartOffset(3);
+    const inserted = await t.db
+      .insert(changeRequests)
+      .values({
+        employeeId: lateEmployeeId,
+        requestType: "w4",
+        payload: {
+          taxYear: Number(filedDate.slice(0, 4)),
+          filingStatus: "single",
+          effectiveFrom: requested,
+          filedDate,
+        },
+        effectiveFrom: requested,
+      })
+      .returning({ publicId: changeRequests.publicId });
+    const publicId = String(inserted[0]?.publicId);
+
+    // No silent clamp: the out-of-window date is refused with a proposal.
+    const plain = await t.app.inject({
+      method: "POST",
+      url: `/api/change-requests/${publicId}/approve`,
+      headers: sessionHeader(adminCookie),
+      payload: {},
+    });
+    const plainBody = plain.json() as { error?: string; proposedEffectiveFrom?: string };
+    expect({
+      status: plain.statusCode,
+      error: plainBody.error,
+      proposed: plainBody.proposedEffectiveFrom,
+    }).toEqual({ status: 409, error: "effective_date", proposed: expected });
+    expect(await latestW4(lateEmployeeId, filedDate)).toBeNull();
+
+    const approve = await t.app.inject({
+      method: "POST",
+      url: `/api/change-requests/${publicId}/approve`,
+      headers: sessionHeader(adminCookie),
+      payload: { effectiveFromOverride: plainBody.proposedEffectiveFrom },
+    });
+    expect(approve.statusCode, approve.body).toBe(200);
+    const applied = await latestW4(lateEmployeeId, filedDate);
+    expect(applied?.effectiveFrom).toBe(expected);
+    const row = await t.db
+      .select({ effectiveFrom: changeRequests.effectiveFrom })
+      .from(changeRequests)
+      .where(eq(changeRequests.publicId, publicId));
+    expect(row[0]?.effectiveFrom).toBe(expected);
+    const audits = await t.db
+      .select()
+      .from(auditEvents)
+      .where(
+        and(eq(auditEvents.action, "change_request.approve"), eq(auditEvents.entityId, publicId)),
+      );
+    expect(audits[0]?.after).toMatchObject({
+      effectiveFrom: expected,
+      requestedEffectiveFrom: requested,
+    });
+  });
+
+  it("a 409 proposal before the next un-run period is approvable by sending it as an explicit override (PAY-173)", async () => {
+    const proposalEmployeeId = await createEmployeeFor(null, "Cr Proposal W4");
+    await t.db.insert(w4Elections).values({
+      employeeId: proposalEmployeeId,
+      taxYear: 2024,
+      filingStatus: "single",
+      effectiveFrom: "2024-01-01",
+      filedDate: "2024-01-01",
+    });
+    // Replacement filed 2026-01-05: window 2026-01-05..2026-02-01, which is
+    // before the next un-run period, so no-override approval returns 409.
+    const requested = nextMonthStart();
+    const inserted = await t.db
+      .insert(changeRequests)
+      .values({
+        employeeId: proposalEmployeeId,
+        requestType: "w4",
+        payload: {
+          taxYear: 2026,
+          filingStatus: "single",
+          effectiveFrom: requested,
+          filedDate: "2026-01-05",
+        },
+        effectiveFrom: requested,
+      })
+      .returning({ publicId: changeRequests.publicId });
+    const publicId = String(inserted[0]?.publicId);
+
+    const plain = await t.app.inject({
+      method: "POST",
+      url: `/api/change-requests/${publicId}/approve`,
+      headers: sessionHeader(adminCookie),
+      payload: {},
+    });
+    const plainBody = plain.json() as { error?: string; proposedEffectiveFrom?: string };
+    expect({ status: plain.statusCode, error: plainBody.error }).toEqual({
+      status: 409,
+      error: "effective_date",
+    });
+    expect(plainBody.proposedEffectiveFrom).toBe("2026-02-01");
+
+    const approve = await t.app.inject({
+      method: "POST",
+      url: `/api/change-requests/${publicId}/approve`,
+      headers: sessionHeader(adminCookie),
+      payload: { effectiveFromOverride: plainBody.proposedEffectiveFrom },
+    });
+    expect(approve.statusCode, approve.body).toBe(200);
+    const applied = await latestW4(proposalEmployeeId, "2026-01-05");
+    expect(applied?.effectiveFrom).toBe("2026-02-01");
+  });
+
+  it("a W-4 with a filed date after today → 400 naming the field only; nothing stored (PAY-173)", async () => {
+    // Two days after the injected clock's UTC day (APP_TZ pinned to UTC).
+    const future = isoDaysFromToday(2);
+    const before = await t.db
+      .select({ id: changeRequests.id })
+      .from(changeRequests)
+      .where(eq(changeRequests.employeeId, employeeId));
+    const res = await submit(employeeCookie, {
+      requestType: "w4",
+      payload: { taxYear: 2026, filingStatus: "single", effectiveFrom: future, filedDate: future },
+      effectiveFrom: future,
+    });
+    const body = res.json() as Record<string, unknown>;
+    expect({ status: res.statusCode, error: body["error"], field: body["field"] }).toEqual({
+      status: 400,
+      error: "filed_date_in_future",
+      field: "filedDate",
+    });
+    expect(JSON.stringify(body)).not.toContain(future);
+    const after = await t.db
+      .select({ id: changeRequests.id })
+      .from(changeRequests)
+      .where(eq(changeRequests.employeeId, employeeId));
+    expect(after).toHaveLength(before.length);
+
+    const adminEmployeeId = await createEmployeeFor(null, "Cr Future Filed W4");
+    const adminRes = await t.app.inject({
+      method: "POST",
+      url: `/api/admin/employees/${adminEmployeeId}/w4`,
+      headers: sessionHeader(adminCookie),
+      payload: { taxYear: 2026, effectiveFrom: future, filedDate: future },
+    });
+    const adminBody = adminRes.json() as Record<string, unknown>;
+    expect({
+      status: adminRes.statusCode,
+      error: adminBody["error"],
+      field: adminBody["field"],
+    }).toEqual({ status: 400, error: "filed_date_in_future", field: "filedDate" });
+    expect(JSON.stringify(adminBody)).not.toContain(future);
+    const stored = await t.db
+      .select({ id: w4Elections.id })
+      .from(w4Elections)
+      .where(eq(w4Elections.employeeId, adminEmployeeId));
+    expect(stored).toHaveLength(0);
+  });
+
+  it("a first W-4 submitted with the form defaults: 409 proposing its filed date, then approved with it as the override (Spec 26 (PAY-173) D3 step 4)", async () => {
+    const first = await inviteAndOnboard(t, { email: "cr-first-w4@example.com", role: "employee" });
+    const firstEmployeeId = await createEmployeeFor(first.userId, "Cr First W4");
+    const firstCookie = (await login(t, first.email, TEST_PASSWORD)).sessionCookie;
+    // Form defaults: effectiveFrom = first of next month, filedDate = today.
+    const filedDate = isoDaysFromToday(0);
+    const res = await submit(firstCookie, {
+      requestType: "w4",
+      payload: {
+        taxYear: Number(filedDate.slice(0, 4)),
+        filingStatus: "single",
+        effectiveFrom: nextMonthStart(),
+        filedDate,
+      },
+      effectiveFrom: nextMonthStart(),
+    });
+    expect(res.statusCode).toBe(201);
+    const publicId = (res.json() as { request: { publicId: string } }).request.publicId;
+
+    // First W-4 window: start of the filed date's period .. the filed date.
+    // The requested date (next month) is outside it: 409, never a silent clamp.
+    const plain = await t.app.inject({
+      method: "POST",
+      url: `/api/change-requests/${publicId}/approve`,
+      headers: sessionHeader(adminCookie),
+      payload: {},
+    });
+    const plainBody = plain.json() as { error?: string; proposedEffectiveFrom?: string };
+    expect({
+      status: plain.statusCode,
+      error: plainBody.error,
+      proposed: plainBody.proposedEffectiveFrom,
+    }).toEqual({ status: 409, error: "effective_date", proposed: filedDate });
+    expect((plain.json() as { message?: string }).message).toBe(
+      `This W-4 can't start on ${nextMonthStart()}. IRS rules only allow a start date between ${filedDate.slice(0, 7)}-01 and ${filedDate}, based on the date the employee filed it. Suggested start date: ${filedDate}. The suggested date is filled in under "Effective from". Approve again to use it, or pick another date.`,
+    );
+
+    const approve = await t.app.inject({
+      method: "POST",
+      url: `/api/change-requests/${publicId}/approve`,
+      headers: sessionHeader(adminCookie),
+      payload: { effectiveFromOverride: plainBody.proposedEffectiveFrom },
+    });
+    expect(approve.statusCode, approve.body).toBe(200);
+    expect((await latestW4(firstEmployeeId, filedDate))?.effectiveFrom).toBe(filedDate);
   });
 });
 

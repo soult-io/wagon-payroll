@@ -31,7 +31,11 @@ import {
   MigrationValidationError,
   type MigrationReport,
 } from "../src/migrate/migrate.js";
-import { snapshotHash, type RunSnapshot } from "../src/payroll/snapshot.js";
+import {
+  LEGACY_SNAPSHOT_TEMPLATE_VERSION,
+  snapshotHash,
+  type RunSnapshot,
+} from "../src/payroll/snapshot.js";
 import { runMigrations } from "./helpers.js";
 import {
   createSourceFixture,
@@ -279,7 +283,11 @@ describe("legacy migration", () => {
 
     // First month of a year: YTD == the run itself.
     const jan25 = runs.get("2025-01")!.runSnapshot as RunSnapshot;
+    // Spec 26 (PAY-173): imported runs carry no inputs.resolution, so they
+    // are stamped with the shape they have (1.2.0), never 1.3.0.
     expect(jan25.templateVersion).toBe("1.2.0");
+    expect(jan25.templateVersion).toBe(LEGACY_SNAPSHOT_TEMPLATE_VERSION);
+    expect(jan25.inputs.resolution).toBeUndefined();
     expect(jan25.ytd).toEqual({
       gross: 4000,
       federalWithholding: 310.13,

@@ -296,7 +296,7 @@ describe("run generation with state withholding", () => {
     expect(snapshot.inputs.state?.kind).toBe("flat");
     expect(snapshot.inputs.state?.flatRate).toBe(0.0495);
     expect(snapshot.inputs.state?.election).toBeNull();
-    expect(snapshot.templateVersion).toBe("1.2.0");
+    expect(snapshot.templateVersion).toBe("1.3.0");
   });
 
   it("IL election effective-dating: 2 allowances from June → $273.49", async () => {

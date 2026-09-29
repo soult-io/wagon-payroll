@@ -22,6 +22,7 @@ import StatusChip from "../../components/StatusChip.vue";
 import RequestThread from "../../components/RequestThread.vue";
 import RequestPayloadView from "../../components/RequestPayloadView.vue";
 import {
+  ApiError,
   adminEmployeesApi,
   adminPayrollApi,
   changeRequestsApi,
@@ -56,6 +57,13 @@ const effectiveFrom = ref<Date | null>(null);
 const note = ref("");
 const denyVisible = ref(false);
 const denyReason = ref("");
+/**
+ * Set after a 409 effective_date (payroll already ran for earlier periods, or
+ * a W-4 date outside the IRS window): the picker now holds the proposed date,
+ * and the next approve sends it as an explicit override even when it equals
+ * the requested date.
+ */
+const effectiveDateConfirmed = ref(false);
 
 // Spec 11 (D21): tax_id reveal-on-demand — deliberate, audit-logged server-side.
 const revealedTaxId = ref<string | null>(null);
@@ -199,12 +207,24 @@ async function approve() {
     const trimmed = note.value.trim();
     if (trimmed) input.note = trimmed;
     const iso = toIso(effectiveFrom.value);
-    if (iso && iso !== request.value?.effectiveFrom) input.effectiveFromOverride = iso;
+    if (iso && (effectiveDateConfirmed.value || iso !== request.value?.effectiveFrom)) {
+      input.effectiveFromOverride = iso;
+    }
     const { request: updated } = await changeRequestsApi.approve(publicId, input);
     request.value = updated;
-    notify.success("Request approved", "The change has been applied.");
+    notify.success(
+      "Request approved",
+      updated.effectiveFrom
+        ? `The change has been applied, effective ${date(updated.effectiveFrom)}.`
+        : "The change has been applied.",
+    );
     await load();
   } catch (err) {
+    if (err instanceof ApiError && err.code === "effective_date") {
+      effectiveDateConfirmed.value = true;
+      const proposed = err.body?.["proposedEffectiveFrom"];
+      if (typeof proposed === "string") effectiveFrom.value = fromIso(proposed);
+    }
     notify.error(err, "Could not approve");
   } finally {
     busy.value = false;
@@ -312,7 +332,13 @@ onMounted(load);
           </div>
         </div>
         <div class="row">
-          <Button label="Approve & apply" icon="pi pi-check" :loading="busy" @click="approve" />
+          <Button
+            label="Approve & apply"
+            icon="pi pi-check"
+            :loading="busy"
+            :disabled="Boolean(request.effectiveFrom) && !effectiveFrom"
+            @click="approve"
+          />
           <Button label="Deny" severity="danger" outlined icon="pi pi-times" :disabled="busy" @click="denyVisible = true" />
         </div>
       </section>

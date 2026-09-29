@@ -48,6 +48,8 @@ export interface BuildAppDeps {
   onScheduleChange?: () => Promise<void>;
   /** Test override: a pino destination for the request log (default stdout). */
   logStream?: { write(msg: string): void };
+  /** Test override: the wall clock for the issue-time pay-date check (Spec 26 (PAY-173) D9). */
+  clock?: () => Date;
 }
 
 export async function buildApp(deps: BuildAppDeps = {}) {
@@ -87,10 +89,16 @@ export async function buildApp(deps: BuildAppDeps = {}) {
     config,
     guards,
     ...(deps.onScheduleChange ? { onScheduleChange: deps.onScheduleChange } : {}),
+    ...(deps.clock ? { clock: deps.clock } : {}),
   });
   registerPayslipRoutes(app, { db, guards });
   registerMyW2Routes(app, { db, config, guards });
-  registerChangeRequestRoutes(app, { db, config, guards });
+  registerChangeRequestRoutes(app, {
+    db,
+    config,
+    guards,
+    ...(deps.clock ? { clock: deps.clock } : {}),
+  });
   registerMyRoutes(app, { db, config, guards });
   registerMyInvoiceRoutes(app, { db, guards });
   registerAdminNotificationRoutes(app, { db, config, guards });

@@ -15,7 +15,12 @@ import { auditEvents, company, employees, payrollEntries, payrollRuns } from "@p
 import type { Db } from "../src/db.js";
 import { LEGACY_CREATED_BY } from "../src/migrate/migrate.js";
 import { backfillLegacyYtd, YTD_BACKFILL_ACTOR } from "../src/migrate/ytd-backfill.js";
-import { type RunSnapshot, snapshotHash } from "../src/payroll/snapshot.js";
+import {
+  LEGACY_SNAPSHOT_TEMPLATE_VERSION,
+  type RunSnapshot,
+  SNAPSHOT_TEMPLATE_VERSION,
+  snapshotHash,
+} from "../src/payroll/snapshot.js";
 import { runMigrations } from "./helpers.js";
 
 let pglite: PGlite;
@@ -183,7 +188,12 @@ describe("backfillLegacyYtd", () => {
       totalDeductions: 2028.99, // 12000 − 9971.01
       netPay: 9971.01,
     });
+    // Spec 26 (PAY-173): the backfill writes ytd, not inputs.resolution — it
+    // stamps the 1.2.0 shape, never the current 1.3.0.
     expect(snapshot.templateVersion).toBe("1.2.0");
+    expect(snapshot.templateVersion).toBe(LEGACY_SNAPSHOT_TEMPLATE_VERSION);
+    expect(snapshot.templateVersion).not.toBe(SNAPSHOT_TEMPLATE_VERSION);
+    expect(snapshot.inputs.resolution).toBeUndefined();
     expect(march!.snapshotHash).toBe(snapshotHash(snapshot));
 
     const audit = await db.select().from(auditEvents);

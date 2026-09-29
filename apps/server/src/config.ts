@@ -82,6 +82,21 @@ export function readSecret(
   }
 }
 
+/**
+ * APP_TZ sets the company-local "today" for the issue-time pay-date check
+ * (Spec 26 (PAY-173) D9). An invalid zone fails boot instead of failing
+ * every issue.
+ */
+function assertTimeZone(zone: string): void {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: zone });
+  } catch {
+    throw new Error(
+      `APP_TZ "${zone}" is not a valid IANA time zone (for example "America/New_York")`,
+    );
+  }
+}
+
 export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   const secretsDir = env("SECRETS_DIR", "./secrets");
   const nodeEnv = env("NODE_ENV", "development");
@@ -142,6 +157,7 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     })(),
   };
   const merged = { ...base, ...overrides };
+  assertTimeZone(merged.appTz);
   // The issuer follows the MERGED brand name (so a brandName override moves it
   // too) unless TOTP_ISSUER or an explicit totpIssuer override is set.
   return { ...merged, totpIssuer: overrides.totpIssuer ?? envTotpIssuer ?? merged.brandName };

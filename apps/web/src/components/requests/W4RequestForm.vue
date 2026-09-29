@@ -22,6 +22,11 @@ type W4FormValues = z.input<typeof schema>;
 // tightened InputNumber's v-model to Nullable<number>, and defineField
 // returns Ref<unknown> in this vee-validate version — useField<T> is the
 // typed registration path.
+/** Date → "YYYY-MM-DD" from its local calendar fields (no UTC shift). */
+function localIsoDate(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 const { handleSubmit, defineField, errors } = useForm<W4FormValues>({
   validationSchema: toTypedSchema(schema),
   initialValues: {
@@ -33,7 +38,7 @@ const { handleSubmit, defineField, errors } = useForm<W4FormValues>({
     otherIncome: 0,
     deductionsAmount: 0,
     extraWithholding: 0,
-    filedDate: new Date().toISOString().slice(0, 10),
+    filedDate: localIsoDate(new Date()), // browser-local today, not the UTC day
     note: "",
   },
 });
@@ -56,9 +61,7 @@ const filedDate = computed({
     return typeof v === "string" && v ? new Date(`${v}T00:00:00`) : null;
   },
   set: (d: Date | null) => {
-    filedDateModel.value = d
-      ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
-      : "";
+    filedDateModel.value = d ? localIsoDate(d) : "";
   },
 });
 

@@ -8,7 +8,15 @@
 import { createHash } from "node:crypto";
 import type { PayrollResult } from "@payroll/engine";
 
-export const SNAPSHOT_TEMPLATE_VERSION = "1.2.0";
+export const SNAPSHOT_TEMPLATE_VERSION = "1.3.0";
+
+/**
+ * Template version of the snapshot shape the legacy tools write (migrate.ts,
+ * ytd-backfill.ts): 1.2.0 = inputs + ytd, WITHOUT inputs.resolution. Those
+ * runs were imported, not resolved by run generation, so they carry no
+ * resolution block and must not claim 1.3.0 (Spec 26 (PAY-173) D5).
+ */
+export const LEGACY_SNAPSHOT_TEMPLATE_VERSION = "1.2.0";
 
 /**
  * Year-to-date accumulations THROUGH this run (inclusive), employee-side.
@@ -103,6 +111,31 @@ export interface SnapshotState {
   brackets: SnapshotBracket[];
 }
 
+/**
+ * Which dates and years drove the run (template 1.3.0, Spec 26 (PAY-173) D5).
+ * Absent on snapshots up to 1.2.0 (period-start era).
+ */
+export interface SnapshotResolution {
+  /** Rule marker. */
+  basis: "pay_date";
+  /** As-of for tax tables, YTD, the W-4 next-year gate and exempt lapse. */
+  payDate: string;
+  /** = min(periodEnd, payDate); as-of for W-4 and state-election selection. */
+  certificateAsOf: string;
+  /** = periodStart; as-of for compensation and work state. */
+  earnedAsOf: string;
+  /** year(payDate); equals taxConfig.taxYear and state.taxYear. */
+  taxYear: number;
+  ytd: {
+    /** = taxYear. */
+    year: number;
+    /** The D2 key prior YTD was cut at (runId null = a new draft, id +∞). */
+    before: { payDate: string; periodStart: string; runId: number | null };
+    /** publicIds of the issued runs summed into prior YTD, in key order. */
+    runs: string[];
+  };
+}
+
 export interface RunSnapshot {
   inputs: {
     periodAmount: number;
@@ -121,6 +154,8 @@ export interface RunSnapshot {
     /** Display fields copied in at issuance so re-renders never drift (D5). */
     company: { legalName: string };
     employee: { legalName: string; preferredName: string | null };
+    /** Spec 26 (PAY-173): dates/years used (template 1.3.0). */
+    resolution?: SnapshotResolution;
   };
   result: PayrollResult;
   engineVersion: string;
@@ -154,4 +189,49 @@ export function canonicalJson(value: unknown): string {
 
 export function snapshotHash(snapshot: RunSnapshot): string {
   return createHash("sha256").update(canonicalJson(snapshot), "utf8").digest("hex");
+}
+
+/**
+ * The parts of a snapshot that must be reproduced by a recompute for a draft
+ * to still be current (Spec 26 (PAY-173) D4). Display names (frozen at
+ * generation) and `resolution` (absent before 1.3.0) are left out, so a
+ * pre-1.3.0 draft with identical numbers still passes; `inputs.payDate` is
+ * in, so a pay date edited after generation always mismatches.
+ */
+function fingerprintParts(s: RunSnapshot): Record<string, unknown> {
+  // JSON round trip: a stored snapshot came back from jsonb, so compare the
+  // recomputed one in the same form (undefined-valued keys dropped).
+  const plain = JSON.parse(JSON.stringify(s)) as RunSnapshot & {
+    inputs: Record<string, unknown>;
+  };
+  const { company: _c, employee: _e, resolution: _r, ...inputs } = plain.inputs;
+  return {
+    inputs,
+    result: plain.result,
+    ytd: plain.ytd ?? null,
+    engineVersion: plain.engineVersion,
+  };
+}
+
+/**
+ * Field NAMES (never values) that differ between two snapshots' fingerprint
+ * parts: input keys by name (`taxConfig`, `priorYtdGross`, `payDate`, `w4`),
+ * result keys as `result.<key>`, then `ytd` and `engineVersion`.
+ */
+export function fingerprintDiff(stored: RunSnapshot, recomputed: RunSnapshot): string[] {
+  const a = fingerprintParts(stored);
+  const b = fingerprintParts(recomputed);
+  const differs = (x: unknown, y: unknown) => canonicalJson(x ?? null) !== canonicalJson(y ?? null);
+  const keysOf = (x: unknown, y: unknown) =>
+    [...new Set([...Object.keys((x ?? {}) as object), ...Object.keys((y ?? {}) as object)])].sort();
+  const fields: string[] = [];
+  const ai = a["inputs"] as Record<string, unknown>;
+  const bi = b["inputs"] as Record<string, unknown>;
+  for (const k of keysOf(ai, bi)) if (differs(ai[k], bi[k])) fields.push(k);
+  const ar = (a["result"] ?? {}) as Record<string, unknown>;
+  const br = (b["result"] ?? {}) as Record<string, unknown>;
+  for (const k of keysOf(ar, br)) if (differs(ar[k], br[k])) fields.push(`result.${k}`);
+  if (differs(a["ytd"], b["ytd"])) fields.push("ytd");
+  if (differs(a["engineVersion"], b["engineVersion"])) fields.push("engineVersion");
+  return fields;
 }

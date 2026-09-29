@@ -155,8 +155,12 @@ async function patchEmployee(employeeId: number, payload: unknown) {
   });
 }
 
+// History runs paid in 2025 are issued "in" late 2025: issuing a past pay
+// date in another calendar year is refused (Spec 26 (PAY-173) D9).
+const ISSUE_CLOCK = () => new Date("2025-12-31T12:00:00Z");
+
 beforeAll(async () => {
-  t = await createTestApp({ exportToken: EXPORT_TOKEN });
+  t = await createTestApp({ exportToken: EXPORT_TOKEN }, { clock: ISSUE_CLOCK });
   await seedDatabase(t.db as unknown as SeedDb);
   const admin = await inviteAndOnboard(t, { email: "mail-admin@test.dev", role: "admin" });
   ADMIN = sessionHeader((await login(t, admin.email, TEST_PASSWORD)).sessionCookie);

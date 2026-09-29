@@ -466,23 +466,24 @@ async function seedW2People(
     { periodAmount: "5000.00", effectiveFrom: "2024-11-01", effectiveTo: null },
   ]);
 
-  // Ada: W-4 exempt — an election per history year, renewed annually with the
-  // renewal deadline far enough out that the exemption never lapses
-  // mid-history (resolveW4 honours renewal_deadline, IRC §3402(n)).
+  // Ada: W-4 exempt — an election per history year, renewed annually. The
+  // renewal deadline is Feb 16 of the following year: a Feb 15 payment is
+  // still exempt, a Feb 16 one is not (Spec 26 (PAY-173) D3 step 3; resolveW4
+  // judges the lapse by the pay date).
   const w4Rows = (federalExempt: boolean) => [
     {
       taxYear: year - 1,
       federalExempt,
       effectiveFrom: `${year - 1}-01-01`,
       filedDate: `${year - 2}-12-15`,
-      renewalDeadline: federalExempt ? `${year}-02-15` : null,
+      renewalDeadline: federalExempt ? `${year}-02-16` : null,
     },
     {
       taxYear: year,
       federalExempt,
       effectiveFrom: `${year}-01-01`,
       filedDate: `${year - 1}-12-15`,
-      renewalDeadline: federalExempt ? `${year + 1}-02-15` : null,
+      renewalDeadline: federalExempt ? `${year + 1}-02-16` : null,
     },
   ];
   await ensureW4(deps.db, ids.ada, w4Rows(true));
@@ -514,14 +515,25 @@ async function findRun(db: Db, employeeId: number, periodStart: string) {
   return rows[0] ?? null;
 }
 
-/** Advance a run to issued via the state machine; returns the final status. */
-async function advanceToIssued(deps: QaDeps, publicId: string, status: string, actorId: string) {
-  let current = status;
+/**
+ * Advance a run to issued via the state machine; returns the final status.
+ * Synthetic history is issued "on its pay date" (the D9 clock, Spec 26
+ * (PAY-173)): last year's runs would otherwise be refused as a past pay date
+ * in another calendar year.
+ */
+async function advanceToIssued(
+  deps: QaDeps,
+  run: { publicId: string; status: string; payDate: string },
+  actorId: string,
+) {
+  const { publicId } = run;
+  const onPayDate = { ...deps, clock: () => new Date(`${run.payDate}T12:00:00Z`) };
+  let current = run.status;
   if (current === "draft" || current === "awaiting_approval") {
-    current = (await transitionRun(deps, { publicId, action: "approve", actorId })).status;
+    current = (await transitionRun(onPayDate, { publicId, action: "approve", actorId })).status;
   }
   if (current === "approved") {
-    current = (await transitionRun(deps, { publicId, action: "issue", actorId })).status;
+    current = (await transitionRun(onPayDate, { publicId, action: "issue", actorId })).status;
   }
   return current;
 }
@@ -534,11 +546,11 @@ async function ensureIssuedRun(
 ): Promise<"issued" | "existing"> {
   const existing = await findRun(deps.db, employeeId, period.periodStart);
   if (existing) {
-    await advanceToIssued(deps, existing.publicId, existing.status, actorId);
+    await advanceToIssued(deps, existing, actorId);
     return "existing";
   }
   const { run } = await generateDraft(deps, { employeeId, period, createdBy: actorId });
-  await advanceToIssued(deps, run.publicId, run.status, actorId);
+  await advanceToIssued(deps, run, actorId);
   return "issued";
 }
 
