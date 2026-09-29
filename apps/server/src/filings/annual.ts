@@ -166,7 +166,7 @@ export async function assertFederalTaxConfig(db: Pick<Db, "select">, year: numbe
  * PAY-162: the year's FICA rates/limits as exact integers — the pay year's
  * own tax_config row, never a fallback (fails closed when missing).
  */
-export async function ficaParams(db: Pick<Db, "select">, year: number): Promise<FicaParams> {
+async function ficaParams(db: Pick<Db, "select">, year: number): Promise<FicaParams> {
   const row = await federalConfigRow(db, year);
   return {
     ssWageCapCents: sumCents(row.socialSecurityWageCap),
@@ -833,11 +833,9 @@ async function w2RecipientsForYear(db: Db, year: number): Promise<string[]> {
 /** PAY-162: every W-2 of the year computes and none is blocked. */
 async function w2sIssuable(db: Db, year: number): Promise<boolean> {
   try {
-    return blockCodes(await w2FiguresForYear(db, year)).length === 0;
+    return (await yearW2BlockCodes(db, year)).length === 0;
   } catch (err) {
-    if (err instanceof MissingTaxConfigError || err instanceof AnnualFiguresDefectError) {
-      return false;
-    }
+    if (err instanceof MissingTaxConfigError) return false;
     throw err;
   }
 }

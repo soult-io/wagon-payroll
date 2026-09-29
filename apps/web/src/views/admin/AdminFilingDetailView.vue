@@ -8,7 +8,7 @@
  * dialog with self-filing instructions.
  */
 import { computed, onMounted, ref } from "vue";
-import { RouterLink, useRoute } from "vue-router";
+import { useRoute } from "vue-router";
 import Button from "primevue/button";
 import DataTable from "primevue/datatable";
 import Column from "primevue/column";
@@ -23,6 +23,7 @@ import Message from "primevue/message";
 import PageHeader from "../../components/PageHeader.vue";
 import BackButton from "../../components/BackButton.vue";
 import StatusChip from "../../components/StatusChip.vue";
+import MissingTaxConfigBanner from "../../components/MissingTaxConfigBanner.vue";
 import {
   adminFilingsApi,
   ApiError,
@@ -43,7 +44,6 @@ import { useNotify } from "../../composables/useNotify";
 import {
   formNotAvailableText,
   hasUnreadableTotals,
-  missingTaxConfigText,
   STALE_TOTALS_TEXT,
   w2BlockedText,
   w2IssueLabel,
@@ -82,9 +82,7 @@ const w2FormAvailable = ref(true);
 const attentionRows = computed(() => w2Rows.value.filter((r) => r.issues.length > 0));
 const anyUnreadableTotals = computed(() => w2Rows.value.some(hasUnreadableTotals));
 /** PAY-162: warnings stand but nothing is on hold. */
-const warnOnlyCount = computed(() =>
-  anyW2Blocked.value ? 0 : w2Rows.value.filter((r) => r.issues.length > 0).length,
-);
+const warnOnlyCount = computed(() => (anyW2Blocked.value ? 0 : attentionRows.value.length));
 /** PAY-162 (D1): a W-2/W-3 filing cannot be recorded while held. */
 const markFiledHeld = computed(
   () =>
@@ -527,14 +525,7 @@ onMounted(async () => {
       <PageHeader :title="`Forms W-2/W-3 — ${missingConfigYear}`">
         <BackButton to="admin-filings" label="Back to filings" />
       </PageHeader>
-      <Message severity="error" :closable="false" data-testid="missing-tax-config-banner">
-        <div class="stack">
-          <span>{{ missingTaxConfigText(missingConfigYear) }}</span>
-          <RouterLink :to="{ name: 'admin-config' }">
-            <Button label="Open Tax tables" icon="pi pi-cog" size="small" />
-          </RouterLink>
-        </div>
-      </Message>
+      <MissingTaxConfigBanner :year="missingConfigYear" />
     </template>
     <template v-else-if="filing">
       <PageHeader

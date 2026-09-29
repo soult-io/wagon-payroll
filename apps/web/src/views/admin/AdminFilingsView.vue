@@ -7,7 +7,7 @@
  * Record-only: the app never files; the admin files and records it here.
  */
 import { computed, onMounted, ref, watch } from "vue";
-import { RouterLink, useRoute, useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import Button from "primevue/button";
 import DataTable from "primevue/datatable";
 import Column from "primevue/column";
@@ -19,6 +19,7 @@ import Tag from "primevue/tag";
 import PageHeader from "../../components/PageHeader.vue";
 import EmptyState from "../../components/EmptyState.vue";
 import StatusChip from "../../components/StatusChip.vue";
+import MissingTaxConfigBanner from "../../components/MissingTaxConfigBanner.vue";
 import {
   adminFilingsApi,
   type TaxFilingRow,
@@ -27,7 +28,6 @@ import {
 } from "../../lib/api";
 import { useDates } from "../../composables/useDates";
 import { useNotify } from "../../composables/useNotify";
-import { missingTaxConfigText } from "../../lib/w2-issues";
 import {
   useQueryEnum,
   useQueryNumber,
@@ -204,20 +204,7 @@ onMounted(async () => {
       <Select v-model="statusSelect" :options="statusOptions" option-label="label" option-value="value" size="small" />
     </PageHeader>
 
-    <Message
-      v-for="year in missingConfigYears"
-      :key="year"
-      severity="error"
-      :closable="false"
-      data-testid="missing-tax-config-banner"
-    >
-      <div class="stack">
-        <span>{{ missingTaxConfigText(year) }}</span>
-        <RouterLink :to="{ name: 'admin-config' }">
-          <Button label="Open Tax tables" icon="pi pi-cog" size="small" />
-        </RouterLink>
-      </div>
-    </Message>
+    <MissingTaxConfigBanner v-for="year in missingConfigYears" :key="year" :year="year" />
 
     <section class="card table-scroll">
       <Skeleton v-if="loading" height="10rem" />
