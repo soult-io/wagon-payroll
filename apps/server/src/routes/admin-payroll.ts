@@ -20,6 +20,7 @@ import { effectiveFutaRate } from "@payroll/engine";
 import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
 import type { Guards } from "../plugins/guards.js";
+import { validateW4Dates } from "../payroll/w4-dates.js";
 import {
   generateDraftsForPeriod,
   getRunByPublicId,
@@ -314,6 +315,11 @@ export function registerAdminPayrollRoutes(app: FastifyInstance, deps: AdminPayr
       .safeParse(req.body);
     if (!body.success)
       return reply.code(400).send({ error: "invalid_body", details: body.error.issues });
+    // Spec 26 (PAY-173) D3 step 4: effective date inside the lawful window.
+    const violation = await validateW4Dates(db, employeeId, body.data);
+    if (violation) {
+      return reply.code(400).send({ error: "invalid_w4_effective_date", message: violation });
+    }
     const inserted = await db
       .insert(w4Elections)
       .values({

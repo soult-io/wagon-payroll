@@ -34,6 +34,7 @@ import { encryptField, isEncrypted, maskLast4 } from "../crypto/field-encryption
 import { addressForStorage } from "../crypto/address-encryption.js";
 import { templateContext } from "../notify/outbox.js";
 import type { DbLike } from "../payroll/resolve.js";
+import { validateW4Dates } from "../payroll/w4-dates.js";
 
 export class ChangeRequestError extends Error {
   constructor(
@@ -43,7 +44,9 @@ export class ChangeRequestError extends Error {
       | "duplicate_pending"
       | "forbidden"
       | "effective_date"
-      | "reason_required",
+      | "reason_required"
+      // Spec 26 (PAY-173) D3 step 4
+      | "invalid_w4_effective_date",
     message: string,
   ) {
     super(message);
@@ -289,6 +292,14 @@ export async function approveRequest(
         break;
       }
       case "w4": {
+        // Spec 26 (PAY-173) D3 step 4: the applied effective date (after any
+        // override) must fall inside the lawful window for the filed date.
+        const violation = await validateW4Dates(tx as DbLike, employee.id, {
+          taxYear: Number(payload["taxYear"]),
+          filedDate: String(payload["filedDate"]),
+          effectiveFrom,
+        });
+        if (violation) throw new ChangeRequestError("invalid_w4_effective_date", violation);
         // Append-only: INSERT a new election, never UPDATE history.
         const inserted = await tx
           .insert(w4Elections)

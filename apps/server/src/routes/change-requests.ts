@@ -93,6 +93,7 @@ function errorStatus(err: ChangeRequestError): number {
     case "effective_date":
       return 409;
     case "reason_required":
+    case "invalid_w4_effective_date":
       return 400;
   }
 }

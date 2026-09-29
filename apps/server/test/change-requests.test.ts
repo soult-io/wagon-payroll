@@ -310,7 +310,9 @@ describe("W-4 append-only", () => {
         taxYear: 2026,
         filingStatus: "married_joint",
         effectiveFrom, // payload copy; top-level is authoritative
-        filedDate: "2026-01-05",
+        // Filed today: next month's start is inside the replacement window
+        // (Spec 26 (PAY-173) D3 step 4).
+        filedDate: new Date().toISOString().slice(0, 10),
       },
       effectiveFrom,
     });
@@ -352,6 +354,55 @@ describe("W-4 append-only", () => {
     expect(profile.statusCode).toBe(200);
     const body = profile.json() as { profile: { w4: { filingStatus: string } | null } };
     expect(body.profile.w4?.filingStatus).toBe("married_joint");
+  });
+
+  it("approval refuses a replacement W-4 whose effective date is past the lawful window (Spec 26 (PAY-173) D3 step 4)", async () => {
+    const before = await t.db
+      .select({ id: w4Elections.id })
+      .from(w4Elections)
+      .where(eq(w4Elections.employeeId, employeeId));
+    // Replacement filed 2026-01-05: effective no later than 2026-02-01 (start
+    // of the first monthly period ending on/after filed + 30 days). Next
+    // month's start is later than that whenever this suite runs.
+    const effectiveFrom = nextMonthStart();
+    const res = await submit(employeeCookie, {
+      requestType: "w4",
+      payload: { taxYear: 2026, filingStatus: "single", effectiveFrom, filedDate: "2026-01-05" },
+      effectiveFrom,
+    });
+    expect(res.statusCode).toBe(201);
+    const publicId = (res.json() as { request: { publicId: string } }).request.publicId;
+
+    const approve = await t.app.inject({
+      method: "POST",
+      url: `/api/change-requests/${publicId}/approve`,
+      headers: sessionHeader(adminCookie),
+      payload: {},
+    });
+    expect({
+      status: approve.statusCode,
+      error: (approve.json() as { error?: string }).error,
+    }).toEqual({ status: 400, error: "invalid_w4_effective_date" });
+
+    const after = await t.db
+      .select({ id: w4Elections.id })
+      .from(w4Elections)
+      .where(eq(w4Elections.employeeId, employeeId));
+    expect(after).toHaveLength(before.length);
+    const status = await t.db
+      .select({ status: changeRequests.status })
+      .from(changeRequests)
+      .where(eq(changeRequests.publicId, publicId));
+    expect(status[0]?.status).toBe("pending");
+
+    // Clean up: leave no pending W-4 request for later tests.
+    const cleanup = await t.app.inject({
+      method: "POST",
+      url: `/api/change-requests/${publicId}/deny`,
+      headers: sessionHeader(adminCookie),
+      payload: { reason: "Cleanup." },
+    });
+    expect(cleanup.statusCode).toBe(200);
   });
 });
 
