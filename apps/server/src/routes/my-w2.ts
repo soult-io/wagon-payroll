@@ -13,11 +13,13 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { and, eq } from "drizzle-orm";
 import { employees } from "@payroll/db";
-import { hasTemplate, renderW2EmployeePacket } from "@payroll/documents";
+import { renderW2EmployeePacket, W2FormAmountError } from "@payroll/documents";
 import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
 import type { Guards } from "../plugins/guards.js";
 import {
+  FormNotAvailableError,
+  isMyW2Ready,
   listMyW2Years,
   MissingTaxConfigError,
   W2BlockedError,
@@ -30,6 +32,7 @@ import {
   withdrawW2Consent,
 } from "../filings/w2-consent.js";
 import { FilingServiceError } from "../filings/shared.js";
+import { AnnualFiguresDefectError } from "../filings/w2-boxes.js";
 
 interface Deps {
   db: Db;
@@ -55,11 +58,9 @@ async function sendW2Pdf(
   reply: FastifyReply,
 ) {
   try {
-    const input = await w2InputFor(deps, employeeId, year);
-    // PAY-162: no official form bundled for the year → 409 before rendering.
-    if (!hasTemplate(input.taxYear, "fw2")) {
-      return reply.code(409).send({ error: "form_not_available", year });
-    }
+    // PAY-162: requireBundledForm stops before any PII is read when the
+    // year has no official form.
+    const input = await w2InputFor(deps, employeeId, year, { requireBundledForm: true });
     const pdf = await renderW2EmployeePacket(input);
     return reply
       .header("content-type", "application/pdf")
@@ -70,7 +71,16 @@ async function sendW2Pdf(
     if (err instanceof MissingTaxConfigError) {
       return reply.code(409).send({ error: "missing_tax_config" });
     }
-    if (err instanceof W2BlockedError) return reply.code(409).send({ error: "w2_not_ready" });
+    if (
+      err instanceof W2BlockedError ||
+      err instanceof AnnualFiguresDefectError ||
+      err instanceof W2FormAmountError
+    ) {
+      return reply.code(409).send({ error: "w2_not_ready" });
+    }
+    if (err instanceof FormNotAvailableError) {
+      return reply.code(409).send({ error: "form_not_available", year });
+    }
     if (err instanceof FilingServiceError) {
       const status = err.code === "not_found" ? 404 : 409;
       return reply.code(status).send({ error: err.code, message: err.message });
@@ -84,7 +94,14 @@ export function registerMyW2Routes(app: FastifyInstance, deps: Deps): void {
 
   app.get("/api/my/w2", { preHandler: guards.requireAuth }, async (req) => {
     const years = await listMyW2Years(db, req.authUser!.id);
-    return { w2s: years.map((year) => ({ year, availableOn: w2AvailableOn(year) })) };
+    const employee = years.length > 0 ? await myEmployee(db, req.authUser!.id) : null;
+    const w2s = [];
+    for (const year of years) {
+      // PAY-162 (D2): a bare ready flag — never why a W-2 is not ready.
+      const ready = employee ? await isMyW2Ready(db, employee.id, year) : false;
+      w2s.push({ year, availableOn: w2AvailableOn(year), ready });
+    }
+    return { w2s };
   });
 
   /** Consent status + the disclosure text shown before the consent button. */

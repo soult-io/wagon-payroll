@@ -304,6 +304,12 @@ describe("W27 filed-year freeze", () => {
     await clearStateIds();
     await clearFilings();
     await setFiling(2026, "ready");
+    // PAY-162 (D1): a w2_w3 row is recordable only once its W-3 worksheet
+    // exists; give the synthetic row one (no runs, so no W-2 is blocked).
+    await t.db
+      .update(taxFilings)
+      .set({ worksheet: { form: "w2_w3", year: 2026, employeeCount: 0 } })
+      .where(and(eq(taxFilings.formType, "w2_w3"), eq(taxFilings.year, 2026)));
     const [row] = await t.db
       .select({ id: taxFilings.id })
       .from(taxFilings)

@@ -31,7 +31,7 @@ import {
 } from "@payroll/db";
 import { round2 } from "@payroll/engine/money";
 import { effectiveFutaRate } from "@payroll/engine";
-import type { FormAddress, W2Input, W3Input } from "@payroll/documents";
+import { type FormAddress, hasTemplate, type W2Input, type W3Input } from "@payroll/documents";
 import { EVENT_TYPE, w2Available as tplW2Available } from "@payroll/notifications";
 import { formatCents } from "@payroll/shared";
 import type { Db } from "../db.js";
@@ -134,6 +134,17 @@ export class W2BlockedError extends Error {
   }
 }
 
+/**
+ * PAY-162: the year has no bundled official W-2/W-3 form, so no PDF can be
+ * made. Raised before any PII is read. Maps to 409 form_not_available.
+ */
+export class FormNotAvailableError extends Error {
+  constructor(public readonly year: number) {
+    super(`no bundled W-2/W-3 form for ${year}`);
+    this.name = "FormNotAvailableError";
+  }
+}
+
 /** The federal tax_config row for `year`, or MissingTaxConfigError. */
 async function federalConfigRow(db: Pick<Db, "select">, year: number) {
   const rows = await db
@@ -155,7 +166,7 @@ export async function assertFederalTaxConfig(db: Pick<Db, "select">, year: numbe
  * PAY-162: the year's FICA rates/limits as exact integers — the pay year's
  * own tax_config row, never a fallback (fails closed when missing).
  */
-export async function ficaParams(db: Db, year: number): Promise<FicaParams> {
+export async function ficaParams(db: Pick<Db, "select">, year: number): Promise<FicaParams> {
   const row = await federalConfigRow(db, year);
   return {
     ssWageCapCents: sumCents(row.socialSecurityWageCap),
@@ -177,7 +188,10 @@ interface EmployeeYearSums {
  * W-2 employees only. Sums stay SQL text (PAY-162: no Number() of money);
  * runCount = distinct issued runs (the box 4/6 check tolerance).
  */
-async function perEmployeeSums(db: Db, year: number): Promise<Map<number, EmployeeYearSums>> {
+async function perEmployeeSums(
+  db: Pick<Db, "select">,
+  year: number,
+): Promise<Map<number, EmployeeYearSums>> {
   const inYear = and(
     eq(payrollRuns.status, "issued"),
     eq(employees.employmentType, "w2"),
@@ -415,7 +429,7 @@ function figuresFor(
  * pay year's Social Security wage base from tax_config; a year with issued
  * runs and no federal tax_config row throws MissingTaxConfigError (PAY-162).
  */
-export async function w2FiguresForYear(db: Db, year: number): Promise<W2Figures[]> {
+export async function w2FiguresForYear(db: Pick<Db, "select">, year: number): Promise<W2Figures[]> {
   const byEmployee = await perEmployeeSums(db, year);
   const employeeIds = [...byEmployee.keys()];
   if (employeeIds.length === 0) return [];
@@ -517,7 +531,8 @@ export async function refreshAnnualWorksheet(db: Db, filing: TaxFilingRow): Prom
       worksheet = await computeW3Worksheet(db, filing.year);
     } catch (err) {
       if (err instanceof W2BlockedError) return false;
-      if (err instanceof MissingTaxConfigError) {
+      if (err instanceof MissingTaxConfigError || err instanceof AnnualFiguresDefectError) {
+        // Fixed messages only (year, or no detail) — sync never stops here.
         console.warn(`[filings] W-3 worksheet not refreshed: ${err.message}`);
         return false;
       }
@@ -678,7 +693,7 @@ export async function w2InputFor(
   deps: Deps,
   employeeId: number,
   year: number,
-  opts: { today?: string } = {},
+  opts: { today?: string; requireBundledForm?: boolean } = {},
 ): Promise<W2Input> {
   const { db, config } = deps;
   if (!isW2Available(year, opts.today)) {
@@ -695,6 +710,9 @@ export async function w2InputFor(
   if (isW2Blocked(figures) || figures.box1Cents === null) {
     throw new W2BlockedError(blockCodes([figures]));
   }
+  // PAY-162: PDF callers stop here when the year has no official form —
+  // before any PII is read or decrypted.
+  if (opts.requireBundledForm && !hasTemplate(year, "fw2")) throw new FormNotAvailableError(year);
   const rows = await db.select().from(employees).where(eq(employees.id, employeeId)).limit(1);
   const employee = rows[0];
   if (!employee) throw new FilingServiceError("not_found", `employee ${employeeId} not found`);
@@ -722,7 +740,7 @@ export async function w2InputFor(
 export async function w3InputFor(
   deps: Deps,
   year: number,
-  opts: { today?: string } = {},
+  opts: { today?: string; requireBundledForm?: boolean } = {},
 ): Promise<W3Input> {
   const { db, config } = deps;
   if (!isW2Available(year, opts.today)) {
@@ -738,6 +756,7 @@ export async function w3InputFor(
   // PAY-162: no W-3 while any W-2 of the year is blocked.
   const blocked = blockCodes(figures);
   if (blocked.length > 0) throw new W2BlockedError(blocked);
+  if (opts.requireBundledForm && !hasTemplate(year, "fw3")) throw new FormNotAvailableError(year);
   const totals = w3Totals(readableFigures(figures));
   return {
     taxYear: year,
@@ -816,7 +835,44 @@ async function w2sIssuable(db: Db, year: number): Promise<boolean> {
   try {
     return blockCodes(await w2FiguresForYear(db, year)).length === 0;
   } catch (err) {
-    if (err instanceof MissingTaxConfigError) return false;
+    if (err instanceof MissingTaxConfigError || err instanceof AnnualFiguresDefectError) {
+      return false;
+    }
+    throw err;
+  }
+}
+
+/**
+ * PAY-162: the block codes standing on any W-2 of the year (empty when every
+ * W-2 is issuable). Unreadable config figures count as internal_mismatch.
+ * MissingTaxConfigError propagates — callers report it on its own.
+ */
+export async function yearW2BlockCodes(
+  db: Pick<Db, "select">,
+  year: number,
+): Promise<W2IssueCode[]> {
+  try {
+    return blockCodes(await w2FiguresForYear(db, year));
+  } catch (err) {
+    if (err instanceof AnnualFiguresDefectError) return ["internal_mismatch"];
+    throw err;
+  }
+}
+
+/**
+ * PAY-162 (D2): the employee's W-2 for the year can be downloaded — it
+ * computes, is not blocked, and the year's official form is bundled. A bare
+ * boolean: no reason codes reach the employee.
+ */
+export async function isMyW2Ready(db: Db, employeeId: number, year: number): Promise<boolean> {
+  if (!hasTemplate(year, "fw2")) return false;
+  try {
+    const figures = (await w2FiguresForYear(db, year)).find((f) => f.employeeId === employeeId);
+    return figures !== undefined && figures.box1Cents !== null && !isW2Blocked(figures);
+  } catch (err) {
+    if (err instanceof MissingTaxConfigError || err instanceof AnnualFiguresDefectError) {
+      return false;
+    }
     throw err;
   }
 }

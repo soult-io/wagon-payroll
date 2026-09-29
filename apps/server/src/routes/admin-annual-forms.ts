@@ -16,7 +16,8 @@
  * internal_mismatch / negative_amount issue stands) with `issues` (codes
  * only) and `blocked`. A missing federal tax_config row answers 409
  * missing_tax_config; a blocked W-2 answers 409 w2_not_ready on every PDF
- * route. Neither body ever carries an amount.
+ * route; a year with no bundled official form answers 409
+ * form_not_available before any PII is read. No body ever carries an amount.
  */
 
 import type { FastifyInstance } from "fastify";
@@ -26,11 +27,13 @@ import {
   renderW2AdminCopyD,
   renderW2EmployeePacket,
   renderW3Pdf,
+  W2FormAmountError,
 } from "@payroll/documents";
 import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
 import type { Guards } from "../plugins/guards.js";
 import {
+  FormNotAvailableError,
   isW2Available,
   isW2Blocked,
   MissingTaxConfigError,
@@ -43,6 +46,7 @@ import {
   w3InputFor,
 } from "../filings/annual.js";
 import { w2ConsentFlags } from "../filings/w2-consent.js";
+import { AnnualFiguresDefectError } from "../filings/w2-boxes.js";
 import { FilingServiceError } from "../filings/shared.js";
 
 interface Deps {
@@ -69,14 +73,6 @@ function listRow(f: W2Figures, consented: boolean) {
   return { employeeId, legalName, ...boxes, issues, blocked: isW2Blocked(f), consented };
 }
 
-/** PAY-162: 409 before rendering when the year has no bundled official form. */
-function formNotBundled(
-  year: number,
-  reply: { code: (n: number) => { send: (b: unknown) => unknown } },
-) {
-  return reply.code(409).send({ error: "form_not_available", year });
-}
-
 function serviceError(
   err: unknown,
   reply: { code: (n: number) => { send: (b: unknown) => unknown } },
@@ -86,6 +82,13 @@ function serviceError(
   }
   if (err instanceof W2BlockedError) {
     return reply.code(409).send({ error: "w2_not_ready", issues: err.issues });
+  }
+  // PAY-162: data defects never 500 and never echo a value.
+  if (err instanceof AnnualFiguresDefectError || err instanceof W2FormAmountError) {
+    return reply.code(409).send({ error: "w2_not_ready", issues: ["internal_mismatch"] });
+  }
+  if (err instanceof FormNotAvailableError) {
+    return reply.code(409).send({ error: "form_not_available", year: err.year });
   }
   if (err instanceof FilingServiceError) {
     const status = err.code === "not_found" ? 404 : err.code === "invalid_input" ? 400 : 409;
@@ -116,6 +119,8 @@ export function registerAdminAnnualFormRoutes(app: FastifyInstance, deps: Deps):
       year: q.data.year,
       available: isW2Available(q.data.year),
       availableOn: w2AvailableOn(q.data.year),
+      // PAY-162 (D3): the official W-2/W-3 form is bundled for the year.
+      formAvailable: hasTemplate(q.data.year, "fw2") && hasTemplate(q.data.year, "fw3"),
       w2s: figures.map((f) => listRow(f, consent.get(f.employeeId) ?? false)),
     };
   });
@@ -133,8 +138,9 @@ export function registerAdminAnnualFormRoutes(app: FastifyInstance, deps: Deps):
       if (!q.success)
         return reply.code(400).send({ error: "invalid_year", details: q.error.issues });
       try {
-        const input = await w2InputFor({ db, config }, employeeId, q.data.year);
-        if (!hasTemplate(input.taxYear, "fw2")) return formNotBundled(input.taxYear, reply);
+        const input = await w2InputFor({ db, config }, employeeId, q.data.year, {
+          requireBundledForm: true,
+        });
         const pdf = await renderW2AdminCopyD(input);
         return reply
           .header("content-type", "application/pdf")
@@ -166,8 +172,9 @@ export function registerAdminAnnualFormRoutes(app: FastifyInstance, deps: Deps):
       if (!q.success)
         return reply.code(400).send({ error: "invalid_year", details: q.error.issues });
       try {
-        const input = await w2InputFor({ db, config }, employeeId, q.data.year);
-        if (!hasTemplate(input.taxYear, "fw2")) return formNotBundled(input.taxYear, reply);
+        const input = await w2InputFor({ db, config }, employeeId, q.data.year, {
+          requireBundledForm: true,
+        });
         const pdf = await renderW2EmployeePacket(input);
         return reply
           .header("content-type", "application/pdf")
@@ -187,8 +194,7 @@ export function registerAdminAnnualFormRoutes(app: FastifyInstance, deps: Deps):
     const q = yearQuery.safeParse(req.query);
     if (!q.success) return reply.code(400).send({ error: "invalid_year", details: q.error.issues });
     try {
-      const input = await w3InputFor({ db, config }, q.data.year);
-      if (!hasTemplate(input.taxYear, "fw3")) return formNotBundled(input.taxYear, reply);
+      const input = await w3InputFor({ db, config }, q.data.year, { requireBundledForm: true });
       const pdf = await renderW3Pdf(input);
       return reply
         .header("content-type", "application/pdf")

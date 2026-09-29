@@ -41,6 +41,8 @@ import {
   compute940Worksheet,
   computeW3Worksheet,
   refreshAnnualWorksheet,
+  W2BlockedError,
+  yearW2BlockCodes,
 } from "./annual.js";
 import {
   addDays,
@@ -506,7 +508,7 @@ export async function syncFilings(
 
 /** PAY-162: a filing-level block issue — code, severity and year only. */
 export interface FilingIssue {
-  code: "missing_tax_config";
+  code: "missing_tax_config" | "w2_blocked";
   severity: "block";
   year: number;
 }
@@ -517,7 +519,8 @@ export type FilingListRow = TaxFilingRow & { issues: FilingIssue[] };
  * Filings, newest period first (admin list). Optional year/status/form
  * filters. PAY-162: a w2_w3 row whose year has no federal tax_config row
  * carries worksheet null and the missing_tax_config block issue (the list
- * itself stays 200 so every other filing remains visible).
+ * itself stays 200 so every other filing remains visible); a w2_w3 row
+ * with any blocked W-2 carries the w2_blocked issue (code only).
  */
 export async function listFilings(
   db: Db,
@@ -544,15 +547,25 @@ export async function listFilings(
         .where(eq(taxConfig.jurisdiction, "federal"))
     ).map((r) => r.year),
   );
-  return rows.map((row) =>
-    row.formType === "w2_w3" && !configured.has(row.year)
-      ? {
-          ...row,
-          worksheet: null,
-          issues: [{ code: "missing_tax_config", severity: "block", year: row.year }],
-        }
-      : { ...row, issues: [] },
-  );
+  const out: FilingListRow[] = [];
+  for (const row of rows) {
+    if (row.formType !== "w2_w3") {
+      out.push({ ...row, issues: [] });
+    } else if (!configured.has(row.year)) {
+      out.push({
+        ...row,
+        worksheet: null,
+        issues: [{ code: "missing_tax_config", severity: "block", year: row.year }],
+      });
+    } else {
+      const blocked = (await yearW2BlockCodes(db, row.year)).length > 0;
+      out.push({
+        ...row,
+        issues: blocked ? [{ code: "w2_blocked", severity: "block", year: row.year }] : [],
+      });
+    }
+  }
+  return out;
 }
 
 /** Filing + its adjustment records (admin detail view). */
@@ -653,8 +666,16 @@ export async function markFiled(
     // Spec 24 (PAY-116): state ID writes check filed w2_w3 years under this lock.
     if (before.formType === "w2_w3") {
       await tx.execute(W2W3_FILING_LOCK);
-      // PAY-162: a year without federal tax_config cannot be recorded filed.
+      // PAY-162: a year without federal tax_config, with a blocked W-2, or
+      // whose W-3 worksheet was never computed cannot be recorded filed.
       await assertFederalTaxConfig(tx, before.year);
+      const codes = await yearW2BlockCodes(tx, before.year);
+      const current = await tx
+        .select({ worksheet: taxFilings.worksheet })
+        .from(taxFilings)
+        .where(eq(taxFilings.id, filingId))
+        .limit(1);
+      if (codes.length > 0 || !current[0]?.worksheet) throw new W2BlockedError(codes);
     }
     const updated = await tx
       .update(taxFilings)

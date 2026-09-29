@@ -961,7 +961,7 @@ describe("my W-2 routes", () => {
 
     const list = await t.app.inject({ method: "GET", url: "/api/my/w2", headers: session });
     expect(list.statusCode, list.body).toBe(200);
-    expect(list.json()).toEqual({ w2s: [{ year: 2025, availableOn: "2026-01-01" }] });
+    expect(list.json()).toEqual({ w2s: [{ year: 2025, availableOn: "2026-01-01", ready: true }] });
 
     const pdf = await t.app.inject({
       method: "GET",

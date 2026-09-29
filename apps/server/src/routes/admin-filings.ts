@@ -17,6 +17,7 @@ import type { Guards } from "../plugins/guards.js";
 import { f940PdfInputFor } from "../filings/form-940-pdf.js";
 import { f941PdfInputFor } from "../filings/form-941-pdf.js";
 import { MissingTaxConfigError, W2BlockedError } from "../filings/annual.js";
+import { AnnualFiguresDefectError } from "../filings/w2-boxes.js";
 import {
   addAdjustment,
   DEFAULT_FILING_REMINDER_OFFSETS,
@@ -93,6 +94,9 @@ function serviceError(
   }
   if (err instanceof W2BlockedError) {
     return reply.code(409).send({ error: "w2_not_ready", issues: err.issues });
+  }
+  if (err instanceof AnnualFiguresDefectError) {
+    return reply.code(409).send({ error: "w2_not_ready", issues: ["internal_mismatch"] });
   }
   if (err instanceof FilingServiceError) {
     const status = err.code === "not_found" ? 404 : err.code === "invalid_input" ? 400 : 409;
