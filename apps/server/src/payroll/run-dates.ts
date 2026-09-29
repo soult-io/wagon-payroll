@@ -79,3 +79,19 @@ export function compareYtdKey(a: YtdKey, b: YtdKey): number {
   const bi = b.selfRunId ?? YTD_KEY_MAX_ID;
   return ai === bi ? 0 : ai < bi ? -1 : 1;
 }
+
+/**
+ * The company's local calendar date (Spec 26 D9): the instant converted to
+ * `timeZone` (APP_TZ), so the Dec 31 / Jan 1 check is not off by one against a
+ * UTC server clock.
+ */
+export function localDate(instant: Date, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(instant);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}

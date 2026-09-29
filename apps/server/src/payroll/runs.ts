@@ -5,7 +5,7 @@
  * Every mutation writes audit_events in the same transaction.
  */
 
-import { and, eq, isNull, ne, or } from "drizzle-orm";
+import { and, eq, isNull, ne, or, sql } from "drizzle-orm";
 import {
   auditEvents,
   authUser,
@@ -38,6 +38,7 @@ import type { AppConfig } from "../config.js";
 import { templateContext } from "../notify/outbox.js";
 import {
   mapStateFilingStatus,
+  findLaterIssuedRun,
   resolveCompensation,
   resolvePriorYtd,
   resolveStateElection,
@@ -49,8 +50,13 @@ import {
   toSnapshotW4,
   type DbLike,
 } from "./resolve.js";
-import { runDates, type YtdKey } from "./run-dates.js";
-import { SNAPSHOT_TEMPLATE_VERSION, snapshotHash, type RunSnapshot } from "./snapshot.js";
+import { localDate, runDates, type YtdKey } from "./run-dates.js";
+import {
+  fingerprintDiff,
+  SNAPSHOT_TEMPLATE_VERSION,
+  snapshotHash,
+  type RunSnapshot,
+} from "./snapshot.js";
 
 export class PayrollServiceError extends Error {
   constructor(
@@ -66,7 +72,10 @@ export class PayrollServiceError extends Error {
       | "no_state_tax_config"
       | "futa_cap_exceeded"
       // Spec 26 (PAY-173)
-      | "invalid_period",
+      | "invalid_period"
+      | "stale_draft"
+      | "ytd_order_conflict"
+      | "past_pay_date_other_year",
     message: string,
   ) {
     super(message);
@@ -95,6 +104,46 @@ export type RunRow = typeof payrollRuns.$inferSelect;
 interface GenerateDeps {
   db: Db;
   config: AppConfig;
+  /**
+   * Wall clock for the D9 "today" check (Spec 26 (PAY-173)); defaults to
+   * `new Date()`. The instant is converted to the company's local date
+   * (config.appTz) before comparing years.
+   */
+  clock?: () => Date;
+}
+
+type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+/**
+ * Serialise run generation / approve / issue per employee (Spec 26 D4): two
+ * runs of one employee can never be issued in parallel with each other's YTD
+ * missing. Transaction-scoped; released at commit/rollback.
+ */
+async function lockEmployeeRuns(tx: Tx, employeeId: number): Promise<void> {
+  await tx.execute(
+    sql`select pg_advisory_xact_lock(hashtext(${`payroll_run_employee:${employeeId}`}))`,
+  );
+}
+
+/** D6 message: names the conflicting run's pay date only. */
+function ytdOrderConflict(later: { payDate: string }): PayrollServiceError {
+  return new PayrollServiceError(
+    "ytd_order_conflict",
+    `A payroll paid on ${later.payDate} for this employee is already issued, so this earlier payment would be missing from its year-to-date totals. Set the pay date to the date this payment is actually made.`,
+  );
+}
+
+/** True when `err` is the FUTA cap trigger (migrations 0017, 0025)'s RAISE EXCEPTION. */
+function isFutaCapTriggerError(err: unknown): boolean {
+  let current: unknown = err;
+  for (let depth = 0; depth < 5 && current && typeof current === "object"; depth += 1) {
+    const message = (current as { message?: unknown }).message;
+    if (typeof message === "string" && message.includes("employer_futa annual cap exceeded")) {
+      return true;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 async function notifyDraftReady(
@@ -479,11 +528,23 @@ export async function generateDraft(
 
   try {
     return await db.transaction(async (tx) => {
+      await lockEmployeeRuns(tx, input.employeeId);
       const { snapshot, entries, employee, companyRow } = await computeRun(tx, {
         employeeId: input.employeeId,
         period,
         selfRunId: null,
       });
+      // D6: an issued run of the same pay-date year already sorts after this
+      // one. The draft may still be generated (its YTD is correct as of now;
+      // approve/issue refuse it), but when the DB FUTA trigger — which sums
+      // every issued run of the year — rejects its entries, answer with the
+      // same 409 instead of a raw database error.
+      const laterIssued = await findLaterIssuedRun(tx, input.employeeId, {
+        payDate: period.payDate,
+        periodStart: period.periodStart,
+        selfRunId: null,
+      });
+
       const inserted = await tx
         .insert(payrollRuns)
         .values({
@@ -499,13 +560,18 @@ export async function generateDraft(
         .returning();
       const run = inserted[0]!;
 
-      await tx.insert(payrollEntries).values(
-        entries.map(([category, amount]) => ({
-          runId: run.id,
-          category,
-          amount: String(amount),
-        })),
-      );
+      try {
+        await tx.insert(payrollEntries).values(
+          entries.map(([category, amount]) => ({
+            runId: run.id,
+            category,
+            amount: String(amount),
+          })),
+        );
+      } catch (err) {
+        if (laterIssued && isFutaCapTriggerError(err)) throw ytdOrderConflict(laterIssued);
+        throw err;
+      }
 
       const tplCtx = await templateContext(tx, deps.config, companyRow.legalName);
       await notifyDraftReady(tx as DbLike & Pick<Db, "insert">, tplCtx, run, employee.legalName);
@@ -645,9 +711,61 @@ async function notifyPayslipIssued(
   });
 }
 
+/** D4 refusal carrying the differing field names for the audit row. */
+class StaleDraftError extends PayrollServiceError {
+  constructor(
+    public fields: string[],
+    public runPublicId: string,
+  ) {
+    super(
+      "stale_draft",
+      `This draft is out of date: something it depends on changed after it was created (for example another payroll was issued, or a tax table or W-4 was updated). Void this draft and generate it again to recalculate. Changed: ${fields.join(", ")}.`,
+    );
+  }
+}
+
+/**
+ * Spec 26 (PAY-173) checks before approve/issue, inside the locked
+ * transaction: D9 (issue only) — a past pay date in another calendar year
+ * than the company's local today; D6 — an issued run of the same pay-date
+ * year already sorts after this one; D4 — recompute the draft (read-only)
+ * and refuse when it no longer matches the stored snapshot.
+ */
+async function assertRunCurrent(
+  tx: DbLike,
+  deps: GenerateDeps,
+  run: RunRow,
+  action: RunAction,
+): Promise<void> {
+  if (action === "issue") {
+    const today = localDate((deps.clock ?? (() => new Date()))(), deps.config.appTz);
+    if (run.payDate < today && run.payDate.slice(0, 4) !== today.slice(0, 4)) {
+      throw new PayrollServiceError(
+        "past_pay_date_other_year",
+        `The pay date ${run.payDate} is in a past year. Set the pay date to the actual payment date.`,
+      );
+    }
+  }
+  const later = await findLaterIssuedRun(tx, run.employeeId, {
+    payDate: run.payDate,
+    periodStart: run.periodStart,
+    selfRunId: run.id,
+  });
+  if (later) throw ytdOrderConflict(later);
+
+  const recomputed = await computeRun(tx, {
+    employeeId: run.employeeId,
+    period: { periodStart: run.periodStart, periodEnd: run.periodEnd, payDate: run.payDate },
+    selfRunId: run.id,
+  });
+  const fields = fingerprintDiff(run.runSnapshot as RunSnapshot, recomputed.snapshot);
+  if (fields.length > 0) throw new StaleDraftError(fields, run.publicId);
+}
+
 /**
  * Apply a state-machine transition with audit_events in the same transaction.
- * Issue inserts the payslip_issued outbox row (spec 6 wiring is step 4).
+ * Approve and issue first run the Spec 26 checks (assertRunCurrent) under the
+ * per-employee lock. Issue inserts the payslip_issued outbox row.
  */
 export async function transitionRun(
   deps: GenerateDeps,
@@ -656,55 +774,72 @@ export async function transitionRun(
   const { db } = deps;
   const rule = TRANSITIONS[input.action];
   if (!rule) throw new PayrollServiceError("invalid_transition", `unknown action ${input.action}`);
-  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: state-machine transition transaction; kept linear with audit in the same tx
-  return db.transaction(async (tx) => {
-    const rows = await tx
-      .select()
-      .from(payrollRuns)
-      .where(eq(payrollRuns.publicId, input.publicId))
-      .limit(1);
-    const run = rows[0];
-    if (!run) throw new PayrollServiceError("run_not_found", `run ${input.publicId} not found`);
-    if (!rule.from.includes(run.status)) {
-      throw new PayrollServiceError(
-        "invalid_transition",
-        `cannot ${input.action} a run in status '${run.status}'`,
-      );
-    }
-    if (input.action === "void" && !input.reason?.trim()) {
-      throw new PayrollServiceError("void_reason_required", "voiding a run requires a reason");
-    }
+  try {
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: state-machine transition transaction; kept linear with audit in the same tx
+    return await db.transaction(async (tx) => {
+      const found = await getRunByPublicId(tx, input.publicId);
+      if (!found) throw new PayrollServiceError("run_not_found", `run ${input.publicId} not found`);
+      let run = found;
+      if (input.action !== "void") {
+        await lockEmployeeRuns(tx, run.employeeId);
+        // Re-read under the lock: a parallel issue may have changed it.
+        run = (await getRunByPublicId(tx, input.publicId)) ?? run;
+      }
+      if (!rule.from.includes(run.status)) {
+        throw new PayrollServiceError(
+          "invalid_transition",
+          `cannot ${input.action} a run in status '${run.status}'`,
+        );
+      }
+      if (input.action === "void" && !input.reason?.trim()) {
+        throw new PayrollServiceError("void_reason_required", "voiding a run requires a reason");
+      }
+      if (input.action !== "void") await assertRunCurrent(tx, deps, run, input.action);
 
-    const now = new Date();
-    const patch =
-      input.action === "approve"
-        ? { status: "approved", approvedBy: input.actorId, approvedAt: now, updatedAt: now }
-        : input.action === "issue"
-          ? { status: "issued", issuedAt: now, updatedAt: now }
-          : { status: "void", voidedAt: now, voidReason: input.reason!.trim(), updatedAt: now };
+      const now = new Date();
+      const patch =
+        input.action === "approve"
+          ? { status: "approved", approvedBy: input.actorId, approvedAt: now, updatedAt: now }
+          : input.action === "issue"
+            ? { status: "issued", issuedAt: now, updatedAt: now }
+            : { status: "void", voidedAt: now, voidReason: input.reason!.trim(), updatedAt: now };
 
-    const updated = await tx
-      .update(payrollRuns)
-      .set(patch)
-      .where(eq(payrollRuns.id, run.id))
-      .returning();
-    const next = updated[0]!;
+      const updated = await tx
+        .update(payrollRuns)
+        .set(patch)
+        .where(eq(payrollRuns.id, run.id))
+        .returning();
+      const next = updated[0]!;
 
-    await tx.insert(auditEvents).values({
-      actorId: input.actorId,
-      action: `run.${input.action}`,
-      entity: "payroll_run",
-      entityId: run.publicId,
-      before: { status: run.status },
-      after: { status: next.status, ...(input.reason ? { reason: input.reason } : {}) },
+      await tx.insert(auditEvents).values({
+        actorId: input.actorId,
+        action: `run.${input.action}`,
+        entity: "payroll_run",
+        entityId: run.publicId,
+        before: { status: run.status },
+        after: { status: next.status, ...(input.reason ? { reason: input.reason } : {}) },
+      });
+
+      if (input.action === "issue") {
+        const tplCtx = await templateContext(tx as DbLike, deps.config);
+        await notifyPayslipIssued(tx as DbLike & Pick<Db, "insert">, tplCtx, next);
+      }
+      return next;
     });
-
-    if (input.action === "issue") {
-      const tplCtx = await templateContext(tx as DbLike, deps.config);
-      await notifyPayslipIssued(tx as DbLike & Pick<Db, "insert">, tplCtx, next);
+  } catch (err) {
+    // D4: the refusal rolled the transaction back; record it on its own.
+    if (err instanceof StaleDraftError) {
+      await db.insert(auditEvents).values({
+        actorId: input.actorId,
+        action: "run.stale_detected",
+        entity: "payroll_run",
+        entityId: err.runPublicId,
+        before: null,
+        after: { fields: err.fields },
+      });
     }
-    return next;
-  });
+    throw err;
+  }
 }
 
 export async function getRunByPublicId(db: DbLike, publicId: string): Promise<RunRow | null> {

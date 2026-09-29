@@ -515,14 +515,25 @@ async function findRun(db: Db, employeeId: number, periodStart: string) {
   return rows[0] ?? null;
 }
 
-/** Advance a run to issued via the state machine; returns the final status. */
-async function advanceToIssued(deps: QaDeps, publicId: string, status: string, actorId: string) {
-  let current = status;
+/**
+ * Advance a run to issued via the state machine; returns the final status.
+ * Synthetic history is issued "on its pay date" (the D9 clock, Spec 26
+ * (PAY-173)): last year's runs would otherwise be refused as a past pay date
+ * in another calendar year.
+ */
+async function advanceToIssued(
+  deps: QaDeps,
+  run: { publicId: string; status: string; payDate: string },
+  actorId: string,
+) {
+  const { publicId } = run;
+  const onPayDate = { ...deps, clock: () => new Date(`${run.payDate}T12:00:00Z`) };
+  let current = run.status;
   if (current === "draft" || current === "awaiting_approval") {
-    current = (await transitionRun(deps, { publicId, action: "approve", actorId })).status;
+    current = (await transitionRun(onPayDate, { publicId, action: "approve", actorId })).status;
   }
   if (current === "approved") {
-    current = (await transitionRun(deps, { publicId, action: "issue", actorId })).status;
+    current = (await transitionRun(onPayDate, { publicId, action: "issue", actorId })).status;
   }
   return current;
 }
@@ -535,11 +546,11 @@ async function ensureIssuedRun(
 ): Promise<"issued" | "existing"> {
   const existing = await findRun(deps.db, employeeId, period.periodStart);
   if (existing) {
-    await advanceToIssued(deps, existing.publicId, existing.status, actorId);
+    await advanceToIssued(deps, existing, actorId);
     return "existing";
   }
   const { run } = await generateDraft(deps, { employeeId, period, createdBy: actorId });
-  await advanceToIssued(deps, run.publicId, run.status, actorId);
+  await advanceToIssued(deps, run, actorId);
   return "issued";
 }
 

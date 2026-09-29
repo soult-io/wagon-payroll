@@ -117,6 +117,11 @@ const config = loadConfig({
 const db = drizzle(pglite, { schema }) as unknown as Db;
 const { app, auth } = await buildApp({
   config,
+  // The fixtures below (and the journeys that issue them) pay in 2025. Issuing
+  // a past pay date in another calendar year is refused (Spec 26 (PAY-173)
+  // D9), so this boot issues "as of" the last day of 2025; later pay dates
+  // (the live-clock QA draft) are future dates and stay issuable.
+  clock: () => new Date("2025-12-31T12:00:00Z"),
   database: {
     db,
     dialect: new PGliteDialect({ pglite }),
@@ -251,9 +256,33 @@ await db.insert(compensation).values({
   effectiveTo: null,
 });
 
+// PAY-36 fixture: an ISSUED run (2025-10) + deposit sync, so the Tax deposits
+// page has a row for journey 6 (the scheduler's daily sync doesn't run here).
+// Issued BEFORE the 2025-11 draft below is generated: a draft generated first
+// would miss October in its YTD and be refused as stale at approve (Spec 26
+// (PAY-173) D4).
+const adminCookie = await loginSession(ADMIN.email, ADMIN_PASSWORD);
+const gen2 = await app.inject({
+  method: "POST",
+  url: "/api/admin/payroll-runs/generate",
+  headers: { ...ORIGIN, cookie: `payroll.session_token=${adminCookie}` },
+  payload: { year: 2025, month: 10, employeeId: empRow.id },
+});
+if (gen2.statusCode !== 201) throw new Error(`generate: ${gen2.body}`);
+const runPublicId2 = (gen2.json() as { generated: { publicId: string }[] }).generated[0]?.publicId;
+if (!runPublicId2) throw new Error("generate returned no run");
+
+for (const action of ["approve", "issue"] as const) {
+  const res = await app.inject({
+    method: "POST",
+    url: `/api/admin/payroll-runs/${runPublicId2}/${action}`,
+    headers: { ...ORIGIN, cookie: `payroll.session_token=${adminCookie}` },
+  });
+  if (res.statusCode !== 200) throw new Error(`${action}: ${res.body}`);
+}
+
 // Draft payroll run (2025-11) through the real admin endpoint — the same
 // $4,000/mo inputs as the synthetic engine golden case (net $3,383.87).
-const adminCookie = await loginSession(ADMIN.email, ADMIN_PASSWORD);
 const gen = await app.inject({
   method: "POST",
   url: "/api/admin/payroll-runs/generate",
@@ -278,27 +307,6 @@ writeFileSync(
     2,
   )}\n`,
 );
-
-// PAY-36 fixture: an ISSUED run (2025-10) + deposit sync, so the Tax deposits
-// page has a row for journey 6 (the scheduler's daily sync doesn't run here).
-const gen2 = await app.inject({
-  method: "POST",
-  url: "/api/admin/payroll-runs/generate",
-  headers: { ...ORIGIN, cookie: `payroll.session_token=${adminCookie}` },
-  payload: { year: 2025, month: 10, employeeId: empRow.id },
-});
-if (gen2.statusCode !== 201) throw new Error(`generate: ${gen2.body}`);
-const runPublicId2 = (gen2.json() as { generated: { publicId: string }[] }).generated[0]?.publicId;
-if (!runPublicId2) throw new Error("generate returned no run");
-
-for (const action of ["approve", "issue"] as const) {
-  const res = await app.inject({
-    method: "POST",
-    url: `/api/admin/payroll-runs/${runPublicId2}/${action}`,
-    headers: { ...ORIGIN, cookie: `payroll.session_token=${adminCookie}` },
-  });
-  if (res.statusCode !== 200) throw new Error(`${action}: ${res.body}`);
-}
 
 // Recompute everything DERIVED from issued runs, now that this boot has issued
 // its own. The QA seed already ran these, but that was before the 2025-10 run

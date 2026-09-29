@@ -182,3 +182,48 @@ export function canonicalJson(value: unknown): string {
 export function snapshotHash(snapshot: RunSnapshot): string {
   return createHash("sha256").update(canonicalJson(snapshot), "utf8").digest("hex");
 }
+
+/**
+ * The parts of a snapshot that must be reproduced by a recompute for a draft
+ * to still be current (Spec 26 (PAY-173) D4). Display names (frozen at
+ * generation) and `resolution` (absent before 1.3.0) are left out, so a
+ * pre-1.3.0 draft with identical numbers still passes; `inputs.payDate` is
+ * in, so a pay date edited after generation always mismatches.
+ */
+function fingerprintParts(s: RunSnapshot): Record<string, unknown> {
+  // JSON round trip: a stored snapshot came back from jsonb, so compare the
+  // recomputed one in the same form (undefined-valued keys dropped).
+  const plain = JSON.parse(JSON.stringify(s)) as RunSnapshot & {
+    inputs: Record<string, unknown>;
+  };
+  const { company: _c, employee: _e, resolution: _r, ...inputs } = plain.inputs;
+  return {
+    inputs,
+    result: plain.result,
+    ytd: plain.ytd ?? null,
+    engineVersion: plain.engineVersion,
+  };
+}
+
+/**
+ * Field NAMES (never values) that differ between two snapshots' fingerprint
+ * parts: input keys by name (`taxConfig`, `priorYtdGross`, `payDate`, `w4`),
+ * result keys as `result.<key>`, then `ytd` and `engineVersion`.
+ */
+export function fingerprintDiff(stored: RunSnapshot, recomputed: RunSnapshot): string[] {
+  const a = fingerprintParts(stored);
+  const b = fingerprintParts(recomputed);
+  const differs = (x: unknown, y: unknown) => canonicalJson(x ?? null) !== canonicalJson(y ?? null);
+  const keysOf = (x: unknown, y: unknown) =>
+    [...new Set([...Object.keys((x ?? {}) as object), ...Object.keys((y ?? {}) as object)])].sort();
+  const fields: string[] = [];
+  const ai = a["inputs"] as Record<string, unknown>;
+  const bi = b["inputs"] as Record<string, unknown>;
+  for (const k of keysOf(ai, bi)) if (differs(ai[k], bi[k])) fields.push(k);
+  const ar = (a["result"] ?? {}) as Record<string, unknown>;
+  const br = (b["result"] ?? {}) as Record<string, unknown>;
+  for (const k of keysOf(ar, br)) if (differs(ar[k], br[k])) fields.push(`result.${k}`);
+  if (differs(a["ytd"], b["ytd"])) fields.push("ytd");
+  if (differs(a["engineVersion"], b["engineVersion"])) fields.push("engineVersion");
+  return fields;
+}

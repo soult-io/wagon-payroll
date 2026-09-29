@@ -35,6 +35,8 @@ interface AdminPayrollDeps {
   guards: Guards;
   /** Re-register pg-boss cron after a pay-schedule change (no-op without scheduler). */
   onScheduleChange?: () => Promise<void>;
+  /** Wall clock for the issue-time pay-date check (Spec 26 (PAY-173) D9); default now. */
+  clock?: () => Date;
 }
 
 const serviceError = (
@@ -45,7 +47,12 @@ const serviceError = (
     const status =
       err.code === "run_not_found"
         ? 404
-        : err.code === "invalid_transition" || err.code === "void_reason_required"
+        : err.code === "invalid_transition" ||
+            err.code === "void_reason_required" ||
+            // Spec 26 (PAY-173) D4 / D6 / D9: fixed bodies, field names and dates only.
+            err.code === "stale_draft" ||
+            err.code === "ytd_order_conflict" ||
+            err.code === "past_pay_date_other_year"
           ? 409
           : 400;
     return reply.code(status).send({ error: err.code, message: err.message });
@@ -154,7 +161,7 @@ export function registerAdminPayrollRoutes(app: FastifyInstance, deps: AdminPayr
         if (!body.success) return reply.code(400).send({ error: "invalid_body" });
         try {
           const run = await transitionRun(
-            { db, config },
+            { db, config, ...(deps.clock ? { clock: deps.clock } : {}) },
             {
               publicId,
               action,

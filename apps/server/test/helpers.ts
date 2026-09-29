@@ -83,7 +83,11 @@ export interface TestContext extends BuiltApp {
 
 export async function createTestApp(
   overrides: Partial<AppConfig> = {},
-  extra: { logStream?: { write(msg: string): void } } = {},
+  extra: {
+    logStream?: { write(msg: string): void };
+    /** Fixed wall clock for the issue-time pay-date check (Spec 26 (PAY-173) D9). */
+    clock?: () => Date;
+  } = {},
 ): Promise<TestContext> {
   const pglite = new PGlite("memory://");
   const skippedStatements = await runMigrations(pglite);
@@ -99,6 +103,7 @@ export async function createTestApp(
   const db = drizzle(pglite, { schema }) as unknown as Db;
   const built = await buildApp({
     ...(extra.logStream ? { logStream: extra.logStream } : {}),
+    ...(extra.clock ? { clock: extra.clock } : {}),
     config,
     database: {
       db,
