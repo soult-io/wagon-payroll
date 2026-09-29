@@ -88,9 +88,11 @@ export function registerAdminPayrollRoutes(app: FastifyInstance, deps: AdminPayr
     const conditions: SQL[] = [];
     if (q.status) conditions.push(eq(payrollRuns.status, q.status));
     if (q.employeeId) conditions.push(eq(payrollRuns.employeeId, q.employeeId));
+    // Spec 26 (PAY-173): `year` is the PAY-date year, like the W-2, 941, 940
+    // and export.
     if (q.year) {
-      conditions.push(gte(payrollRuns.periodStart, `${q.year}-01-01`));
-      conditions.push(lte(payrollRuns.periodStart, `${q.year}-12-31`));
+      conditions.push(gte(payrollRuns.payDate, `${q.year}-01-01`));
+      conditions.push(lte(payrollRuns.payDate, `${q.year}-12-31`));
     }
     const rows = await db
       .select({
@@ -108,7 +110,7 @@ export function registerAdminPayrollRoutes(app: FastifyInstance, deps: AdminPayr
       })
       .from(payrollRuns)
       .where(conditions.length ? and(...conditions) : undefined)
-      .orderBy(desc(payrollRuns.periodStart));
+      .orderBy(desc(payrollRuns.payDate), desc(payrollRuns.periodStart), desc(payrollRuns.id));
     return { runs: rows };
   });
 

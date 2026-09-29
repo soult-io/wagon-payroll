@@ -140,7 +140,10 @@ export const w4Elections = pgTable(
     deductionsAmount: money("deductions_amount").notNull().default("0"),
     /** Per-period extra withholding. */
     extraWithholding: money("extra_withholding").notNull().default("0"),
-    /** NOT retroactive — applies to pay periods on/after this date. */
+    /**
+     * NOT retroactive — applies to payments for pay periods ending on or after
+     * this date (selected as of min(period end, pay date); Spec 26 (PAY-173) D3).
+     */
     effectiveFrom: date("effective_from").notNull(),
     filedDate: date("filed_date").notNull(),
     /** Exempt W-4s expire (IRC §3402(n)). */
@@ -1237,7 +1240,10 @@ export const stateWithholdingElections = pgTable(
     /** Flat per-period add-on (IL-W-4 line 3 / DE 4 item 3). */
     extraWithholding: money("extra_withholding").notNull().default("0"),
     exempt: boolean("exempt").notNull().default(false),
-    /** NOT retroactive — applies to pay periods on/after this date. */
+    /**
+     * NOT retroactive — applies to payments for pay periods ending on or after
+     * this date (selected as of min(period end, pay date); Spec 26 (PAY-173) D3).
+     */
     effectiveFrom: date("effective_from").notNull(),
     filedDate: date("filed_date").notNull(),
     note: text("note").default(""),
