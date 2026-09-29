@@ -204,12 +204,17 @@ describe("federal worked examples (R1–R4)", () => {
   });
 
   describe("B2: exactly at the SS wage base", () => {
-    let emp = 0;
-    it("(i) period 2026-09 paid 2026-10-05, prior = 18,450,000 → SS 0, Additional Medicare on 500,000", async () => {
-      emp = await createEmployee(t, 2_050_000);
+    // Each case builds its own employee (order-safe under --sequence.shuffle):
+    // 9 arrears months + the Sep period paid 2026-10-05, issued.
+    async function atWageBase() {
+      const emp = await createEmployee(t, 2_050_000);
       await arrearsHistory(emp, "2025-12", 9, 2_050_000, 127_100);
       const { run } = await gen(t, emp, monthPeriod("2026-09", "2026-10-05"));
       await approveAndIssue(t, run.publicId, "2026-10-01T12:00:00Z");
+      return { emp, sep: run };
+    }
+    it("(i) period 2026-09 paid 2026-10-05, prior = 18,450,000 → SS 0, Additional Medicare on 500,000", async () => {
+      const { sep: run } = await atWageBase();
       expect(await federalView(run.id)).toEqual({
         taxYear: 2026,
         resolutionTaxYear: 2026,
@@ -223,6 +228,7 @@ describe("federal worked examples (R1–R4)", () => {
       });
     });
     it("(ii) period 2026-12 paid 2027-01-05 (SYN-2027) → fresh year: SS 127,100, FUTA 4,200, trigger accepts", async () => {
+      const { emp } = await atWageBase();
       const { run } = await gen(t, emp, monthPeriod("2026-12", "2027-01-05"));
       expect(await federalView(run.id)).toEqual({
         taxYear: 2027,

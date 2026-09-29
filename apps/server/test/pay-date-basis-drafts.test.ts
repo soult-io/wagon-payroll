@@ -86,15 +86,21 @@ describe("D6 — out-of-order issue in a pay-date year", () => {
       status: res.status,
       error: res.error,
       namesPayDate: res.message.includes("2026-12-04"),
-      tellsFix: res.message.includes("Set the pay date to the date this payment is actually made."),
+      saysNothingChanged: res.message.includes("Nothing was approved or issued."),
+      tellsFix: res.message.includes(
+        "Void this draft and generate it again with the date you actually pay it.",
+      ),
+      messageHasNoAmounts: !/\d+\.\d{2}/.test(res.message) && !/\$/.test(res.message),
       runStatus: (await runRow(t, run.id)).status,
     }).toEqual({
       prior: 700_000, // Jan only: the Nov run paid 12-04 sorts after (12-04, 10-01)
       status: 409,
       error: "ytd_order_conflict",
       namesPayDate: true,
+      saysNothingChanged: true,
       tellsFix: true,
-      runStatus: "awaiting_approval",
+      messageHasNoAmounts: true,
+      runStatus: "awaiting_approval", // the refusal's "nothing was approved" holds
     });
   });
 });

@@ -34,8 +34,18 @@ import {
 let t: TestContext;
 let ADMIN: Record<string, string>;
 
+/**
+ * Fixed wall clock (company-local today = 2026-12-10, Europe/Madrid). The
+ * W-4 write path refuses a filedDate after today (400 filed_date_in_future),
+ * so V-1..V-6 (filed 2026-11-20 .. 2026-12-10) need a today on/after the
+ * latest filed date to reach the D3 step 4 window rule on any run date.
+ * V-2/V-3/V-3b/V-6 file exactly on today (the boundary that must pass).
+ */
+const TODAY = "2026-12-10";
+const CLOCK = () => new Date(`${TODAY}T12:00:00Z`);
+
 beforeAll(async () => {
-  t = await createTestApp();
+  t = await createTestApp({ appTz: "Europe/Madrid" }, { clock: CLOCK });
   await seedDatabase(t.db as unknown as SeedDb);
   await seedSyntheticFederal2027(t.db);
   const admin = await inviteAndOnboard(t, { email: "pay-date-w4-admin@test.dev", role: "admin" });
@@ -189,16 +199,22 @@ describe("certificate selection (D3 steps 1–2)", () => {
 });
 
 describe("W-4 write rule (D3 step 4) — POST /api/admin/employees/:id/w4", () => {
-  async function post(
+  async function postRaw(
     emp: number,
     body: { taxYear: number; filedDate: string; effectiveFrom: string },
   ) {
-    const res = await t.app.inject({
+    return t.app.inject({
       method: "POST",
       url: `/api/admin/employees/${emp}/w4`,
       headers: ADMIN,
       payload: { filingStatus: "single", ...body },
     });
+  }
+  async function post(
+    emp: number,
+    body: { taxYear: number; filedDate: string; effectiveFrom: string },
+  ) {
+    const res = await postRaw(emp, body);
     const json = res.json() as { error?: string };
     return { status: res.statusCode, error: json.error ?? null };
   }
@@ -284,5 +300,29 @@ describe("W-4 write rule (D3 step 4) — POST /api/admin/employees/:id/w4", () =
         effectiveFrom: "2026-12-01",
       }),
     }).toEqual({ early: REJECT, control: ACCEPT });
+  });
+
+  it("V-7 (auditor-added): filedDate one day after today (2026-12-11) → 400 filed_date_in_future, no value echoed", async () => {
+    // Otherwise lawful (first W-4, effective = filed), so only the future
+    // filed date can refuse it.
+    const res = await postRaw(await empWith(false), {
+      taxYear: 2026,
+      filedDate: "2026-12-11",
+      effectiveFrom: "2026-12-11",
+    });
+    expect({
+      status: res.statusCode,
+      body: res.json(),
+      echoesDate: res.body.includes("2026-12-11"),
+    }).toEqual({
+      status: 400,
+      body: {
+        error: "filed_date_in_future",
+        field: "filedDate",
+        message:
+          'The "Date filed" can\'t be after today. Enter the date the employee signed the W-4.',
+      },
+      echoesDate: false,
+    });
   });
 });
