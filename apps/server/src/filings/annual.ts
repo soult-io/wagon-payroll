@@ -860,6 +860,9 @@ async function w2RecipientsForYear(db: Db, year: number): Promise<string[]> {
 
 /** PAY-162: every W-2 of the year computes and none is blocked. */
 async function w2sIssuable(db: Db, year: number): Promise<boolean> {
+  // PAY-162: no notice while the year's official W-2 form is not bundled —
+  // the employee could not download it.
+  if (!hasTemplate(year, "fw2")) return false;
   try {
     return (await yearW2BlockCodes(db, year)).length === 0;
   } catch (err) {

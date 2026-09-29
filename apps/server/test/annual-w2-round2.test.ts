@@ -295,10 +295,10 @@ describe("S1 every employee PDF refusal is exactly 409 { error: w2_not_ready }",
     });
   }
 
-  it("missing federal tax config keeps its own bare code (auditor T09)", async () => {
+  it("missing federal tax config", async () => {
     const res = await get("/api/my/w2/2021/pdf", other.session);
     expect(res.statusCode, res.body).toBe(409);
-    expect(res.json()).toEqual({ error: "missing_tax_config" });
+    expect(res.json()).toEqual({ error: "w2_not_ready" });
   });
 
   it("unprintable amount (documents W2FormAmountError)", async () => {

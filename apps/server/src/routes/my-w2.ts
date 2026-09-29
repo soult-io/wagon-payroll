@@ -64,14 +64,10 @@ async function sendW2Pdf(
       .header("content-disposition", `inline; filename="w2-${year}.pdf"`)
       .send(pdf);
   } catch (err) {
-    // PAY-162: bare bodies — no year, no codes, no ids. A missing tax config
-    // keeps its own code (payroll-calc-auditor T09); every other refusal —
-    // held, unreadable, no official form, or no W-2 for this employee and
-    // year — is the same w2_not_ready.
+    // PAY-162: every refusal is the same bare body — no year, no codes, no
+    // ids — whether the W-2 is held, unreadable, unconfigured, has no
+    // official form, or does not exist for this employee and year.
     const block = annualBlockBody(err);
-    if (block?.error === "missing_tax_config") {
-      return reply.code(409).send({ error: "missing_tax_config" });
-    }
     if (block || err instanceof FilingServiceError) {
       return reply.code(409).send({ error: "w2_not_ready" });
     }
