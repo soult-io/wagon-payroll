@@ -22,6 +22,7 @@ import StatusChip from "../../components/StatusChip.vue";
 import RequestThread from "../../components/RequestThread.vue";
 import RequestPayloadView from "../../components/RequestPayloadView.vue";
 import {
+  ApiError,
   adminEmployeesApi,
   adminPayrollApi,
   changeRequestsApi,
@@ -56,6 +57,12 @@ const effectiveFrom = ref<Date | null>(null);
 const note = ref("");
 const denyVisible = ref(false);
 const denyReason = ref("");
+/**
+ * Set after a 409 effective_date: the admin has seen that payroll already ran
+ * for earlier periods, so the next approve sends the picked date as an
+ * explicit override even when it equals the requested date.
+ */
+const effectiveDateConfirmed = ref(false);
 
 // Spec 11 (D21): tax_id reveal-on-demand — deliberate, audit-logged server-side.
 const revealedTaxId = ref<string | null>(null);
@@ -199,12 +206,19 @@ async function approve() {
     const trimmed = note.value.trim();
     if (trimmed) input.note = trimmed;
     const iso = toIso(effectiveFrom.value);
-    if (iso && iso !== request.value?.effectiveFrom) input.effectiveFromOverride = iso;
+    if (iso && (effectiveDateConfirmed.value || iso !== request.value?.effectiveFrom)) {
+      input.effectiveFromOverride = iso;
+    }
     const { request: updated } = await changeRequestsApi.approve(publicId, input);
     request.value = updated;
     notify.success("Request approved", "The change has been applied.");
     await load();
   } catch (err) {
+    if (err instanceof ApiError && err.code === "effective_date") {
+      effectiveDateConfirmed.value = true;
+      const proposed = err.body?.["proposedEffectiveFrom"];
+      if (typeof proposed === "string") effectiveFrom.value = fromIso(proposed);
+    }
     notify.error(err, "Could not approve");
   } finally {
     busy.value = false;

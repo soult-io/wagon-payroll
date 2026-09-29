@@ -217,7 +217,8 @@ async function w4ApprovalDate(
   if (!window || (override && check.violation)) {
     throw new ChangeRequestError(
       "invalid_w4_effective_date",
-      check.violation ?? "invalid W-4 dates",
+      check.violation ??
+        "The \"Date filed\" on this W-4 request isn't a valid date, so it can't be approved. Ask the employee to submit the W-4 again.",
       { window },
     );
   }
@@ -227,7 +228,7 @@ async function w4ApprovalDate(
     const proposed = clampToW4Window(nextUnrun, window);
     throw new ChangeRequestError(
       "effective_date",
-      `effective_from ${clamped} precedes the next un-run pay period (${nextUnrun}); pass an explicit override to approve anyway — proposed ${proposed}, inside the W-4 window ${window.earliest ?? "(no lower bound)"} to ${window.latest}`,
+      `This W-4 would start on ${clamped}, but payroll has already been run for pay periods before ${nextUnrun}. Payroll that has already been run is not recalculated. Suggested start date: ${proposed}, the closest date the IRS rules allow. To approve, set "Effective from" to the date you want and approve again.`,
       { window, proposedEffectiveFrom: proposed },
     );
   }
@@ -268,7 +269,7 @@ export async function approveRequest(
     if (effectiveFrom < earliest && !input.effectiveFromOverride && request.requestType !== "w4") {
       throw new ChangeRequestError(
         "effective_date",
-        `effective_from ${effectiveFrom} precedes the next un-run pay period (${earliest}); pass an explicit override to approve anyway`,
+        `This change would start on ${effectiveFrom}, but payroll has already been run for pay periods before ${earliest}. Payroll that has already been run is not recalculated. To approve, set "Effective from" to the date you want and approve again.`,
       );
     }
 

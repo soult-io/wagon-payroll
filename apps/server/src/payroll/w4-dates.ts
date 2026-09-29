@@ -71,7 +71,7 @@ export function clampToW4Window(date: string, window: W4Window): string {
  */
 export function w4DateViolation(w: W4Dates, hasEarlierW4: boolean): string | null {
   if (!isIsoDate(w.filedDate) || !isIsoDate(w.effectiveFrom)) {
-    return "filedDate and effectiveFrom must be valid YYYY-MM-DD dates";
+    return 'Enter "Date filed" and "Effective from" as dates (YYYY-MM-DD), then try again.';
   }
   const window = w4DateWindow(w.taxYear, w.filedDate, hasEarlierW4);
   if (clampToW4Window(w.effectiveFrom, window) === w.effectiveFrom) return null;
@@ -106,3 +106,4 @@ export async function validateW4Dates(
     window: isIsoDate(w.filedDate) ? w4DateWindow(w.taxYear, w.filedDate, hasEarlier) : null,
   };
 }
+

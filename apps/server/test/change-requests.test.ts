@@ -519,6 +519,58 @@ describe("W-4 append-only", () => {
     });
   });
 
+  it("a 409 proposal before the next un-run period is approvable by sending it as an explicit override (PAY-173)", async () => {
+    const proposalEmployeeId = await createEmployeeFor(null, "Cr Proposal W4");
+    await t.db.insert(w4Elections).values({
+      employeeId: proposalEmployeeId,
+      taxYear: 2024,
+      filingStatus: "single",
+      effectiveFrom: "2024-01-01",
+      filedDate: "2024-01-01",
+    });
+    // Replacement filed 2026-01-05: window 2026-01-05..2026-02-01, which is
+    // before the next un-run period, so no-override approval returns 409.
+    const requested = nextMonthStart();
+    const inserted = await t.db
+      .insert(changeRequests)
+      .values({
+        employeeId: proposalEmployeeId,
+        requestType: "w4",
+        payload: {
+          taxYear: 2026,
+          filingStatus: "single",
+          effectiveFrom: requested,
+          filedDate: "2026-01-05",
+        },
+        effectiveFrom: requested,
+      })
+      .returning({ publicId: changeRequests.publicId });
+    const publicId = String(inserted[0]?.publicId);
+
+    const plain = await t.app.inject({
+      method: "POST",
+      url: `/api/change-requests/${publicId}/approve`,
+      headers: sessionHeader(adminCookie),
+      payload: {},
+    });
+    const plainBody = plain.json() as { error?: string; proposedEffectiveFrom?: string };
+    expect({ status: plain.statusCode, error: plainBody.error }).toEqual({
+      status: 409,
+      error: "effective_date",
+    });
+    expect(plainBody.proposedEffectiveFrom).toBe("2026-02-01");
+
+    const approve = await t.app.inject({
+      method: "POST",
+      url: `/api/change-requests/${publicId}/approve`,
+      headers: sessionHeader(adminCookie),
+      payload: { effectiveFromOverride: plainBody.proposedEffectiveFrom },
+    });
+    expect(approve.statusCode, approve.body).toBe(200);
+    const applied = await latestW4(proposalEmployeeId, "2026-01-05");
+    expect(applied?.effectiveFrom).toBe("2026-02-01");
+  });
+
   it("a first W-4 submitted with the form defaults approves and lands on its filed date (Spec 26 (PAY-173) D3 step 4)", async () => {
     const first = await inviteAndOnboard(t, { email: "cr-first-w4@example.com", role: "employee" });
     const firstEmployeeId = await createEmployeeFor(first.userId, "Cr First W4");
