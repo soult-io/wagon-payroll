@@ -311,7 +311,7 @@ export function registerChangeRequestRoutes(app: FastifyInstance, deps: Deps): v
       return reply.code(400).send({ error: "invalid_body", details: body.error.issues });
     try {
       const row = await approveRequest(
-        { db, config },
+        { db, config, ...(deps.clock ? { clock: deps.clock } : {}) },
         {
           publicId,
           adminId: req.authUser!.id,

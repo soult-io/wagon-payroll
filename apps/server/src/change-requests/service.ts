@@ -60,6 +60,8 @@ export type ChangeRequestRow = typeof changeRequests.$inferSelect;
 interface Deps {
   db: Db;
   config: AppConfig;
+  /** Wall clock for the no-run default of the next un-run period; default now. */
+  clock?: () => Date;
 }
 
 /** All active admins (recipients of submitted/notifications per spec catalog). */
@@ -74,7 +76,11 @@ async function activeAdmins(db: DbLike): Promise<{ id: string }[]> {
  * First day of the next un-run pay period for an employee: the month after
  * their latest non-void run, or the current month when nothing has run.
  */
-export async function nextUnrunPeriodStart(db: DbLike, employeeId: number): Promise<string> {
+export async function nextUnrunPeriodStart(
+  db: DbLike,
+  employeeId: number,
+  now: Date = new Date(),
+): Promise<string> {
   const rows = await db
     .select({ periodStart: payrollRuns.periodStart })
     .from(payrollRuns)
@@ -82,7 +88,7 @@ export async function nextUnrunPeriodStart(db: DbLike, employeeId: number): Prom
     .orderBy(desc(payrollRuns.periodStart))
     .limit(1);
   const base = rows[0]?.periodStart;
-  const date = base ? new Date(`${base}T00:00:00Z`) : new Date();
+  const date = base ? new Date(`${base}T00:00:00Z`) : now;
   const year = date.getUTCFullYear();
   const month = date.getUTCMonth() + (base ? 2 : 1); // next month if a run exists
   const y = month > 12 ? year + 1 : year;
@@ -238,14 +244,18 @@ async function w4ApprovalDate(
         : `between ${window.earliest} and ${window.latest}`;
     throw new ChangeRequestError(
       "effective_date",
-      `This W-4 can't start on ${requested}. IRS rules only allow a start date ${range}, based on the date the employee filed it. Suggested start date: ${proposed}. To approve, check "Effective from" and approve again.`,
+      `This W-4 can't start on ${requested}. IRS rules only allow a start date ${range}, based on the date the employee filed it. Suggested start date: ${proposed}.${
+        proposed < nextUnrun ? ` Payroll already run before ${nextUnrun} is not recalculated.` : ""
+      } The suggested date is filled in under "Effective from". Approve again to use it, or pick another date.`,
       { window, proposedEffectiveFrom: proposed },
     );
   }
   if (requested < nextUnrun) {
     throw new ChangeRequestError(
       "effective_date",
-      `This W-4 would start on ${requested}, but payroll has already been run for pay periods before ${nextUnrun}. Payroll that has already been run is not recalculated. Suggested start date: ${proposed}, the closest date the IRS rules allow. To approve, set "Effective from" to the date you want and approve again.`,
+      `This W-4 would start on ${requested}, but payroll has already been run for pay periods before ${nextUnrun}. Payroll already run is not recalculated.${
+        proposed !== requested ? ` Suggested start date: ${proposed}.` : ""
+      } The date is filled in under "Effective from". Approve again to confirm it, or pick another date.`,
       { window, proposedEffectiveFrom: proposed },
     );
   }
@@ -278,7 +288,11 @@ export async function approveRequest(
       throw new ChangeRequestError("not_pending", `request is '${request.status}', not pending`);
     }
 
-    const earliest = await nextUnrunPeriodStart(tx as DbLike, request.employeeId);
+    const earliest = await nextUnrunPeriodStart(
+      tx as DbLike,
+      request.employeeId,
+      (deps.clock ?? (() => new Date()))(),
+    );
     const effectiveFrom =
       request.requestType === "w4"
         ? await w4ApprovalDate(tx as DbLike, request, input.effectiveFromOverride, earliest)
@@ -286,7 +300,7 @@ export async function approveRequest(
     if (effectiveFrom < earliest && !input.effectiveFromOverride && request.requestType !== "w4") {
       throw new ChangeRequestError(
         "effective_date",
-        `This change would start on ${effectiveFrom}, but payroll has already been run for pay periods before ${earliest}. Payroll that has already been run is not recalculated. To approve, set "Effective from" to the date you want and approve again.`,
+        `This change would start on ${effectiveFrom}, but payroll has already been run for pay periods before ${earliest}. Payroll that has already been run is not recalculated. Approve again to confirm the date under "Effective from", or pick another date.`,
       );
     }
 

@@ -25,6 +25,7 @@ import { createTestApp, type TestContext } from "./helpers.js";
 import { inviteAndOnboard, login, sessionHeader, TEST_PASSWORD } from "./flow-helpers.js";
 import { decryptField } from "../src/crypto/field-encryption.js";
 import { decryptAddress } from "../src/crypto/address-encryption.js";
+import { w4DateWindow } from "../src/payroll/w4-dates.js";
 
 let t: TestContext;
 let adminCookie: string;
@@ -37,10 +38,11 @@ let intruderCookie: string;
 /**
  * One fixed instant for the whole file, injected as the app clock with APP_TZ
  * pinned to UTC, so the tests' "today" (UTC day of NOW) is the server's
- * "today" for the W-4 filed-date check. Captured once, not a constant date:
- * nextUnrunPeriodStart still reads the real clock for its no-run default.
+ * "today" for the W-4 filed-date check and the no-run default of
+ * nextUnrunPeriodStart. Mid-month on purpose: a W-4 filed "today" can then
+ * never be forced past the next un-run period by a month boundary.
  */
-const NOW = new Date();
+const NOW = new Date("2026-09-15T12:00:00Z");
 const TODAY = NOW.toISOString().slice(0, 10);
 
 const ADDRESS_PAYLOAD = {
@@ -337,15 +339,16 @@ describe("W-4 append-only", () => {
       filedDate: "2024-01-01",
     });
 
-    const effectiveFrom = nextMonthStart();
+    // Filed today, requesting the latest date the replacement window allows
+    // (Spec 26 (PAY-173) D3 step 4): next month's start mid-month, but today
+    // itself when filed on the 1st of a 31-day month.
+    const effectiveFrom = w4DateWindow(2026, TODAY, true).latest;
     const res = await submit(employeeCookie, {
       requestType: "w4",
       payload: {
         taxYear: 2026,
         filingStatus: "married_joint",
         effectiveFrom, // payload copy; top-level is authoritative
-        // Filed today: next month's start is inside the replacement window
-        // (Spec 26 (PAY-173) D3 step 4).
         filedDate: TODAY,
       },
       effectiveFrom,
@@ -673,7 +676,7 @@ describe("W-4 append-only", () => {
       proposed: plainBody.proposedEffectiveFrom,
     }).toEqual({ status: 409, error: "effective_date", proposed: filedDate });
     expect((plain.json() as { message?: string }).message).toBe(
-      `This W-4 can't start on ${nextMonthStart()}. IRS rules only allow a start date between ${filedDate.slice(0, 7)}-01 and ${filedDate}, based on the date the employee filed it. Suggested start date: ${filedDate}. To approve, check "Effective from" and approve again.`,
+      `This W-4 can't start on ${nextMonthStart()}. IRS rules only allow a start date between ${filedDate.slice(0, 7)}-01 and ${filedDate}, based on the date the employee filed it. Suggested start date: ${filedDate}. The suggested date is filled in under "Effective from". Approve again to use it, or pick another date.`,
     );
 
     const approve = await t.app.inject({
