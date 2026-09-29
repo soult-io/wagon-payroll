@@ -20,7 +20,7 @@ import { effectiveFutaRate } from "@payroll/engine";
 import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
 import type { Guards } from "../plugins/guards.js";
-import { validateW4Dates } from "../payroll/w4-dates.js";
+import { FILED_DATE_IN_FUTURE, isFiledDateInFuture, validateW4Dates } from "../payroll/w4-dates.js";
 import {
   generateDraftsForPeriod,
   getRunByPublicId,
@@ -337,6 +337,11 @@ export function registerAdminPayrollRoutes(app: FastifyInstance, deps: AdminPayr
       .safeParse(req.body);
     if (!body.success)
       return reply.code(400).send({ error: "invalid_body", details: body.error.issues });
+    if (
+      isFiledDateInFuture(body.data.filedDate, (deps.clock ?? (() => new Date()))(), config.appTz)
+    ) {
+      return reply.code(400).send(FILED_DATE_IN_FUTURE);
+    }
     // Spec 26 (PAY-173) D3 step 4: effective date inside the lawful window.
     const check = await validateW4Dates(db, employeeId, body.data);
     if (check.violation) {

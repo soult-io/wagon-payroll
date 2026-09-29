@@ -19,7 +19,7 @@
 import { eq } from "drizzle-orm";
 import { w4Elections } from "@payroll/db";
 import type { DbLike } from "./resolve.js";
-import { isIsoDate } from "./run-dates.js";
+import { isIsoDate, localDate } from "./run-dates.js";
 
 export interface W4Dates {
   taxYear: number;
@@ -107,3 +107,16 @@ export async function validateW4Dates(
   };
 }
 
+/**
+ * A W-4 cannot be filed in the future: true when `filedDate` is after the
+ * company's local today (APP_TZ). The 400 names the field only, never a value.
+ */
+export function isFiledDateInFuture(filedDate: string, now: Date, timeZone: string): boolean {
+  return filedDate > localDate(now, timeZone);
+}
+
+export const FILED_DATE_IN_FUTURE = {
+  error: "filed_date_in_future",
+  field: "filedDate",
+  message: 'The "Date filed" can\'t be after today. Enter the date the employee signed the W-4.',
+} as const;

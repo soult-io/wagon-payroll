@@ -571,6 +571,52 @@ describe("W-4 append-only", () => {
     expect(applied?.effectiveFrom).toBe("2026-02-01");
   });
 
+  it("a W-4 with a filed date after today → 400 naming the field only; nothing stored (PAY-173)", async () => {
+    // Two UTC days ahead is after today in any APP_TZ.
+    const future = isoDaysFromToday(2);
+    const before = await t.db
+      .select({ id: changeRequests.id })
+      .from(changeRequests)
+      .where(eq(changeRequests.employeeId, employeeId));
+    const res = await submit(employeeCookie, {
+      requestType: "w4",
+      payload: { taxYear: 2026, filingStatus: "single", effectiveFrom: future, filedDate: future },
+      effectiveFrom: future,
+    });
+    const body = res.json() as Record<string, unknown>;
+    expect({ status: res.statusCode, error: body["error"], field: body["field"] }).toEqual({
+      status: 400,
+      error: "filed_date_in_future",
+      field: "filedDate",
+    });
+    expect(JSON.stringify(body)).not.toContain(future);
+    const after = await t.db
+      .select({ id: changeRequests.id })
+      .from(changeRequests)
+      .where(eq(changeRequests.employeeId, employeeId));
+    expect(after).toHaveLength(before.length);
+
+    const adminEmployeeId = await createEmployeeFor(null, "Cr Future Filed W4");
+    const adminRes = await t.app.inject({
+      method: "POST",
+      url: `/api/admin/employees/${adminEmployeeId}/w4`,
+      headers: sessionHeader(adminCookie),
+      payload: { taxYear: 2026, effectiveFrom: future, filedDate: future },
+    });
+    const adminBody = adminRes.json() as Record<string, unknown>;
+    expect({
+      status: adminRes.statusCode,
+      error: adminBody["error"],
+      field: adminBody["field"],
+    }).toEqual({ status: 400, error: "filed_date_in_future", field: "filedDate" });
+    expect(JSON.stringify(adminBody)).not.toContain(future);
+    const stored = await t.db
+      .select({ id: w4Elections.id })
+      .from(w4Elections)
+      .where(eq(w4Elections.employeeId, adminEmployeeId));
+    expect(stored).toHaveLength(0);
+  });
+
   it("a first W-4 submitted with the form defaults approves and lands on its filed date (Spec 26 (PAY-173) D3 step 4)", async () => {
     const first = await inviteAndOnboard(t, { email: "cr-first-w4@example.com", role: "employee" });
     const firstEmployeeId = await createEmployeeFor(first.userId, "Cr First W4");
