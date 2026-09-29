@@ -18,7 +18,7 @@
  * available on January 1 of the following year (w2AvailableOn gate).
  */
 
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import {
   appSettings,
   company,
@@ -569,11 +569,14 @@ export async function refreshAnnualWorksheet(db: Db, filing: TaxFilingRow): Prom
   }
   const hash = worksheetHash(worksheet);
   if (hash === filing.worksheetHash) return false;
-  await db
+  // PAY-162: `filing` may be a stale read — a mark-filed that committed
+  // since then must never have its frozen worksheet overwritten.
+  const updated = await db
     .update(taxFilings)
     .set({ worksheet, worksheetHash: hash, updatedAt: new Date() })
-    .where(eq(taxFilings.id, filing.id));
-  return true;
+    .where(and(eq(taxFilings.id, filing.id), ne(taxFilings.status, "filed")))
+    .returning({ id: taxFilings.id });
+  return updated.length > 0;
 }
 
 export interface AnnualSyncResult {

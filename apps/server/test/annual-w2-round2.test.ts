@@ -30,7 +30,7 @@ import {
   taxConfig,
   taxFilings,
 } from "@payroll/db";
-import { syncAnnualFilings } from "../src/filings/annual.js";
+import { refreshAnnualWorksheet, syncAnnualFilings } from "../src/filings/annual.js";
 import { AnnualFiguresDefectError, w3Totals } from "../src/filings/w2-boxes.js";
 import { snapshotHash, type RunSnapshot } from "../src/payroll/snapshot.js";
 import { createTestApp, type TestContext } from "./helpers.js";
@@ -377,10 +377,36 @@ describe("S4 figures defect: no amounts or ids in the employee and filing bodies
   });
 });
 
-describe("R3 / R2 / R5 mark-filed on a clean year", () => {
+/**
+ * A clean W-2 year of its own: federal config, one unlinked employee with a
+ * consistent run, synced so the w2_w3 row has a computed worksheet. Each
+ * mark-filed test below uses its own year, so no test depends on another's
+ * state or on test order.
+ */
+async function cleanYear(year: number, cap: string) {
+  await insertFederalConfig(year, cap, "12000.00");
+  const companyRows = await t.db.select({ id: company.id }).from(company).limit(1);
+  const rows = await t.db
+    .insert(employees)
+    .values({
+      companyId: companyRows[0]?.id ?? 1,
+      legalName: `Round2 Clean ${year}`,
+      hireDate: `${year}-01-01`,
+    })
+    .returning();
+  const employeeId = rows[0]?.id;
+  if (!employeeId) throw new Error("employee insert failed");
+  await insertIssuedRun(employeeId, `${year}-03-15`, consistentRun());
+  await syncAnnualFilings({ db: t.db, config: t.config }, { today: TODAY });
+  const row = await w2w3Row(year);
+  expect(row.worksheet).not.toBeNull();
+  expect(row.status).not.toBe("filed");
+  return { employeeId, row };
+}
+
+describe("R3 / R2 / R5 mark-filed on a clean year (each test owns its year)", () => {
   it("R3 no blocks but a null worksheet -> 409 w2_not_ready", async () => {
-    const row = await w2w3Row(2024);
-    expect(row.worksheet).not.toBeNull();
+    const { row } = await cleanYear(2019, "132900.00");
     await t.db
       .update(taxFilings)
       .set({ worksheet: null, worksheetHash: null })
@@ -388,13 +414,11 @@ describe("R3 / R2 / R5 mark-filed on a clean year", () => {
     const res = await markFiled(row.id);
     expect(res.statusCode, res.body).toBe(409);
     expect(res.json()).toEqual({ error: "w2_not_ready", issues: [] });
-    expect((await w2w3Row(2024)).status).not.toBe("filed");
+    expect((await w2w3Row(2019)).status).not.toBe("filed");
   });
 
   it("R2 a second mark-filed is refused and writes no second audit row", async () => {
-    await syncAnnualFilings({ db: t.db, config: t.config }, { today: TODAY });
-    const row = await w2w3Row(2024);
-    expect(row.worksheet).not.toBeNull();
+    const { row } = await cleanYear(2022, "147000.00");
     const audits = async () =>
       (
         await t.db
@@ -417,16 +441,33 @@ describe("R3 / R2 / R5 mark-filed on a clean year", () => {
   });
 
   it("R5 a filed w2_w3 row is not tagged w2_blocked when a W-2 later blocks", async () => {
-    // A later over-refund makes 2024 Social Security negative for `other`.
-    await insertIssuedRun(other.employeeId, "2024-09-15", {
+    const { employeeId, row } = await cleanYear(2020, "137700.00");
+    const filed = await markFiled(row.id);
+    expect(filed.statusCode, filed.body).toBe(200);
+    // A later over-refund makes 2020 Social Security negative.
+    await insertIssuedRun(employeeId, "2020-09-15", {
       gross_pay: "0.00",
       federal_withholding: "0.00",
       social_security: "-62.01",
       medicare: "0.00",
     });
-    const res = await get("/api/admin/tax-filings?year=2024&formType=w2_w3");
-    const [row] = (res.json() as { filings: Record<string, unknown>[] }).filings;
-    expect(row?.status).toBe("filed");
-    expect(row?.issues).toEqual([]);
+    const res = await get("/api/admin/tax-filings?year=2020&formType=w2_w3");
+    const [listed] = (res.json() as { filings: Record<string, unknown>[] }).filings;
+    expect(listed?.status).toBe("filed");
+    expect(listed?.issues).toEqual([]);
+  });
+
+  it("a refresh from a stale read never overwrites a worksheet filed since", async () => {
+    const { employeeId, row: stale } = await cleanYear(2018, "128400.00");
+    // Sequential stand-in for the race: the admin records the filing after
+    // the refresh read the row, then new figures arrive for the year.
+    const filed = await markFiled(stale.id);
+    expect(filed.statusCode, filed.body).toBe(200);
+    await insertIssuedRun(employeeId, "2018-06-15", consistentRun());
+    expect(await refreshAnnualWorksheet(t.db, stale)).toBe(false);
+    const after = await w2w3Row(2018);
+    expect(after.status).toBe("filed");
+    expect(after.worksheetHash).toBe(stale.worksheetHash);
+    expect(after.worksheet).toEqual(stale.worksheet);
   });
 });
