@@ -105,7 +105,7 @@ async function lockEmployeeRuns(tx: Tx, employeeId: number): Promise<void> {
 function ytdOrderConflict(later: { payDate: string }): PayrollServiceError {
   return new PayrollServiceError(
     "ytd_order_conflict",
-    `A payroll paid on ${later.payDate} for this employee is already issued, so this earlier payment would be missing from its year-to-date totals. Set the pay date to the date this payment is actually made.`,
+    `This employee already has a payroll issued with a later pay date (${later.payDate}). Payrolls must be issued in the order they are paid, or that later payslip's year-to-date totals would leave this payment out. Nothing was approved or issued. Void this draft and generate it again with the date you actually pay it.`,
   );
 }
 
