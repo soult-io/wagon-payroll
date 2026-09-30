@@ -89,7 +89,7 @@ jobs:
       # Keyed per run so each run saves a fresh file; restore-keys picks the
       # newest earlier one.
       - name: Restore incremental results
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ${{ matrix.dir }}/${{ matrix.incremental }}
           key: stryker-incremental-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -109,7 +109,7 @@ jobs:
       # valid and the next run re-tests only what changed.
       - name: Save incremental results
         if: always() && hashFiles(format('{0}/{1}', matrix.dir, matrix.incremental)) != ''
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: ${{ matrix.dir }}/${{ matrix.incremental }}
           key: stryker-incremental-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
