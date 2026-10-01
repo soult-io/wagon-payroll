@@ -40,6 +40,13 @@ vi.mock("@payroll/shared", async (importOriginal) => {
 });
 
 const TODAY = "2026-09-29";
+
+/**
+ * Issue-time wall clock (Spec 26 (PAY-173) D9 refuses issuing a past pay date
+ * in an ended year). Each fixture run is issued on Dec 31 of its own pay year,
+ * as a real company would have issued it; the W-2 figures do not depend on it.
+ */
+let issueAt = new Date("2025-12-31T12:00:00Z");
 /** Fixture amount fragments that must never appear in a body or a log line. */
 const AMOUNTS = ["8000", "1111", "109333", "13333", "1061.17", "826.68", "193.32"];
 
@@ -49,7 +56,10 @@ let roundingId: number;
 const logLines: string[] = [];
 
 beforeAll(async () => {
-  t = await createTestApp({ logLevel: "info" }, { logStream: { write: (m) => logLines.push(m) } });
+  t = await createTestApp(
+    { logLevel: "info" },
+    { logStream: { write: (m) => logLines.push(m) }, clock: () => issueAt },
+  );
   await seedDatabase(t.db as unknown as SeedDb);
   const admin = await inviteAndOnboard(t, { email: "defect-admin@test.dev", role: "admin" });
   ADMIN = sessionHeader((await login(t, admin.email, TEST_PASSWORD)).sessionCookie);
@@ -91,6 +101,7 @@ async function addCompensation(employeeId: number, amount: number): Promise<void
 }
 
 async function issueRun(employeeId: number, year: number, month: number): Promise<void> {
+  issueAt = new Date(`${year}-12-31T12:00:00Z`);
   const gen = await t.app.inject({
     method: "POST",
     url: "/api/admin/payroll-runs/generate",

@@ -57,6 +57,13 @@ import { inviteAndOnboard, login, sessionHeader, TEST_PASSWORD } from "./flow-he
 const GOLDEN_COMMIT = "1fbd87e40a701e026709726a8a2716df924310d1";
 const TODAY = "2026-09-29";
 
+/**
+ * Issue-time wall clock (Spec 26 (PAY-173) D9 refuses issuing a past pay date
+ * in an ended year). Each fixture run is issued on Dec 31 of its own pay year,
+ * as a real company would have issued it; the W-2 figures do not depend on it.
+ */
+let issueAt = new Date("2025-12-31T12:00:00Z");
+
 // ---------------------------------------------------------------------------
 // Golden literals (captured on GOLDEN_COMMIT — do not edit by hand)
 // ---------------------------------------------------------------------------
@@ -104,7 +111,7 @@ let g07Id: number;
 
 beforeAll(async () => {
   expect(GOLDEN_COMMIT).toMatch(/^[0-9a-f]{40}$/);
-  t = await createTestApp();
+  t = await createTestApp({}, { clock: () => issueAt });
   await seedDatabase(t.db as unknown as SeedDb);
   const admin = await inviteAndOnboard(t, { email: "cents-admin@test.dev", role: "admin" });
   ADMIN = sessionHeader((await login(t, admin.email, TEST_PASSWORD)).sessionCookie);
@@ -176,6 +183,7 @@ async function addCompensation(employeeId: number, amount: number, from: string)
 }
 
 async function issueRun(employeeId: number, year: number, month: number): Promise<void> {
+  issueAt = new Date(`${year}-12-31T12:00:00Z`);
   const gen = await t.app.inject({
     method: "POST",
     url: "/api/admin/payroll-runs/generate",
