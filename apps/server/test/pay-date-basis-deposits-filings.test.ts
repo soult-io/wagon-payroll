@@ -114,9 +114,7 @@ describe("S-4: deposits, 941 and W-2 follow the pay date", () => {
   it("W-2 2027 box 1/2/4 include the Jan-5 payment; W-2 2026 excludes it", async () => {
     const pick = async (year: number) => {
       const f = (await w2FiguresForYear(t.db, year)).find((r) => r.employeeId === emp);
-      return f
-        ? { box1: cents(f.box1Wages), box2: cents(f.box2FederalWithheld), box4: cents(f.box4SsTax) }
-        : null;
+      return f ? { box1: f.box1Cents, box2: f.box2Cents, box4: f.box4Cents } : null;
     };
     expect({ w2027: await pick(2027), w2026: await pick(2026) }).toEqual({
       w2027: { box1: jan.gross_pay, box2: jan.federal_withholding, box4: jan.social_security },
