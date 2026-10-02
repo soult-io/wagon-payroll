@@ -391,6 +391,9 @@ describe("GET /api/export/tax-deposits", () => {
     const cases: [string, string][] = [
       ["/api/export/tax-deposits?from=2026-1-1", "invalid_date"],
       ["/api/export/tax-deposits?to=20260930", "invalid_date"],
+      ["/api/export/tax-deposits?from=2026-02-30", "invalid_date"],
+      ["/api/export/tax-deposits?to=2026-13-01", "invalid_date"],
+      ["/api/export/tax-deposits?from=", "invalid_date"],
       ["/api/export/tax-deposits?from=2026-09-30&to=2026-07-01", "invalid_range"],
       ["/api/export/tax-deposits?jurisdiction=ca", "invalid_jurisdiction"],
       ["/api/export/tax-deposits?jurisdiction=FEDERAL", "invalid_jurisdiction"],

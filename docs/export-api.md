@@ -251,7 +251,9 @@ acknowledgment number. Same auth, read-only and audited
   `periodKind = "quarter"` (state quarterly depositors).
 - `status`: `pending`, `deposited`, `overdue`, or `superseded`. `supersededAt`
   is an ISO timestamp on superseded rows, else `null`.
-- `range` echoes the request; an omitted bound is `null`.
+- `range` echoes the request; an omitted bound is `null`. An empty value
+  (`?from=`) or a date that does not exist (`2026-02-30`) is rejected with
+  `400 invalid_date`; leave the parameter out instead.
 - Order: `periodStart`, `jurisdiction`, `periodKind`, then insertion order
   (byte order, independent of the database locale).
 
@@ -309,9 +311,11 @@ figures and any IRS notice adjustments. Same auth, read-only and audited
 - `quarter` is 1 to 4 for Form 941 and `null` for the annual forms (940,
   W-2/W-3).
 - `status`: `not_started`, `ready` (worksheet computed), or `filed`.
-- `worksheet` is the frozen line-by-line worksheet, passed through verbatim:
-  its amounts are **decimal strings to the cent** and `worksheetHash` covers
-  them. Some fields are rates (`futaRate`, `sutaCreditRate`), not money. All
+- `worksheet` is the frozen line-by-line worksheet with its values
+  unchanged: amounts are **decimal strings to the cent**. Key order is the
+  database's, not the order the app wrote; `worksheetHash` is the SHA-256 of
+  the worksheet JSON with keys sorted at every level, so sort keys the same
+  way before checking it. Some fields are rates (`futaRate`, `sutaCreditRate`), not money. All
   worksheets are company-level totals. `null` until first computed.
 - `adjustments` amounts are integer cents. The free-text note on an
   adjustment is never exported.

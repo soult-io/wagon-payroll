@@ -54,6 +54,14 @@ const ENTRY_CATEGORIES = [
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const YEAR_RE = /^\d{4}$/;
+
+/** YYYY-MM-DD that exists on the calendar (2026-02-30 fails before it reaches Postgres). */
+function isCalendarDate(s: string): boolean {
+  if (!DATE_RE.test(s)) return false;
+  const [y = 0, m = 0, d = 0] = s.split("-").map((p) => Number.parseInt(p, 10));
+  const date = new Date(Date.UTC(y, m - 1, d));
+  return date.getUTCFullYear() === y && date.getUTCMonth() === m - 1 && date.getUTCDate() === d;
+}
 /** 'federal' or a 2-letter state code — the tax_deposits.jurisdiction values. */
 const JURISDICTION_RE = /^(federal|[A-Z]{2})$/;
 const FILING_FORMS = ["941", "940", "w2_w3"] as const;
@@ -150,10 +158,10 @@ function parseDepositQuery(req: FastifyRequest, reply: FastifyReply): DepositQue
     badRequest(reply, error, message);
     return null;
   };
-  if (q.from !== undefined && !DATE_RE.test(q.from)) {
+  if (q.from !== undefined && !isCalendarDate(q.from)) {
     return fail("invalid_date", "from must be YYYY-MM-DD");
   }
-  if (q.to !== undefined && !DATE_RE.test(q.to)) {
+  if (q.to !== undefined && !isCalendarDate(q.to)) {
     return fail("invalid_date", "to must be YYYY-MM-DD");
   }
   if (q.from && q.to && q.from > q.to) {
