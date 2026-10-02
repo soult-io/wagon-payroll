@@ -6,6 +6,54 @@ All notable changes to this project will be documented here. Format follows
 
 ## [Unreleased]
 
+## [1.27.0] - 2026-10-02
+
+### Changed
+
+- **Payroll follows the pay date (PAY-173)** — a run's tax tables, tax year
+  and year-to-date totals now come from its pay date, not its period start.
+  W-4 and state withholding choices are read as of the pay date (or the
+  period end, if earlier). A federal W-4 exemption ends on February 16 of the
+  next year unless a new W-4 is filed. Deposits, the 941 quarter and the W-2
+  year already followed the pay date; now the paycheck math does too.
+- **W-2 and W-3 figures are exact to the cent (PAY-162)** — boxes 1–6 and the
+  W-3 totals are added up in whole cents instead of decimal numbers. Printed
+  figures for past years do not change.
+
+### Added
+
+- **Safer approve and issue (PAY-173)** — a draft that is out of date
+  (something it depends on changed after it was made) can't be approved or
+  issued until it is generated again. Payrolls must be issued in the order
+  they are paid. A payroll whose pay date is in a year that has already ended
+  can't be issued yet; the message explains what to do and never asks you to
+  change the date.
+- **W-4 dates checked (PAY-173)** — a W-4's start date must fall in the range
+  the IRS allows from the date it was filed. When a requested date is outside
+  it, the app suggests a date and fills it in; nothing is moved without you
+  seeing it. A filed date in the future is refused.
+- **W-2 checks (PAY-162)** — a W-2 whose Social Security or Medicare tax
+  doesn't fit its wages, or that has a negative amount, is held: it can't be
+  printed or downloaded, the W-3 waits, and employees aren't told their W-2
+  is ready until it is fixed. Missing federal tax settings for a year block
+  that year's W-2s with a clear message.
+- **Where employees live and work (PAY-163, PAY-120)** — record each
+  employee's home state and locality (New York City, Yonkers, Maryland
+  counties). A read-only check lists who would be affected by local taxes the
+  app doesn't handle yet. Nothing is blocked yet.
+- **State tax account numbers (PAY-116)** — enter each state's employer
+  account number on Config → Company. Numbers are stored encrypted and shown
+  masked. They will print in W-2 box 15.
+
+### Fixed
+
+- Approving, issuing and voiding the same employee's payroll at the same
+  moment can no longer overwrite an issued payroll (PAY-173).
+- An invalid `APP_TZ` setting now stops the server at startup with a clear
+  message instead of failing every issue later (PAY-173).
+- Impossible dates such as 2026-02-30 are refused instead of returning a
+  server error (PAY-163).
+
 ## [1.26.0] - 2026-09-26
 
 ### Fixed
