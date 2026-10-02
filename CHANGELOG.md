@@ -6,6 +6,17 @@ All notable changes to this project will be documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Tax deposits and filings in the export API (PAY-197)** — two new
+  read-only endpoints for your accountant's tools:
+  `GET /api/export/tax-deposits` lists each payroll tax deposit with its
+  amount in cents, due date, status, deposit date and EFTPS acknowledgment
+  number; `GET /api/export/tax-filings` lists each 941, 940 and W-2/W-3
+  filing with its saved worksheet and any IRS notice adjustments. Same
+  export token as the payroll-runs export; every call is logged. See
+  `docs/export-api.md`.
+
 ## [1.27.0] - 2026-10-02
 
 ### Changed

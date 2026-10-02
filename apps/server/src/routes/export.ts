@@ -21,10 +21,20 @@
 
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { and, asc, eq, gte, inArray, lte } from "drizzle-orm";
-import { auditEvents, company, payrollEntries, payrollRuns } from "@payroll/db";
+import { and, asc, eq, gte, inArray, lte, ne, type SQL, sql } from "drizzle-orm";
+import {
+  auditEvents,
+  company,
+  payrollEntries,
+  payrollRuns,
+  taxAdjustments,
+  taxDeposits,
+  taxFilings,
+} from "@payroll/db";
+import { parseCents } from "@payroll/shared";
 import type { AppConfig } from "../config.js";
 import { decryptField } from "../crypto/field-encryption.js";
+import { isIsoDate } from "../payroll/run-dates.js";
 import { ContractorServiceError, yearEndSummary } from "../contractors/service.js";
 import type { Db } from "../db.js";
 
@@ -44,6 +54,10 @@ const ENTRY_CATEGORIES = [
 ] as const;
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const YEAR_RE = /^\d{4}$/;
+/** 'federal' or a 2-letter state code — the tax_deposits.jurisdiction values. */
+const JURISDICTION_RE = /^(federal|[A-Z]{2})$/;
+const FILING_FORMS = ["941", "940", "w2_w3"] as const;
 
 interface ExportDeps {
   db: Db;
@@ -116,6 +130,50 @@ function parseParams(req: FastifyRequest, reply: FastifyReply): ExportParams | n
     return null;
   }
   return { from: q.from, to: q.to, format };
+}
+
+interface DepositQuery {
+  from?: string | undefined;
+  to?: string | undefined;
+  jurisdiction?: string | undefined;
+  includeSuperseded: boolean;
+}
+
+/** Validate the tax-deposits query. Returns null after sending the 400 reply. */
+function parseDepositQuery(req: FastifyRequest, reply: FastifyReply): DepositQuery | null {
+  const q = req.query as {
+    from?: string;
+    to?: string;
+    jurisdiction?: string;
+    includeSuperseded?: string;
+  };
+  const fail = (error: string, message: string) => {
+    badRequest(reply, error, message);
+    return null;
+  };
+  // Calendar-checked (2026-02-30 fails here, not in Postgres).
+  if (q.from !== undefined && !isIsoDate(q.from)) {
+    return fail("invalid_date", "from must be YYYY-MM-DD");
+  }
+  if (q.to !== undefined && !isIsoDate(q.to)) {
+    return fail("invalid_date", "to must be YYYY-MM-DD");
+  }
+  if (q.from && q.to && q.from > q.to) {
+    return fail("invalid_range", "from must be on or before to");
+  }
+  if (q.jurisdiction !== undefined && !JURISDICTION_RE.test(q.jurisdiction)) {
+    return fail("invalid_jurisdiction", "jurisdiction must be federal or a 2-letter state code");
+  }
+  const flag = q.includeSuperseded ?? "false";
+  if (flag !== "true" && flag !== "false") {
+    return fail("invalid_include_superseded", "includeSuperseded must be true or false");
+  }
+  return {
+    from: q.from,
+    to: q.to,
+    jurisdiction: q.jurisdiction,
+    includeSuperseded: flag === "true",
+  };
 }
 
 /** The work state frozen in a run snapshot (template ≥1.2.0), else null. */
@@ -241,6 +299,152 @@ function toCsv(runs: RunPayload[]): string {
     ].join(","),
   );
   return `${[header, ...lines].join("\n")}\n`;
+}
+
+/** Byte-order comparison (collation-independent, so output bytes never depend on the DB locale). */
+function cmp(a: string | number, b: string | number): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * Last day of the deposit period: the month of period_start, or the quarter
+ * that starts there ('quarter' rows start in Jan/Apr/Jul/Oct — DB check).
+ */
+function periodEndOf(periodStart: string, periodKind: string): string {
+  const [y = 0, m = 0] = periodStart.split("-").map((p) => Number.parseInt(p, 10));
+  const months = periodKind === "quarter" ? 3 : 1;
+  // Day 0 of the month after the period = the period's last day.
+  return new Date(Date.UTC(y, m - 1 + months, 0)).toISOString().slice(0, 10);
+}
+
+/**
+ * PAY-197: tax_deposits rows for the export, canonical order (period_start,
+ * jurisdiction, period_kind, id). Amounts are integer cents converted from
+ * NUMERIC(12,2) text by string arithmetic (parseCents), never a float.
+ */
+async function fetchDeposits(db: Db, q: DepositQuery) {
+  const conditions: SQL[] = [];
+  if (q.from) conditions.push(gte(taxDeposits.periodStart, q.from));
+  if (q.to) conditions.push(lte(taxDeposits.periodStart, q.to));
+  if (q.jurisdiction) conditions.push(eq(taxDeposits.jurisdiction, q.jurisdiction));
+  if (!q.includeSuperseded) conditions.push(ne(taxDeposits.status, "superseded"));
+
+  const rows = await db
+    .select({
+      id: taxDeposits.id,
+      jurisdiction: taxDeposits.jurisdiction,
+      periodKind: taxDeposits.periodKind,
+      periodStart: taxDeposits.periodStart,
+      amount: taxDeposits.amount,
+      dueDate: taxDeposits.dueDate,
+      status: taxDeposits.status,
+      depositedOn: taxDeposits.depositedOn,
+      eftpsConfirmation: taxDeposits.eftpsConfirmation,
+      supersededAt: taxDeposits.supersededAt,
+    })
+    .from(taxDeposits)
+    .where(and(...conditions));
+
+  rows.sort(
+    (a, b) =>
+      cmp(a.periodStart, b.periodStart) ||
+      cmp(a.jurisdiction, b.jurisdiction) ||
+      cmp(a.periodKind, b.periodKind) ||
+      cmp(a.id, b.id),
+  );
+
+  return rows.map((r) => ({
+    jurisdiction: r.jurisdiction,
+    // Federal deposits are Form 941 (FUTA/940 deposits are not tracked in-app);
+    // state withholding deposits have no federal form.
+    form: r.jurisdiction === "federal" ? "941" : null,
+    periodKind: r.periodKind,
+    periodStart: r.periodStart,
+    periodEnd: periodEndOf(r.periodStart, r.periodKind),
+    amountCents: parseCents(r.amount),
+    dueDate: r.dueDate,
+    status: r.status,
+    depositedOn: r.depositedOn,
+    // Verbatim text: acknowledgment numbers keep their leading zeros.
+    confirmation: r.eftpsConfirmation,
+    supersededAt: r.supersededAt ? r.supersededAt.toISOString() : null,
+  }));
+}
+
+/**
+ * PAY-197: tax_filings rows for a year with their linked tax_adjustments.
+ * The frozen worksheet is passed through verbatim (worksheetHash covers its
+ * decimal strings). Annual forms are stored with quarter 0 and exported as
+ * quarter null. Adjustment `note` (free text) is never exported.
+ */
+async function fetchFilings(db: Db, year: number, form: string | undefined) {
+  const conditions: SQL[] = [eq(taxFilings.year, year)];
+  if (form) conditions.push(eq(taxFilings.formType, form));
+
+  const filings = await db
+    .select({
+      id: taxFilings.id,
+      formType: taxFilings.formType,
+      year: taxFilings.year,
+      quarter: taxFilings.quarter,
+      dueDate: taxFilings.dueDate,
+      status: taxFilings.status,
+      filedOn: taxFilings.filedOn,
+      filingMethod: taxFilings.filingMethod,
+      filingReference: taxFilings.filingReference,
+      worksheetHash: taxFilings.worksheetHash,
+      worksheet: taxFilings.worksheet,
+    })
+    .from(taxFilings)
+    .where(and(...conditions));
+  filings.sort((a, b) => cmp(a.formType, b.formType) || cmp(a.quarter, b.quarter));
+
+  const adjustments =
+    filings.length === 0
+      ? []
+      : await db
+          .select({
+            filingId: taxAdjustments.filingId,
+            kind: taxAdjustments.kind,
+            noticeDate: taxAdjustments.noticeDate,
+            amountDue: taxAdjustments.amountDue,
+            abatedAmount: taxAdjustments.abatedAmount,
+            amountPaid: taxAdjustments.amountPaid,
+            paidOn: taxAdjustments.paidOn,
+            eftpsConfirmation: taxAdjustments.eftpsConfirmation,
+          })
+          .from(taxAdjustments)
+          .where(
+            inArray(
+              taxAdjustments.filingId,
+              filings.map((f) => f.id),
+            ),
+          )
+          .orderBy(sql`${taxAdjustments.noticeDate} asc nulls last`, asc(taxAdjustments.id));
+
+  return filings.map((f) => ({
+    form: f.formType,
+    year: f.year,
+    quarter: f.quarter === 0 ? null : f.quarter,
+    dueDate: f.dueDate,
+    status: f.status,
+    filedOn: f.filedOn,
+    filingMethod: f.filingMethod,
+    filingReference: f.filingReference,
+    worksheetHash: f.worksheetHash,
+    worksheet: f.worksheet ?? null,
+    adjustments: adjustments
+      .filter((a) => a.filingId === f.id)
+      .map((a) => ({
+        kind: a.kind,
+        noticeDate: a.noticeDate,
+        amountDueCents: parseCents(a.amountDue),
+        abatedAmountCents: parseCents(a.abatedAmount),
+        amountPaidCents: parseCents(a.amountPaid),
+        paidOn: a.paidOn,
+        confirmation: a.eftpsConfirmation,
+      })),
+  }));
 }
 
 /**
@@ -381,5 +585,63 @@ export function registerExportRoutes(app: FastifyInstance, deps: ExportDeps): vo
         formRequired: row.formRequired,
       })),
     };
+  });
+
+  /**
+   * PAY-197: tax deposits (EFTPS acknowledgment numbers, due dates, status)
+   * for the Accountant's read-only MCP. Range keys on period_start. No EIN,
+   * no internal ids, no reminder bookkeeping. Read-only + audited.
+   */
+  app.get("/api/export/tax-deposits", async (req, reply) => {
+    if (!(await authorize(req, reply, config))) return;
+
+    const q = parseDepositQuery(req, reply);
+    if (!q) return;
+
+    const deposits = await fetchDeposits(db, q);
+
+    await db.insert(auditEvents).values({
+      actorId: EXPORT_ACTOR,
+      action: "export.tax_deposits",
+      entity: "export",
+      entityId: `${q.from ?? ""}..${q.to ?? ""}`,
+      after: {
+        jurisdiction: q.jurisdiction ?? null,
+        includeSuperseded: q.includeSuperseded,
+        depositCount: deposits.length,
+      },
+    });
+
+    return { range: { from: q.from ?? null, to: q.to ?? null }, deposits };
+  });
+
+  /**
+   * PAY-197: tax filings for a year (941 per quarter, 940, W-2/W-3) with the
+   * frozen worksheet and linked notice adjustments in integer cents. The
+   * worksheets are company-level aggregates. Read-only + audited.
+   */
+  app.get("/api/export/tax-filings", async (req, reply) => {
+    if (!(await authorize(req, reply, config))) return;
+
+    const q = req.query as { year?: string; form?: string };
+    if (!q.year || !YEAR_RE.test(q.year)) {
+      return badRequest(reply, "invalid_year", "year is required as YYYY");
+    }
+    if (q.form !== undefined && !(FILING_FORMS as readonly string[]).includes(q.form)) {
+      return badRequest(reply, "invalid_form", "form must be 941, 940 or w2_w3");
+    }
+    const year = Number.parseInt(q.year, 10);
+
+    const filings = await fetchFilings(db, year, q.form);
+
+    await db.insert(auditEvents).values({
+      actorId: EXPORT_ACTOR,
+      action: "export.tax_filings",
+      entity: "export",
+      entityId: String(year),
+      after: { year, form: q.form ?? null, filingCount: filings.length },
+    });
+
+    return { year, filings };
   });
 }
