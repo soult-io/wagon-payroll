@@ -244,11 +244,25 @@ acknowledgment number. Same auth, read-only and audited
   `NUMERIC(12,2)` by string arithmetic.
 - `form` is `"941"` for federal rows and `null` for state rows. FUTA (Form
   940) deposits are not tracked in the app and never appear here.
-- `confirmation` is the acknowledgment number as entered (EFTPS for federal,
-  the state portal reference for state rows), a string kept verbatim. Do not
+- `confirmation` is the EFTPS EFT acknowledgment number (15 digits) as
+  entered for federal rows, or the state portal reference for state rows, a
+  string kept verbatim. Do not
   parse it as a number: leading zeros matter. `null` until recorded.
 - `periodEnd` is the last day of the month, or of the quarter for
   `periodKind = "quarter"` (state quarterly depositors).
+- For federal rows the period is the calendar month of the **pay dates**
+  (IRS Pub 15 monthly schedule: payments made during the month), not the
+  period worked. In EFTPS the deposit is a Form 941 payment for the quarter
+  that contains `periodStart`.
+- Federal rows assume a monthly-schedule Form 941 filer. The semiweekly
+  schedule, the $100,000 next-day rule and Form 944 are not modelled.
+- `dueDate` is the app's due date: the 15th of the month after `periodEnd`
+  for federal rows (the state's schedule for state rows), moved to Monday
+  when it falls on a weekend. Legal holidays are not applied. The IRS moves
+  a due date that falls on a District of Columbia legal holiday to the next
+  business day (Pub 15), so the app's date can be one business day earlier
+  than the IRS date, never later. `status = "overdue"` follows the app's
+  date.
 - `status`: `pending`, `deposited`, `overdue`, or `superseded`. `supersededAt`
   is an ISO timestamp on superseded rows, else `null`.
 - `range` echoes the request; an omitted bound is `null`. An empty value
@@ -319,8 +333,18 @@ figures and any IRS notice adjustments. Same auth, read-only and audited
   worksheets are company-level totals. `null` until first computed.
 - `adjustments` amounts are integer cents. The free-text note on an
   adjustment is never exported.
-- `dueDate` is the app's due date: a weekend rolls to Monday; federal
-  holidays are not applied.
+- `dueDate` is the app's due date: a weekend rolls to Monday; legal
+  holidays (District of Columbia, per Pub 15) are not applied, so the app's
+  date can be earlier than the IRS date, never later. The 940 due date is
+  always January 31 (rolled); the app does not apply the February 10
+  extension the Form 940 instructions allow when all FUTA tax was deposited
+  on time.
+- The 940 worksheet's `balanceDue` assumes no FUTA deposits were made (the
+  app does not track them). If FUTA was deposited through EFTPS, reconcile
+  `balanceDue` against those deposits. `sutaCreditRate` and `futaRate` may
+  be absent on 940 worksheets saved before v1.11.
+- The 941 worksheet's `line13Deposits` is the app's figure (its deposit rows
+  plus adjustment payments), not an EFTPS balance.
 - Order: `form`, `quarter`; adjustments by `noticeDate` (undated last),
   then insertion order.
 
