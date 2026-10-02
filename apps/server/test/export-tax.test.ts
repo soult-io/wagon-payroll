@@ -37,6 +37,19 @@ async function get(url: string) {
   return t.app.inject({ method: "GET", url, headers: AUTH });
 }
 
+/** GET `url` and return the single export audit row it wrote. */
+async function auditRowWrittenBy(url: string) {
+  const exportAudit = () =>
+    t.db.select().from(auditEvents).where(eq(auditEvents.actorId, EXPORT_ACTOR));
+  const before = await exportAudit();
+  await get(url);
+  const after = await exportAudit();
+  expect(after).toHaveLength(before.length + 1);
+  const row = after.find((r) => !before.some((b) => b.id === r.id));
+  if (!row) throw new Error("no new audit row");
+  return row;
+}
+
 beforeAll(async () => {
   t = await createTestApp({ exportToken: TOKEN });
   await t.db.insert(company).values({
@@ -408,17 +421,9 @@ describe("GET /api/export/tax-deposits", () => {
   });
 
   it("each successful call writes one audit row with the row count", async () => {
-    const before = await t.db
-      .select()
-      .from(auditEvents)
-      .where(eq(auditEvents.actorId, EXPORT_ACTOR));
-    await get("/api/export/tax-deposits?from=2026-08-01&to=2026-08-31&jurisdiction=federal");
-    const after = await t.db
-      .select()
-      .from(auditEvents)
-      .where(eq(auditEvents.actorId, EXPORT_ACTOR));
-    expect(after).toHaveLength(before.length + 1);
-    const row = after.find((r) => !before.some((b) => b.id === r.id))!;
+    const row = await auditRowWrittenBy(
+      "/api/export/tax-deposits?from=2026-08-01&to=2026-08-31&jurisdiction=federal",
+    );
     expect(row).toMatchObject({
       action: "export.tax_deposits",
       entity: "export",
@@ -549,17 +554,7 @@ describe("GET /api/export/tax-filings", () => {
   });
 
   it("each successful call writes one audit row with the filing count", async () => {
-    const before = await t.db
-      .select()
-      .from(auditEvents)
-      .where(eq(auditEvents.actorId, EXPORT_ACTOR));
-    await get("/api/export/tax-filings?year=2026&form=941");
-    const after = await t.db
-      .select()
-      .from(auditEvents)
-      .where(eq(auditEvents.actorId, EXPORT_ACTOR));
-    expect(after).toHaveLength(before.length + 1);
-    const row = after.find((r) => !before.some((b) => b.id === r.id))!;
+    const row = await auditRowWrittenBy("/api/export/tax-filings?year=2026&form=941");
     expect(row).toMatchObject({ action: "export.tax_filings", entity: "export", entityId: "2026" });
     expect(row.after).toEqual({ year: 2026, form: "941", filingCount: 2 });
   });
