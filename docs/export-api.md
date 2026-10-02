@@ -199,6 +199,127 @@ only address-like data is the company header (`legalName`, decrypted `ein`).
 | 409  | `no_threshold_config` (run seeds / enter the year)  |
 | 503  | export disabled (no `export-token` in SECRETS_DIR)  |
 
+## Tax deposits (PAY-197)
+
+```
+GET /api/export/tax-deposits?from=YYYY-MM-DD&to=YYYY-MM-DD&jurisdiction=federal&includeSuperseded=false
+```
+
+The payroll tax deposits recorded in the app: what is due, when, and, once
+the owner marks a deposit made, the deposit date and the EFTPS
+acknowledgment number. Same auth, read-only and audited
+(`action=export.tax_deposits`). No company EIN, no employee data.
+
+| Param               | Default | Notes                                                      |
+| ------------------- | ------- | ---------------------------------------------------------- |
+| `from`              | (none)  | Inclusive lower bound on **period_start**                  |
+| `to`                | (none)  | Inclusive upper bound on **period_start**                  |
+| `jurisdiction`      | (all)   | `federal` or a 2-letter state code (`CA`)                  |
+| `includeSuperseded` | `false` | `true` adds rows replaced by a state period transition     |
+
+### JSON response
+
+```json
+{
+  "range": { "from": "2026-08-01", "to": "2026-09-30" },
+  "deposits": [
+    {
+      "jurisdiction": "federal",
+      "form": "941",
+      "periodKind": "month",
+      "periodStart": "2026-08-01",
+      "periodEnd": "2026-08-31",
+      "amountCents": 123456,
+      "dueDate": "2026-09-15",
+      "status": "deposited",
+      "depositedOn": "2026-08-20",
+      "confirmation": "012345678901234",
+      "supersededAt": null
+    }
+  ]
+}
+```
+
+- `amountCents` is an **integer number of cents**, converted from the stored
+  `NUMERIC(12,2)` by string arithmetic.
+- `form` is `"941"` for federal rows and `null` for state rows. FUTA (Form
+  940) deposits are not tracked in the app and never appear here.
+- `confirmation` is the acknowledgment number as entered (EFTPS for federal,
+  the state portal reference for state rows), a string kept verbatim. Do not
+  parse it as a number: leading zeros matter. `null` until recorded.
+- `periodEnd` is the last day of the month, or of the quarter for
+  `periodKind = "quarter"` (state quarterly depositors).
+- `status`: `pending`, `deposited`, `overdue`, or `superseded`. `supersededAt`
+  is an ISO timestamp on superseded rows, else `null`.
+- `range` echoes the request; an omitted bound is `null`.
+- Order: `periodStart`, `jurisdiction`, `periodKind`, then insertion order
+  (byte order, independent of the database locale).
+
+## Tax filings (PAY-197)
+
+```
+GET /api/export/tax-filings?year=YYYY&form=941|940|w2_w3
+```
+
+The filings the company must make for a year, with the frozen worksheet
+figures and any IRS notice adjustments. Same auth, read-only and audited
+(`action=export.tax_filings`).
+
+| Param  | Default    | Notes                       |
+| ------ | ---------- | --------------------------- |
+| `year` | (required) | Tax year `YYYY`             |
+| `form` | (all)      | `941`, `940`, or `w2_w3`    |
+
+### JSON response
+
+```json
+{
+  "year": 2026,
+  "filings": [
+    {
+      "form": "941",
+      "year": 2026,
+      "quarter": 3,
+      "dueDate": "2026-11-02",
+      "status": "ready",
+      "filedOn": null,
+      "filingMethod": null,
+      "filingReference": null,
+      "worksheetHash": "<sha256 of the worksheet>",
+      "worksheet": { "form": "941", "year": 2026, "quarter": 3, "line2Wages": "12000.00" },
+      "adjustments": [
+        {
+          "kind": "CP220",
+          "noticeDate": "2026-09-10",
+          "amountDueCents": 2500,
+          "abatedAmountCents": 0,
+          "amountPaidCents": 2500,
+          "paidOn": "2026-09-20",
+          "confirmation": "001112223334445"
+        }
+      ]
+    }
+  ]
+}
+```
+
+- One entry per stored filing row. The 941 row for a quarter is created on
+  the first daily run after the quarter ends, so a quarter in progress is
+  absent.
+- `quarter` is 1 to 4 for Form 941 and `null` for the annual forms (940,
+  W-2/W-3).
+- `status`: `not_started`, `ready` (worksheet computed), or `filed`.
+- `worksheet` is the frozen line-by-line worksheet, passed through verbatim:
+  its amounts are **decimal strings to the cent** and `worksheetHash` covers
+  them. Some fields are rates (`futaRate`, `sutaCreditRate`), not money. All
+  worksheets are company-level totals. `null` until first computed.
+- `adjustments` amounts are integer cents. The free-text note on an
+  adjustment is never exported.
+- `dueDate` is the app's due date: a weekend rolls to Monday; federal
+  holidays are not applied.
+- Order: `form`, `quarter`; adjustments by `noticeDate` (undated last),
+  then insertion order.
+
 ## Aggregation recipes (Accountant)
 
 - **Monthly 941 deposit** for month M (`from=YYYY-MM-01&to=YYYY-MM-<last>`):
@@ -220,6 +341,6 @@ only address-like data is the company header (`legalName`, decrypted `ein`).
 
 | Code | Meaning                                             |
 | ---- | --------------------------------------------------- |
-| 400  | `unsupported_status` / `invalid_date` / `invalid_range` / `unsupported_format` |
+| 400  | `unsupported_status` / `invalid_date` / `invalid_range` / `unsupported_format` (payroll-runs); `invalid_date` / `invalid_range` / `invalid_jurisdiction` / `invalid_include_superseded` (tax-deposits); `invalid_year` / `invalid_form` (tax-filings) |
 | 401  | missing or wrong bearer token                       |
 | 503  | export disabled (no `export-token` in SECRETS_DIR)  |
