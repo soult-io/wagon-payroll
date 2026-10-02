@@ -1,0 +1,534 @@
+{
+  "schemaVersion": 2,
+  "runId": "37004228729",
+  "source": "nightly",
+  "gitSha": "86e368b3ed640780671f10def752959d80b9f0ce",
+  "gitRef": "refs/heads/main",
+  "generatedAt": "2026-10-02T12:03:05.357Z",
+  "overallStatus": "passed",
+  "counts": {
+    "passed": 41,
+    "failed": 0,
+    "skipped": 19,
+    "executed": 41,
+    "total": 60,
+    "flaky": 0
+  },
+  "suites": [
+    {
+      "key": "e2e",
+      "name": "Playwright journeys",
+      "status": "passed",
+      "durationMs": 89648,
+      "counts": {
+        "passed": 41,
+        "failed": 0,
+        "flaky": 0,
+        "skipped": 19,
+        "executed": 41,
+        "total": 60
+      },
+      "tests": [
+        {
+          "name": "login page shows the product name in the tab title and the card",
+          "fullName": "brand.spec.ts login page shows the product name in the tab title and the card",
+          "status": "passed",
+          "durationMs": 320,
+          "file": "brand.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "bundlePath: relative, forward slashes, and never outside the bundle",
+          "fullName": "evidence-reporter.spec.ts harness · evidence reporter bundlePath: relative, forward slashes, and never outside the bundle",
+          "status": "passed",
+          "durationMs": 1,
+          "file": "evidence-reporter.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "readStillMeta: accepts a valid meta, rejects missing or malformed ones",
+          "fullName": "evidence-reporter.spec.ts harness · evidence reporter readStillMeta: accepts a valid meta, rejects missing or malformed ones",
+          "status": "passed",
+          "durationMs": 2,
+          "file": "evidence-reporter.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "collectSteps: one record per top-level step, with its own still",
+          "fullName": "evidence-reporter.spec.ts harness · evidence reporter collectSteps: one record per top-level step, with its own still",
+          "status": "passed",
+          "durationMs": 1,
+          "file": "evidence-reporter.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "collectSteps: a step with no still records null, never a neighbour's image",
+          "fullName": "evidence-reporter.spec.ts harness · evidence reporter collectSteps: a step with no still records null, never a neighbour's image",
+          "status": "passed",
+          "durationMs": 1,
+          "file": "evidence-reporter.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "collectSteps: a failed step is failed and keeps its still",
+          "fullName": "evidence-reporter.spec.ts harness · evidence reporter collectSteps: a failed step is failed and keeps its still",
+          "status": "passed",
+          "durationMs": 0,
+          "file": "evidence-reporter.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "findStill: a still with unreadable meta is dropped, not guessed",
+          "fullName": "evidence-reporter.spec.ts harness · evidence reporter findStill: a still with unreadable meta is dropped, not guessed",
+          "status": "passed",
+          "durationMs": 0,
+          "file": "evidence-reporter.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "findStill: a nested test.step's still belongs to the nested step",
+          "fullName": "evidence-reporter.spec.ts harness · evidence reporter findStill: a nested test.step's still belongs to the nested step",
+          "status": "passed",
+          "durationMs": 0,
+          "file": "evidence-reporter.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "findStill: a still path outside the bundle is dropped",
+          "fullName": "evidence-reporter.spec.ts harness · evidence reporter findStill: a still path outside the bundle is dropped",
+          "status": "passed",
+          "durationMs": 0,
+          "file": "evidence-reporter.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "journeyStatus: flaky is never a clean pass; interrupted is a failure",
+          "fullName": "evidence-reporter.spec.ts harness · evidence reporter journeyStatus: flaky is never a clean pass; interrupted is a failure",
+          "status": "passed",
+          "durationMs": 1,
+          "file": "evidence-reporter.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "JOURNEY_FILES: the spec 20 D4 journey set, utility specs excluded",
+          "fullName": "evidence-reporter.spec.ts harness · evidence reporter JOURNEY_FILES: the spec 20 D4 journey set, utility specs excluded",
+          "status": "passed",
+          "durationMs": 0,
+          "file": "evidence-reporter.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "a short page gives one untruncated still at the viewport height",
+          "fullName": "journey-stills.spec.ts harness · journey stills a short page gives one untruncated still at the viewport height",
+          "status": "skipped",
+          "durationMs": 0,
+          "file": "journey-stills.spec.ts",
+          "attempts": 1,
+          "skipReason": "stills are ephemeral-only (spec 20 D2)"
+        },
+        {
+          "name": "a tall page is captured in full below the cap",
+          "fullName": "journey-stills.spec.ts harness · journey stills a tall page is captured in full below the cap",
+          "status": "skipped",
+          "durationMs": 0,
+          "file": "journey-stills.spec.ts",
+          "attempts": 1,
+          "skipReason": "stills are ephemeral-only (spec 20 D2)"
+        },
+        {
+          "name": "a page over the cap is cut at the cap and flagged truncated",
+          "fullName": "journey-stills.spec.ts harness · journey stills a page over the cap is cut at the cap and flagged truncated",
+          "status": "skipped",
+          "durationMs": 0,
+          "file": "journey-stills.spec.ts",
+          "attempts": 1,
+          "skipReason": "stills are ephemeral-only (spec 20 D2)"
+        },
+        {
+          "name": "a large inner scroller refuses the still and says why",
+          "fullName": "journey-stills.spec.ts harness · journey stills a large inner scroller refuses the still and says why",
+          "status": "skipped",
+          "durationMs": 0,
+          "file": "journey-stills.spec.ts",
+          "attempts": 1,
+          "skipReason": "stills are ephemeral-only (spec 20 D2)"
+        },
+        {
+          "name": "a small inner scroller (a dropdown list) does not block the still",
+          "fullName": "journey-stills.spec.ts harness · journey stills a small inner scroller (a dropdown list) does not block the still",
+          "status": "skipped",
+          "durationMs": 0,
+          "file": "journey-stills.spec.ts",
+          "attempts": 1,
+          "skipReason": "stills are ephemeral-only (spec 20 D2)"
+        },
+        {
+          "name": "a failing step still gets its still, and its own error propagates",
+          "fullName": "journey-stills.spec.ts harness · journey stills a failing step still gets its still, and its own error propagates",
+          "status": "skipped",
+          "durationMs": 0,
+          "file": "journey-stills.spec.ts",
+          "attempts": 1,
+          "skipReason": "stills are ephemeral-only (spec 20 D2)"
+        },
+        {
+          "name": "each step in a test gets its own still file",
+          "fullName": "journey-stills.spec.ts harness · journey stills each step in a test gets its own still file",
+          "status": "skipped",
+          "durationMs": 0,
+          "file": "journey-stills.spec.ts",
+          "attempts": 1,
+          "skipReason": "stills are ephemeral-only (spec 20 D2)"
+        },
+        {
+          "name": "step returns the body's value",
+          "fullName": "journey-stills.spec.ts harness · journey stills step returns the body's value",
+          "status": "skipped",
+          "durationMs": 0,
+          "file": "journey-stills.spec.ts",
+          "attempts": 1,
+          "skipReason": "stills are ephemeral-only (spec 20 D2)"
+        },
+        {
+          "name": "journey 1: invite onboarding wizard → backup codes → fresh login with TOTP",
+          "fullName": "journeys.spec.ts journey 1: invite onboarding wizard → backup codes → fresh login with TOTP",
+          "status": "skipped",
+          "durationMs": 0,
+          "file": "journeys.spec.ts",
+          "attempts": 1,
+          "skipReason": "journeys are ephemeral-fixture only — live QA is read-only (spec 14 §3)"
+        },
+        {
+          "name": "journey 2: admin approves + issues payroll run; employee sees payslip + PDF",
+          "fullName": "journeys.spec.ts journey 2: admin approves + issues payroll run; employee sees payslip + PDF",
+          "status": "skipped",
+          "durationMs": 0,
+          "file": "journeys.spec.ts",
+          "attempts": 1,
+          "skipReason": "journeys are ephemeral-fixture only — live QA is read-only (spec 14 §3)"
+        },
+        {
+          "name": "journey 3: address change request round-trip (employee → admin approve → applied)",
+          "fullName": "journeys.spec.ts journey 3: address change request round-trip (employee → admin approve → applied)",
+          "status": "skipped",
+          "durationMs": 0,
+          "file": "journeys.spec.ts",
+          "attempts": 1,
+          "skipReason": "journeys are ephemeral-fixture only — live QA is read-only (spec 14 §3)"
+        },
+        {
+          "name": "journey 4: session expiry mid-session redirects to login (PAY-6)",
+          "fullName": "journeys.spec.ts journey 4: session expiry mid-session redirects to login (PAY-6)",
+          "status": "skipped",
+          "durationMs": 0,
+          "file": "journeys.spec.ts",
+          "attempts": 1,
+          "skipReason": "journeys are ephemeral-fixture only — live QA is read-only (spec 14 §3)"
+        },
+        {
+          "name": "journey 5: back navigation preserves the list filter state (PAY-17)",
+          "fullName": "journeys.spec.ts journey 5: back navigation preserves the list filter state (PAY-17)",
+          "status": "skipped",
+          "durationMs": 0,
+          "file": "journeys.spec.ts",
+          "attempts": 1,
+          "skipReason": "journeys are ephemeral-fixture only — live QA is read-only (spec 14 §3)"
+        },
+        {
+          "name": "journey 6: admin user visiting /my/dashboard is redirected to /admin/dashboard",
+          "fullName": "journeys.spec.ts journey 6: admin user visiting /my/dashboard is redirected to /admin/dashboard",
+          "status": "skipped",
+          "durationMs": 0,
+          "file": "journeys.spec.ts",
+          "attempts": 1,
+          "skipReason": "journeys are ephemeral-fixture only — live QA is read-only (spec 14 §3)"
+        },
+        {
+          "name": "journey 7: deposit detail view (PAY-36/PAY-37/PAY-38)",
+          "fullName": "journeys.spec.ts journey 7: deposit detail view (PAY-36/PAY-37/PAY-38)",
+          "status": "skipped",
+          "durationMs": 0,
+          "file": "journeys.spec.ts",
+          "attempts": 1,
+          "skipReason": "journeys are ephemeral-fixture only — live QA is read-only (spec 14 §3)"
+        },
+        {
+          "name": "journey 8: a state that moved to quarterly shows payments already made (PAY-91)",
+          "fullName": "journeys.spec.ts journey 8: a state that moved to quarterly shows payments already made (PAY-91)",
+          "status": "skipped",
+          "durationMs": 0,
+          "file": "journeys.spec.ts",
+          "attempts": 1,
+          "skipReason": "journeys are ephemeral-fixture only — live QA is read-only (spec 14 §3)"
+        },
+        {
+          "name": "login form keeps a gutter and never overflows horizontally at 375px",
+          "fullName": "mobile-login.spec.ts login form keeps a gutter and never overflows horizontally at 375px",
+          "status": "passed",
+          "durationMs": 212,
+          "file": "mobile-login.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "guard: the login rate-limit backoff fits inside the extended test budget",
+          "fullName": "qa-helpers.spec.ts guard: the login rate-limit backoff fits inside the extended test budget",
+          "status": "passed",
+          "durationMs": 1,
+          "file": "qa-helpers.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "login: password + TOTP (fixed seeded credentials in live QA)",
+          "fullName": "qa.spec.ts login: password + TOTP (fixed seeded credentials in live QA)",
+          "status": "passed",
+          "durationMs": 380,
+          "file": "qa.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "payslip PDF download round-trip (%PDF magic, non-trivial bytes)",
+          "fullName": "qa.spec.ts payslip PDF download round-trip (%PDF magic, non-trivial bytes)",
+          "status": "passed",
+          "durationMs": 1740,
+          "file": "qa.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "scheduler draft: seeded current-period run shows in admin approvals (read-only)",
+          "fullName": "qa.spec.ts scheduler draft: seeded current-period run shows in admin approvals (read-only)",
+          "status": "passed",
+          "durationMs": 664,
+          "file": "qa.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "contractor My Invoices: Dave sees approved+paid invoices, PDF round-trips (PAY-7)",
+          "fullName": "qa.spec.ts contractor My Invoices: Dave sees approved+paid invoices, PDF round-trips (PAY-7)",
+          "status": "passed",
+          "durationMs": 70924,
+          "file": "qa.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "PAY-8 scoped UI: contractor sees Invoices, not Payslips; /my/payslips redirects",
+          "fullName": "qa.spec.ts PAY-8 scoped UI: contractor sees Invoices, not Payslips; /my/payslips redirects",
+          "status": "passed",
+          "durationMs": 389,
+          "file": "qa.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "tax deposits: admin sees the computed schedule incl. last month (PAY-9)",
+          "fullName": "qa.spec.ts tax deposits: admin sees the computed schedule incl. last month (PAY-9)",
+          "status": "passed",
+          "durationMs": 450,
+          "file": "qa.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "W-2/W-3 filing detail: full headers, Documents column, W-3 action placement (PAY-23)",
+          "fullName": "qa.spec.ts W-2/W-3 filing detail: full headers, Documents column, W-3 action placement (PAY-23)",
+          "status": "passed",
+          "durationMs": 459,
+          "file": "qa.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "email capture: admin test email lands in Mailpit (via /api/qa/mailbox)",
+          "fullName": "qa.spec.ts email capture: admin test email lands in Mailpit (via /api/qa/mailbox)",
+          "status": "passed",
+          "durationMs": 243,
+          "file": "qa.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "ephemeral only: save a state account number and see only its mask",
+          "fullName": "state-ids.spec.ts ephemeral only: save a state account number and see only its mask",
+          "status": "skipped",
+          "durationMs": 0,
+          "file": "state-ids.spec.ts",
+          "attempts": 1,
+          "skipReason": "mutating — live QA is read-only (spec 14 §3)"
+        },
+        {
+          "name": "config page: State taxes tab renders",
+          "fullName": "state-taxes.spec.ts config page: State taxes tab renders",
+          "status": "passed",
+          "durationMs": 328,
+          "file": "state-taxes.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "employee detail: State tax tab renders work-state and election tables",
+          "fullName": "state-taxes.spec.ts employee detail: State tax tab renders work-state and election tables",
+          "status": "passed",
+          "durationMs": 738,
+          "file": "state-taxes.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "ephemeral only: assign a work state and see it in the history",
+          "fullName": "state-taxes.spec.ts ephemeral only: assign a work state and see it in the history",
+          "status": "skipped",
+          "durationMs": 1,
+          "file": "state-taxes.spec.ts",
+          "attempts": 1,
+          "skipReason": "mutating — live QA is read-only (spec 14 §3)"
+        },
+        {
+          "name": "ephemeral only: employee state election flows request → approval → payslip",
+          "fullName": "state-taxes.spec.ts ephemeral only: employee state election flows request → approval → payslip",
+          "status": "skipped",
+          "durationMs": 0,
+          "file": "state-taxes.spec.ts",
+          "attempts": 1,
+          "skipReason": "mutating — live QA is read-only (spec 14 §3)"
+        },
+        {
+          "name": "at the click, the cursor is inside the ring and the caption names the target",
+          "fullName": "walkthrough-overlay.spec.ts harness · walkthrough overlay at the click, the cursor is inside the ring and the caption names the target",
+          "status": "passed",
+          "durationMs": 1123,
+          "file": "walkthrough-overlay.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "a field being typed into keeps a dashed focus ring",
+          "fullName": "walkthrough-overlay.spec.ts harness · walkthrough overlay a field being typed into keeps a dashed focus ring",
+          "status": "passed",
+          "durationMs": 1313,
+          "file": "walkthrough-overlay.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "the caption is invisible to text locators: no strict-mode double match",
+          "fullName": "walkthrough-overlay.spec.ts harness · walkthrough overlay the caption is invisible to text locators: no strict-mode double match",
+          "status": "passed",
+          "durationMs": 2053,
+          "file": "walkthrough-overlay.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "an unregistered page never gets the overlay",
+          "fullName": "walkthrough-overlay.spec.ts harness · walkthrough overlay an unregistered page never gets the overlay",
+          "status": "passed",
+          "durationMs": 100,
+          "file": "walkthrough-overlay.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "pointing is not a screen change: no extra hold on the same screen",
+          "fullName": "walkthrough-overlay.spec.ts harness · walkthrough overlay pointing is not a screen change: no extra hold on the same screen",
+          "status": "passed",
+          "durationMs": 2038,
+          "file": "walkthrough-overlay.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "a changed screen is held before the next action; an unchanged one is not",
+          "fullName": "walkthrough-pacing.spec.ts harness · walkthrough pacing a changed screen is held before the next action; an unchanged one is not",
+          "status": "passed",
+          "durationMs": 4542,
+          "file": "walkthrough-pacing.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "fill on a registered page types one character at a time",
+          "fullName": "walkthrough-pacing.spec.ts harness · walkthrough pacing fill on a registered page types one character at a time",
+          "status": "passed",
+          "durationMs": 1486,
+          "file": "walkthrough-pacing.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "an unregistered page is untouched: fill is one input, no hold",
+          "fullName": "walkthrough-pacing.spec.ts harness · walkthrough pacing an unregistered page is untouched: fill is one input, no hold",
+          "status": "passed",
+          "durationMs": 69,
+          "file": "walkthrough-pacing.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "a page that is not being recorded is refused, never silently skipped",
+          "fullName": "walkthrough-pacing.spec.ts harness · walkthrough pacing a page that is not being recorded is refused, never silently skipped",
+          "status": "passed",
+          "durationMs": 63,
+          "file": "walkthrough-pacing.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "one page: title card, then the clip cut at its first step",
+          "fullName": "walkthrough-plan.spec.ts harness · walkthrough plan one page: title card, then the clip cut at its first step",
+          "status": "passed",
+          "durationMs": 2,
+          "file": "walkthrough-plan.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "A → B → A follows the steps: each run cut to its stretch, a caption at every switch",
+          "fullName": "walkthrough-plan.spec.ts harness · walkthrough plan A → B → A follows the steps: each run cut to its stretch, a caption at every switch",
+          "status": "passed",
+          "durationMs": 1,
+          "file": "walkthrough-plan.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "an exact recording start wins over the close-based estimate",
+          "fullName": "walkthrough-plan.spec.ts harness · walkthrough plan an exact recording start wins over the close-based estimate",
+          "status": "passed",
+          "durationMs": 0,
+          "file": "walkthrough-plan.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "a stamped start with no close time is still usable",
+          "fullName": "walkthrough-plan.spec.ts harness · walkthrough plan a stamped start with no close time is still usable",
+          "status": "passed",
+          "durationMs": 0,
+          "file": "walkthrough-plan.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "videoTimeOf maps an action's instant into the joined video, or null when cut",
+          "fullName": "walkthrough-plan.spec.ts harness · walkthrough plan videoTimeOf maps an action's instant into the joined video, or null when cut",
+          "status": "passed",
+          "durationMs": 1,
+          "file": "walkthrough-plan.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "a clip that could not be measured gives no plan — never a wrong video",
+          "fullName": "walkthrough-plan.spec.ts harness · walkthrough plan a clip that could not be measured gives no plan — never a wrong video",
+          "status": "passed",
+          "durationMs": 1,
+          "file": "walkthrough-plan.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "no steps, no plan",
+          "fullName": "walkthrough-plan.spec.ts harness · walkthrough plan no steps, no plan",
+          "status": "passed",
+          "durationMs": 0,
+          "file": "walkthrough-plan.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "a step that began before its clip's first frame is placed at the cut's start",
+          "fullName": "walkthrough-plan.spec.ts harness · walkthrough plan a step that began before its clip's first frame is placed at the cut's start",
+          "status": "passed",
+          "durationMs": 1,
+          "file": "walkthrough-plan.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "a step outside its clip's recording gets no offset rather than a wrong one",
+          "fullName": "walkthrough-plan.spec.ts harness · walkthrough plan a step outside its clip's recording gets no offset rather than a wrong one",
+          "status": "passed",
+          "durationMs": 0,
+          "file": "walkthrough-plan.spec.ts",
+          "attempts": 1
+        }
+      ]
+    }
+  ]
+}
