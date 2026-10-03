@@ -611,7 +611,7 @@ export function w2Changed(
   const year = data.taxYear;
   if (data.consented) {
     const lead = (co: string) =>
-      `${co} has corrected your ${year} Form W-2 because of a payroll processed after your original W-2 was issued. The corrected W-2 is marked CORRECTED and replaces the earlier one. Use the corrected W-2 for your tax return.`;
+      `${co} has corrected your ${year} Form W-2. The corrected W-2 is marked CORRECTED and replaces the earlier one. Use the corrected W-2 for your tax return.`;
     const tail =
       "If you already filed your return using the earlier W-2, you may need to amend it.";
     const where = (signIn: string) =>
@@ -625,7 +625,7 @@ export function w2Changed(
     };
   }
   const notice = (co: string) =>
-    `${co} processed a payroll that changes your ${year} Form W-2. Your employer will give you a corrected paper W-2, marked CORRECTED. Use the corrected paper copy for your tax return, not the earlier one. This email is a notice only and is not your W-2.`;
+    `${co} has corrected your ${year} Form W-2. ${co} will give you a corrected paper W-2, marked CORRECTED. Use the corrected paper copy for your tax return, not the earlier one. This email is a notice only and is not your W-2.`;
   return email(
     ctx,
     `Your ${year} W-2 is being corrected`,
