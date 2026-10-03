@@ -41,6 +41,8 @@ export const EVENT_TYPE = {
   taxFilingDue: "tax_filing_due",
   /** PAY-11 — an employee's W-2 for a tax year is available for download. */
   w2Available: "w2_available",
+  /** PAY-193 L4 — a late-issued payroll changed an employee's already-released W-2. */
+  w2Changed: "w2_changed",
 } as const;
 
 export type EventType = (typeof EVENT_TYPE)[keyof typeof EVENT_TYPE];
@@ -63,6 +65,7 @@ export const WORKFLOW_EVENTS: readonly EventType[] = [
   EVENT_TYPE.taxDepositDue,
   EVENT_TYPE.taxFilingDue,
   EVENT_TYPE.w2Available,
+  EVENT_TYPE.w2Changed,
 ];
 
 /**
@@ -81,6 +84,7 @@ export const EVENT_AUDIENCE: Partial<Record<EventType, EventAudience>> = {
   [EVENT_TYPE.taxFilingDue]: "admin",
   [EVENT_TYPE.payslipIssued]: "w2",
   [EVENT_TYPE.w2Available]: "w2",
+  [EVENT_TYPE.w2Changed]: "w2",
   [EVENT_TYPE.contractorInvoiceReviewed]: "contractor",
   [EVENT_TYPE.contractorInvoicePaid]: "contractor",
   [EVENT_TYPE.changeRequestApproved]: "all",
@@ -578,5 +582,28 @@ export function w2Available(ctx: TemplateContext, data: { taxYear: number }): Re
     `your ${data.taxYear} W-2 is available`,
     body,
     `Your W-2 for ${data.taxYear} is available. Log in to view and download it: ${ctx.appUrl}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PAY-193 L4 — W-2 changed notice (employee)
+// ---------------------------------------------------------------------------
+
+/**
+ * Employee: a payroll issued late changed their W-2 for a tax year after the
+ * w2_available notice went out (federal-payroll-tax-sme ruling, iw2w3 2026
+ * p. 28; Treas. Reg. 31.6051-1(j)(5)). Same content rules as w2_available:
+ * the tax year and where to download — never amounts, never the SSN.
+ */
+export function w2Changed(ctx: TemplateContext, data: { taxYear: number }): RenderedEmail {
+  const sentence = (company: string) =>
+    `Your ${data.taxYear} W-2 from ${company} has been updated and a corrected copy, marked "CORRECTED", is now ready.`;
+  const instruction = `Please sign in to ${ctx.brandName}, open Payslips, and download or print the new copy, and use it instead of the one you got earlier when you file your taxes.`;
+  const body = `<p>${sentence(escapeHtml(ctx.companyName))}</p><p>${escapeHtml(instruction)} <a href="${ctx.appUrl}">Sign in</a>.</p>`;
+  return email(
+    ctx,
+    `IMPORTANT TAX RETURN DOCUMENT AVAILABLE: Your corrected ${data.taxYear} W-2`,
+    body,
+    `${sentence(ctx.companyName)} ${instruction} ${ctx.appUrl}`,
   );
 }
