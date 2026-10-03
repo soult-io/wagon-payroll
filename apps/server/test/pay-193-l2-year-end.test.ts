@@ -10,7 +10,11 @@
  *   SME's "safe closesOn" (earliest filer status). No entry -> null.
  * - closesOn(Y) = earliest of filingDueDate(Y, 4), annualDueDate(Y) and, for
  *   every state in which an employee works in Y, stateQ4CloseDate(state, Y)
- *   ?? `${Y + 1}-01-31` (fallback, no weekend roll).
+ *   ?? fallback (no weekend roll). Fallback, as amended by the Product Lead
+ *   after code review (2026-10-03): when the table has an entry set for Y
+ *   but not for the state -> `${Y + 1}-01-31`; when the table has NO entries
+ *   at all for Y -> `${Y + 1}-01-15` (the earliest date in the TY2026 table:
+ *   AR, CO, DE, HI, KS, MD, MS; the safe direction).
  *   "Works in Y" = a run with pay_date in Y whose snapshot names the state
  *   (inputs.state.workState — the field the state deposit planner reads), or
  *   an employee_work_states row active on some day of Y
@@ -422,5 +426,47 @@ describe("which states count for year Y", () => {
     await run(emp, "2025-12-31", "issued", "HI");
     await run(emp, "2027-01-05", "draft", "NJ");
     expect((await window("2027-01-10T12:00:00Z")).closesOn).toBe("2027-02-01");
+  });
+});
+
+// ---------------------------------------------------------------- missing tax year
+
+/*
+ * Product Lead decision (code review, 2026-10-03): the state table has no
+ * entries for tax year 2027, so every counted state closes on Jan 15, 2028
+ * (earliest TY2026 date, no roll; Jan 15, 2028 is a Saturday). Federal for
+ * 2027 (independent): 941 Q4 due Jan 31, 2028 and W-2/W-3 due Jan 31, 2028;
+ * Jan 31, 2028 is a Monday, so no IRC 7503 roll -> 2028-01-31.
+ */
+describe("tax year with no state table (2027): state fallback is Jan 15 of Y+1", () => {
+  it("IL employee with a 2027 run: closesOn 2028-01-15, phase december", async () => {
+    const emp = await employeeIn("IL", "Year End IL 2027");
+    await run(emp, "2027-12-15", "approved", "IL");
+    expect(await window("2027-12-10T12:00:00Z")).toEqual({
+      today: "2027-12-10",
+      phase: "december",
+      year: 2027,
+      closesOn: "2028-01-15",
+    });
+  });
+
+  it("no work state anywhere (customer zero shape): federal only, 2028-01-31", async () => {
+    const emp = await employeeIn(null, "Year End No State 2027");
+    await run(emp, "2027-12-15", "draft", null);
+    expect(await window("2027-12-10T12:00:00Z")).toEqual({
+      today: "2027-12-10",
+      phase: "december",
+      year: 2027,
+      closesOn: "2028-01-31",
+    });
+  });
+
+  it("IL employee: after_year_end on Jan 15, 2028, null from Jan 16, 2028", async () => {
+    const emp = await employeeIn("IL", "Year End IL 2027 Close");
+    await run(emp, "2027-12-15", "approved", "IL");
+    expect([await window("2028-01-15T12:00:00Z"), await window("2028-01-16T12:00:00Z")]).toEqual([
+      { today: "2028-01-15", phase: "after_year_end", year: 2027, closesOn: "2028-01-15" },
+      NULL_WINDOW("2028-01-16"),
+    ]);
   });
 });
