@@ -6,16 +6,6 @@
 import { and, eq, or } from "drizzle-orm";
 import { taxFilings } from "@payroll/db";
 import type { DbLike } from "../payroll/resolve.js";
-import { W2W3_FILING_LOCK } from "./shared.js";
-
-/**
- * D9.5: one advisory lock orders every write that changes whether a pay date
- * is closed — issue with a past pay date, markFiled (every form type) and
- * employer state ID writes. The key is Spec 24's W2W3_FILING_LOCK key,
- * unchanged. Global order: payroll_run_employee:{id} → FILING_CLOSE_LOCK →
- * SYNC_LOCK.
- */
-export const FILING_CLOSE_LOCK = W2W3_FILING_LOCK;
 
 export interface ClosingFiling {
   formType: "941" | "940" | "w2_w3";
@@ -90,8 +80,11 @@ export function closingFilingCorrection(f: ClosingFiling): string {
   return "Forms W-2c and W-3c";
 }
 
-/** "a", "a and b", "a, b and c". */
+/**
+ * "a", "a and b", "a, b, and c". The serial comma keeps a three-item list
+ * whose last item has its own "and" ("Forms W-2c and W-3c") readable.
+ */
 export function joinWithAnd(items: string[]): string {
-  if (items.length <= 1) return items.join("");
-  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+  if (items.length <= 2) return items.join(" and ");
+  return `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
 }

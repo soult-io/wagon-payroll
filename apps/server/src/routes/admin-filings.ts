@@ -88,6 +88,19 @@ const offsetsBody = z.object({
     .max(FILING_REMINDER_OFFSET_MAX_ENTRIES),
 });
 
+function filingErrorStatus(err: FilingServiceError): number {
+  switch (err.code) {
+    case "not_found":
+      return 404;
+    case "invalid_input":
+      return 400;
+    case "invalid_transition":
+    // PAY-193 (D9.5): markFiled refused because the worksheet figures moved.
+    case "worksheet_changed":
+      return 409;
+  }
+}
+
 function serviceError(
   err: unknown,
   reply: { code: (n: number) => { send: (b: unknown) => unknown } },
@@ -96,8 +109,7 @@ function serviceError(
   const block = annualBlockBody(err);
   if (block) return reply.code(409).send(block);
   if (err instanceof FilingServiceError) {
-    const status = err.code === "not_found" ? 404 : err.code === "invalid_input" ? 400 : 409;
-    return reply.code(status).send({ error: err.code, message: err.message });
+    return reply.code(filingErrorStatus(err)).send({ error: err.code, message: err.message });
   }
   throw err;
 }

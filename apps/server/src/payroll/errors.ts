@@ -27,7 +27,7 @@ export class PayrollServiceError extends Error {
      * Extra body fields (PAY-193 D9.3), spread into the error body before
      * error/message. Never an amount.
      */
-    public details?: Record<string, string | number | string[] | object>,
+    public details?: Readonly<Record<string, string | string[]>>,
   ) {
     super(message);
   }

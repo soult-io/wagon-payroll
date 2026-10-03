@@ -45,11 +45,11 @@ import {
   W2BlockedError,
   yearW2BlockCodes,
 } from "./annual.js";
-import { FILING_CLOSE_LOCK } from "./closing-filings.js";
 import {
   addDays,
   DATE_RE,
   type Deps,
+  FILING_CLOSE_LOCK,
   FilingServiceError,
   MONEY_RE,
   sumCategory,
@@ -664,6 +664,10 @@ export interface MarkFiledInput {
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
+/** 409 worksheet_changed: markFiled refused because the figures moved. */
+const WORKSHEET_CHANGED_MESSAGE =
+  "Not recorded yet. The figures on this page changed since you opened it, usually because a payroll was issued or changed. Check the updated figures. If they match what you filed, mark it as filed again. If you already filed different figures, the filed return may need a correction.";
+
 /**
  * Record a filing (D2 track-only). Filing is idempotent per row: an
  * already-filed row rejects with invalid_transition. Audit-logged in the
@@ -737,10 +741,6 @@ export async function markFiled(
   return result;
 }
 
-/** 409 worksheet_changed: markFiled refused because the figures moved. */
-export const WORKSHEET_CHANGED_MESSAGE =
-  "Not recorded yet. The figures on this page changed since you opened it, usually because a payroll was issued or changed. Check the updated figures. If they match what you filed, mark it as filed again. If you already filed different figures, the filed return may need a correction.";
-
 /**
  * markFiled's checks under FILING_CLOSE_LOCK (D9.5, PAY-162): the row re-read
  * after the lock, the W-3 refusals, and a refresh of the unfiled worksheet
@@ -768,8 +768,7 @@ async function fileableRowUnderLock(
     if (codes.length > 0) throw new W2BlockedError(codes);
   }
   const expected = expectedWorksheetHash ?? current.worksheetHash;
-  // The compute helpers are typed Db; the transaction serves every call.
-  if (await refreshWorksheet(tx as unknown as Db, current)) {
+  if (await refreshWorksheet(tx, current)) {
     current = (await lockedFilingRow(tx, filingId)) ?? current;
   }
   if (current.worksheetHash !== expected) return "worksheet_changed";

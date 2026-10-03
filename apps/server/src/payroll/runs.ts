@@ -55,10 +55,10 @@ import {
   closingFilingCode,
   closingFilingCorrection,
   closingFilingLabel,
-  FILING_CLOSE_LOCK,
   filedClosingFilings,
   joinWithAnd,
 } from "../filings/closing-filings.js";
+import { FILING_CLOSE_LOCK } from "../filings/shared.js";
 import { localDate, type Period, type RunDates, runDates, ytdKeyOf } from "./run-dates.js";
 import {
   fingerprintDiff,
@@ -790,8 +790,9 @@ async function assertRunCurrent(
   if (action === "issue") {
     const today = localDate((deps.clock ?? (() => new Date()))(), deps.config.appTz);
     const year = run.payDate.slice(0, 4);
-    if (run.payDate < today) await assertPayPeriodOpen(tx, run.payDate);
-    if (run.payDate < today && year !== today.slice(0, 4)) {
+    const pastPayDate = run.payDate < today;
+    if (pastPayDate) await assertPayPeriodOpen(tx, run.payDate);
+    if (pastPayDate && year !== today.slice(0, 4)) {
       throw new PayrollServiceError(
         "past_pay_date_other_year",
         `This payroll's pay date, ${run.payDate}, is in ${year}, and that year has ended. Wagon Payroll can't record a payroll in a past year yet, so nothing was issued. If you paid your team on ${run.payDate}, keep that date. Don't change it. Keep your own record of the payment and make sure it's included in your ${year} payroll tax filings. A way to record it here is coming soon.`,

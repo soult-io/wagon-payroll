@@ -66,6 +66,9 @@ const STICKY_ERROR_CODES = new Set([
   "effective_date",
 ]);
 
+/** Issue refusals: the toast title says the payroll was not issued. */
+const ISSUE_REFUSED_CODES = new Set(["past_pay_date_other_year", "pay_period_filed"]);
+
 export function useNotify() {
   const toast = useToast();
 
@@ -94,12 +97,10 @@ export function useNotify() {
 
   function error(err: unknown, summary = "Error") {
     const sticky = err instanceof ApiError && STICKY_ERROR_CODES.has(err.code);
-    const pastYear =
-      err instanceof ApiError &&
-      (err.code === "past_pay_date_other_year" || err.code === "pay_period_filed");
+    const notIssued = err instanceof ApiError && ISSUE_REFUSED_CODES.has(err.code);
     toast.add({
       severity: "error",
-      summary: pastYear ? "Payroll not issued" : summary,
+      summary: notIssued ? "Payroll not issued" : summary,
       detail: errorMessage(err),
       ...(sticky ? {} : { life: 5000 }),
     });
