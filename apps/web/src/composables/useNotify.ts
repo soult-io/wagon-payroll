@@ -19,6 +19,14 @@ const YTD_ORDER_FALLBACK =
 const PAST_YEAR_FALLBACK =
   "This payroll's pay date is in a year that has ended. Wagon Payroll can't record a payroll in a past year yet, so nothing was issued. If that's the date you paid your team, keep it. Don't change it. Keep your own record of the payment and make sure it's included in that year's payroll tax filings.";
 
+/** PAY-193 (D9.4): the server's text names the pay date and the filed forms. */
+const PERIOD_FILED_FALLBACK =
+  "A tax return covering this pay date is already filed. Adding this payroll needs a correction form (941-X, amended 940 or W-2c), which Wagon Payroll doesn't prepare. Nothing was issued.";
+
+/** PAY-193 (D9.5): mark-as-filed refused because the figures changed. */
+const WORKSHEET_CHANGED_FALLBACK =
+  "These figures changed since you opened this filing. Review them, then mark it filed again.";
+
 /** The server's own message, or null when the body carried none (err.message is then a generic default). */
 function serverMessage(err: ApiError): string | null {
   const message = err.body?.["message"];
@@ -29,6 +37,8 @@ function payrollRunMessage(err: ApiError): string | null {
   if (err.code === "stale_draft") return STALE_DRAFT_MESSAGE;
   if (err.code === "ytd_order_conflict") return serverMessage(err) ?? YTD_ORDER_FALLBACK;
   if (err.code === "past_pay_date_other_year") return serverMessage(err) ?? PAST_YEAR_FALLBACK;
+  if (err.code === "pay_period_filed") return serverMessage(err) ?? PERIOD_FILED_FALLBACK;
+  if (err.code === "worksheet_changed") return serverMessage(err) ?? WORKSHEET_CHANGED_FALLBACK;
   return null;
 }
 
@@ -50,6 +60,8 @@ const STICKY_ERROR_CODES = new Set([
   "stale_draft",
   "ytd_order_conflict",
   "past_pay_date_other_year",
+  "pay_period_filed",
+  "worksheet_changed",
   "invalid_w4_effective_date",
   "effective_date",
 ]);
@@ -82,7 +94,9 @@ export function useNotify() {
 
   function error(err: unknown, summary = "Error") {
     const sticky = err instanceof ApiError && STICKY_ERROR_CODES.has(err.code);
-    const pastYear = err instanceof ApiError && err.code === "past_pay_date_other_year";
+    const pastYear =
+      err instanceof ApiError &&
+      (err.code === "past_pay_date_other_year" || err.code === "pay_period_filed");
     toast.add({
       severity: "error",
       summary: pastYear ? "Payroll not issued" : summary,
