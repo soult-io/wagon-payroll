@@ -24,7 +24,7 @@ export type TaxAdjustmentRow = typeof taxAdjustments.$inferSelect;
 
 export class FilingServiceError extends Error {
   constructor(
-    public code: "not_found" | "invalid_input" | "invalid_transition",
+    public code: "not_found" | "invalid_input" | "invalid_transition" | "worksheet_changed",
     message: string,
   ) {
     super(message);

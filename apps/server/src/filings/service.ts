@@ -45,6 +45,7 @@ import {
   W2BlockedError,
   yearW2BlockCodes,
 } from "./annual.js";
+import { FILING_CLOSE_LOCK } from "./closing-filings.js";
 import {
   addDays,
   DATE_RE,
@@ -54,7 +55,6 @@ import {
   sumCategory,
   type TaxAdjustmentRow,
   type TaxFilingRow,
-  W2W3_FILING_LOCK,
   toMoney,
   todayIso,
   worksheetHash,
@@ -650,12 +650,22 @@ export interface MarkFiledInput {
   filedOn: string;
   filingMethod: string;
   filingReference: string;
+  /**
+   * PAY-193 (D9.5): the worksheet hash the admin saw. When given, the
+   * worksheet is refreshed under FILING_CLOSE_LOCK and a different hash is
+   * refused with worksheet_changed (the refreshed figures are kept).
+   */
+  expectedWorksheetHash?: string | undefined;
 }
+
+type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 /**
  * Record a filing (D2 track-only). Filing is idempotent per row: an
  * already-filed row rejects with invalid_transition. Audit-logged in the
- * same transaction.
+ * same transaction. PAY-193 (D9.5): takes FILING_CLOSE_LOCK for every form
+ * type (never an employee lock or SYNC_LOCK), so an issue with a past pay
+ * date either commits first or sees this filing as filed.
  */
 export async function markFiled(
   deps: Deps,
@@ -683,29 +693,30 @@ export async function markFiled(
     throw new FilingServiceError("invalid_transition", "filing is already recorded");
   }
 
-  return db.transaction(async (tx) => {
-    // Spec 24 (PAY-116): state ID writes check filed w2_w3 years under this lock.
-    if (before.formType === "w2_w3") await tx.execute(W2W3_FILING_LOCK);
-    // PAY-162: re-read under the transaction (row-locked); a concurrent
-    // mark-filed that won the race is refused here, not recorded twice.
-    const current = (
-      await tx
-        .select({ status: taxFilings.status, worksheet: taxFilings.worksheet })
-        .from(taxFilings)
-        .where(eq(taxFilings.id, filingId))
-        .limit(1)
-        .for("update")
-    )[0];
+  const result = await db.transaction(async (tx) => {
+    await tx.execute(FILING_CLOSE_LOCK);
+    // Re-read under the lock (row-locked): a concurrent mark-filed that won
+    // the race is refused here, not recorded twice.
+    let current = await lockedFilingRow(tx, filingId);
     if (!current || current.status === "filed") {
       throw new FilingServiceError("invalid_transition", "filing is already recorded");
     }
-    if (before.formType === "w2_w3") {
-      // PAY-162: a year without federal tax_config, with a blocked W-2, or
-      // whose W-3 worksheet was never computed cannot be recorded filed.
-      await assertFederalTaxConfig(tx, before.year);
-      const codes = await yearW2BlockCodes(tx, before.year);
-      if (codes.length > 0 || !current.worksheet) throw new W2BlockedError(codes);
+    // PAY-162: no W-3 figure is computed or recorded without the year's
+    // federal tax_config row, nor with a blocked W-2.
+    if (current.formType === "w2_w3") {
+      await assertFederalTaxConfig(tx, current.year);
+      const codes = await yearW2BlockCodes(tx, current.year);
+      if (codes.length > 0) throw new W2BlockedError(codes);
     }
+    if (input.expectedWorksheetHash !== undefined) {
+      // The refresh only reads (the compute helpers take Db for select).
+      if (await refreshWorksheet(tx as unknown as Db, current)) {
+        current = (await lockedFilingRow(tx, filingId))!;
+      }
+      if (current.worksheetHash !== input.expectedWorksheetHash) return "worksheet_changed";
+    }
+    // PAY-162: a W-3 whose worksheet was never computed cannot be recorded filed.
+    if (current.formType === "w2_w3" && !current.worksheet) throw new W2BlockedError([]);
     const updated = await tx
       .update(taxFilings)
       .set({
@@ -735,6 +746,21 @@ export async function markFiled(
     });
     return filed;
   });
+  // Outside the transaction: the refreshed worksheet is committed, so the
+  // admin sees the new figures on reload.
+  if (result === "worksheet_changed") {
+    throw new FilingServiceError(
+      "worksheet_changed",
+      "These figures changed since you opened this filing. Review them, then mark it filed again.",
+    );
+  }
+  return result;
+}
+
+async function lockedFilingRow(tx: Tx, filingId: number): Promise<TaxFilingRow | undefined> {
+  return (
+    await tx.select().from(taxFilings).where(eq(taxFilings.id, filingId)).limit(1).for("update")
+  )[0];
 }
 
 // ---------------------------------------------------------------------------

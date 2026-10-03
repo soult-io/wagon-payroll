@@ -55,6 +55,11 @@ const filedBody = z.object({
   filedOn: z.string().regex(ISO_DATE, "filedOn must be YYYY-MM-DD"),
   filingMethod: z.string().trim().min(1).max(50),
   filingReference: z.string().trim().max(100).default(""),
+  // PAY-193 (D9.5): the worksheet hash the admin saw (sha-256, lowercase hex).
+  expectedWorksheetHash: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/, "expectedWorksheetHash must be 64 lowercase hex characters")
+    .optional(),
 });
 
 const fractionsBody = z.object({
