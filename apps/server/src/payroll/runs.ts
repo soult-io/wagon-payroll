@@ -51,6 +51,12 @@ import {
   type DbLike,
 } from "./resolve.js";
 import { PayrollServiceError } from "./errors.js";
+import {
+  closingFilingCode,
+  closingFilingLabel,
+  FILING_CLOSE_LOCK,
+  filedClosingFilings,
+} from "../filings/closing-filings.js";
 import { localDate, type Period, type RunDates, runDates, ytdKeyOf } from "./run-dates.js";
 import {
   fingerprintDiff,
@@ -749,14 +755,32 @@ class StaleDraftError extends PayrollServiceError {
 }
 
 /**
+ * PAY-193 (D9.4, D9.5): a past pay date whose federal closing filing is
+ * filed cannot be issued. Takes FILING_CLOSE_LOCK after the employee lock
+ * (global order: employee → FILING_CLOSE_LOCK → SYNC_LOCK), so a concurrent
+ * markFiled either commits first (refused here) or waits for this issue.
+ */
+async function assertPayPeriodOpen(tx: Tx, payDate: string): Promise<void> {
+  await tx.execute(FILING_CLOSE_LOCK);
+  const filed = await filedClosingFilings(tx, payDate);
+  if (filed.length === 0) return;
+  throw new PayrollServiceError(
+    "pay_period_filed",
+    `A return covering ${payDate} is already filed (${filed.map(closingFilingLabel).join(", ")}). Adding this payroll needs a correction form (941-X, amended 940 or W-2c), which Wagon Payroll doesn't prepare. Nothing was issued.`,
+    { payDate, forms: filed.map(closingFilingCode) },
+  );
+}
+
+/**
  * Spec 26 (PAY-173) checks before approve/issue, inside the locked
- * transaction: D9 (issue only) — a past pay date in another calendar year
+ * transaction: PAY-193 filed-return guard (issue with a past pay date only,
+ * first); D9 (issue only) — a past pay date in another calendar year
  * than the company's local today; D6 — an issued run of the same pay-date
  * year already sorts after this one; D4 — recompute the draft (read-only)
  * and refuse when it no longer matches the stored snapshot.
  */
 async function assertRunCurrent(
-  tx: DbLike,
+  tx: Tx,
   deps: GenerateDeps,
   run: RunRow,
   action: RunAction,
@@ -764,6 +788,7 @@ async function assertRunCurrent(
   if (action === "issue") {
     const today = localDate((deps.clock ?? (() => new Date()))(), deps.config.appTz);
     const year = run.payDate.slice(0, 4);
+    if (run.payDate < today) await assertPayPeriodOpen(tx, run.payDate);
     if (run.payDate < today && year !== today.slice(0, 4)) {
       throw new PayrollServiceError(
         "past_pay_date_other_year",

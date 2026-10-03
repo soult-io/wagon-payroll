@@ -50,6 +50,8 @@ function payrollErrorStatus(err: PayrollServiceError): number {
     case "stale_draft":
     case "ytd_order_conflict":
     case "past_pay_date_other_year":
+    // PAY-193 (D9.4): body carries payDate and form codes only.
+    case "pay_period_filed":
       return 409;
     case "no_compensation":
     case "no_tax_config":
@@ -68,7 +70,9 @@ const serviceError = (
   reply: { code: (n: number) => { send: (b: unknown) => unknown } },
 ) => {
   if (err instanceof PayrollServiceError) {
-    return reply.code(payrollErrorStatus(err)).send({ error: err.code, message: err.message });
+    return reply
+      .code(payrollErrorStatus(err))
+      .send({ ...err.details, error: err.code, message: err.message });
   }
   throw err;
 };
