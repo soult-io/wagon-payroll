@@ -1,9 +1,10 @@
 /**
  * Spec 26 (PAY-173) §8 — stale drafts (D4), out-of-order issue (D6,
- * ytd_order_conflict) and the past-pay-date-in-another-year guard (D9).
+ * ytd_order_conflict) and not-late issue guards (PAY-193 L4).
  * GUARDRAILS scenario classes: (a) a setting changing after generation, (b)
  * data written by the previous release, (c) re-running / parallel issue,
- * (d) void and regenerate, (e) year boundaries.
+ * (d) void and regenerate, (e) year boundaries. The D9 block is now the
+ * PAY-193 L4 "LI guard" set (past_pay_date_other_year was removed).
  *
  * Every test that issues injects "now" (withClock); D9 converts it to the
  * company's local date via config.appTz (APP_TZ, Europe/Madrid here).
@@ -376,7 +377,14 @@ describe("D4 — stale drafts (fingerprint recompute at approve/issue)", () => {
   });
 });
 
-describe("D9 — issuing a past pay date in another calendar year", () => {
+/**
+ * PAY-193 L4 removed past_pay_date_other_year (the late-issue path replaces
+ * it). P-1 and P-4 (i) are deleted: their cases are now LI-1 and LI-11 in
+ * pay-193-l4-late-issue.test.ts. The rest stay as guards: these issues are
+ * not late (pay-date quarter open, no monthly-return state), so they issue
+ * with no attestation.
+ */
+describe("LI guard — past or future pay dates that are not late issue without latePayment", () => {
   async function approvedDraft(payDate: string) {
     const emp = await createEmployee(t, 500_000);
     const { run } = await gen(t, emp, monthPeriod("2026-12", payDate));
@@ -396,57 +404,7 @@ describe("D9 — issuing a past pay date in another calendar year", () => {
       ? { ok: true, code: null, status: r.value.status }
       : { ok: false, code: r.code, status: null };
 
-  /** D9.1 refusal copy (Product Lead decision, PAY-173): exact server text. */
-  const d9Message = (payDate: string) => {
-    const year = payDate.slice(0, 4);
-    return (
-      `This payroll's pay date, ${payDate}, is in ${year}, and that year has ended. ` +
-      "Wagon Payroll can't record a payroll in a past year yet, so nothing was issued. " +
-      `If you paid your team on ${payDate}, keep that date. Don't change it. ` +
-      `Keep your own record of the payment and make sure it's included in your ${year} payroll tax filings. ` +
-      "A way to record it here is coming soon."
-    );
-  };
-  /** Approve in-process, then issue over HTTP, both under a fixed "now". */
-  async function issueHttpAt(publicId: string, instant: string) {
-    return withClock(instant, async () => {
-      await transitionRun(
-        { db: t.db, config: t.config },
-        { publicId, action: "approve", actorId: "test-admin" },
-      );
-      // A session minted at real "now" is expired at a fixed 2027 clock; log in under the same clock.
-      const headers = sessionHeader(
-        (await login(t, "pay-date-drafts-admin@test.dev", TEST_PASSWORD)).sessionCookie,
-      );
-      const res = await t.app.inject({
-        method: "POST",
-        url: `/api/admin/payroll-runs/${publicId}/issue`,
-        headers,
-        payload: {},
-      });
-      const body = res.json() as { error?: string; message?: string };
-      return {
-        status: res.statusCode,
-        error: body.error ?? null,
-        message: body.message ?? "",
-        bodyHasNoAmounts: !/\$/.test(res.body) && !/\d+\.\d{2}/.test(res.body),
-      };
-    });
-  }
-
-  it("P-1: paid 2026-12-31, today 2027-01-10 → 409 past_pay_date_other_year, D9.1 copy", async () => {
-    const run = await approvedDraft("2026-12-31");
-    const res = await issueHttpAt(run.publicId, "2027-01-10T12:00:00Z");
-    expect({ ...res, runStatus: (await runRow(t, run.id)).status }).toEqual({
-      status: 409,
-      error: "past_pay_date_other_year",
-      message: d9Message("2026-12-31"),
-      bodyHasNoAmounts: true,
-      runStatus: "approved", // not issued
-    });
-  });
-
-  it("P-2 (guard): paid 2027-01-05, today 2027-01-10 (past, same year) → issued", async () => {
+  it("LI guard (P-2): paid 2027-01-05, today 2027-01-10 (past, Q1 2027 open) -> issued", async () => {
     const run = await approvedDraft("2027-01-05");
     expect(view(await issueAt(run.publicId, "2027-01-10T12:00:00Z"))).toEqual({
       ok: true,
@@ -455,7 +413,7 @@ describe("D9 — issuing a past pay date in another calendar year", () => {
     });
   });
 
-  it("P-3 (guard): paid 2027-01-05, today 2026-12-20 (future pay date) → issued", async () => {
+  it("LI guard (P-3): paid 2027-01-05, today 2026-12-20 (future pay date) -> issued", async () => {
     const run = await approvedDraft("2027-01-05");
     expect(view(await issueAt(run.publicId, "2026-12-20T12:00:00Z"))).toEqual({
       ok: true,
@@ -464,19 +422,7 @@ describe("D9 — issuing a past pay date in another calendar year", () => {
     });
   });
 
-  it("P-4 (i): APP_TZ Europe/Madrid, clock 2026-12-31T23:30Z (Madrid 2027-01-01 00:30), paid 2026-12-31 → 409, D9.1 copy", async () => {
-    const run = await approvedDraft("2026-12-31");
-    const res = await issueHttpAt(run.publicId, "2026-12-31T23:30:00Z");
-    expect({ ...res, runStatus: (await runRow(t, run.id)).status }).toEqual({
-      status: 409,
-      error: "past_pay_date_other_year",
-      message: d9Message("2026-12-31"),
-      bodyHasNoAmounts: true,
-      runStatus: "approved", // not issued
-    });
-  });
-
-  it("P-4 (ii) (guard): clock 2026-12-31T22:30Z (Madrid 2026-12-31 23:30), paid 2026-12-31 → issued", async () => {
+  it("LI guard (P-4 (ii)): clock 2026-12-31T22:30Z (Madrid 2026-12-31 23:30), paid 2026-12-31 -> issued", async () => {
     const run = await approvedDraft("2026-12-31");
     expect(view(await issueAt(run.publicId, "2026-12-31T22:30:00Z"))).toEqual({
       ok: true,
@@ -485,7 +431,7 @@ describe("D9 — issuing a past pay date in another calendar year", () => {
     });
   });
 
-  it("P-4b (auditor-added): APP_TZ America/Los_Angeles, clock 2027-01-01T05:00Z (LA 2026-12-31 21:00) → issued; a UTC/host date would block", async () => {
+  it("LI guard (P-4b): APP_TZ America/Los_Angeles, clock 2027-01-01T05:00Z (LA 2026-12-31 21:00) -> issued; a UTC/host date would make it late", async () => {
     const run = await approvedDraft("2026-12-31");
     expect(
       view(await issueAt(run.publicId, "2027-01-01T05:00:00Z", "America/Los_Angeles")),
