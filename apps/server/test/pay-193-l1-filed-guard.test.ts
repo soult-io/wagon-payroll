@@ -18,6 +18,22 @@
  *   under the lock -> 409 `worksheet_changed`.
  * - Lock order: payroll_run_employee:{id} -> FILING_CLOSE_LOCK -> SYNC_LOCK.
  *
+ * Review-round decisions (Product Lead, 2026-10-03; G-9 … G-12):
+ * - G-9: markFiled WITHOUT expectedWorksheetHash behaves as if the client
+ *   sent the stored hash: refresh under the lock; a changed hash -> 409
+ *   worksheet_changed with the refreshed worksheet committed; unchanged ->
+ *   files. A row is therefore filed only after its worksheet was read
+ *   (fixtures below open the filing first).
+ * - G-10: an unlocked refresh never rewrites a row that is filed by the time
+ *   it writes (refresh decided on a stale unfiled object).
+ * - G-11: the pay_period_filed message names only the corrections for the
+ *   blocking forms ("Form 941-X", "an amended Form 940", "Forms W-2c and
+ *   W-3c"), says "Nothing was issued" and "Don't move it", and drops "A return
+ *   covering".
+ * - worksheet_changed message: WORKSHEET_CHANGED_MESSAGE, exactly.
+ * - G-12: the tax_filing.file audit row's before.status is the status read
+ *   under the lock.
+ *
  * PGlite is one connection, so lock tests assert order and outcome, not
  * timing: a recorder wraps PGlite's query/transaction and captures every
  * statement with its transaction id. All data is synthetic; no amount is
@@ -169,7 +185,7 @@ async function putFiling(
   formType: Form,
   year: number,
   quarter: number,
-  status: "ready" | "filed",
+  status: "not_started" | "ready" | "filed",
   worksheet: unknown = null,
 ): Promise<number> {
   const rows = await t.db
@@ -224,6 +240,22 @@ function markFiledReq(filingId: number, extra: Record<string, unknown> = {}) {
 async function filingRow(id: number) {
   return (await t.db.select().from(taxFilings).where(eq(taxFilings.id, id)).limit(1))[0]!;
 }
+
+/** The admin opens the filing: the detail read refreshes an unfiled worksheet. Returns its hash. */
+async function openFiling(filingId: number): Promise<string> {
+  const res = await t.app.inject({
+    method: "GET",
+    url: `/api/admin/tax-filings/${filingId}`,
+    headers: ADMIN,
+  });
+  expect(res.statusCode, res.body).toBe(200);
+  const hash = (res.json() as { filing: { worksheetHash: string } }).filing.worksheetHash;
+  expect(hash).toMatch(/^[0-9a-f]{64}$/);
+  return hash;
+}
+
+const WORKSHEET_CHANGED_MESSAGE =
+  "Not recorded yet. The figures on this page changed since you opened it, usually because a payroll was issued or changed. Check the updated figures. If they match what you filed, mark it as filed again. If you already filed different figures, the filed return may need a correction.";
 
 async function auditCount(action: string, entityId: string): Promise<number> {
   return (
@@ -500,6 +532,7 @@ describe("G-5 lock order (recording spy)", () => {
       await resetFilings();
       // 2025: no run of this file falls in it, so the W-2 year is clean.
       const fid = await putFiling(form, 2025, quarter, "ready", { synthetic: true });
+      await openFiling(fid); // G-9: a row is filed only after its worksheet was read
       const { value: res, stmts } = await record(() => markFiledReq(fid));
       expect(res.statusCode, res.body).toBe(200);
       const updTx = stmts.find((s) => s.tx !== null && labelOf(s) === "tax_filings_update")?.tx;
@@ -563,21 +596,30 @@ describe("G-6 order A: the issue commits, then markFiled with the old hash", () 
     // the check must use the worksheet as it stands under the lock.
     const stale = await markFiledReq(fid, { expectedWorksheetHash: oldHash });
     const staleBody = stale.json() as Record<string, unknown>;
+    // Read the row straight from the DB (a GET would refresh it): the
+    // refreshed worksheet must already be committed by the refused markFiled.
+    const afterRefusal = await filingRow(fid);
     expect({
       status: stale.statusCode,
       error: staleBody.error,
+      message: staleBody.message,
       noAmount:
         !String(staleBody.message ?? "").includes("$") &&
         !MONEY_SHAPED.test(String(staleBody.message ?? "")),
-      rowStatus: (await filingRow(fid)).status,
+      rowStatus: afterRefusal.status,
+      storedHashRefreshed:
+        afterRefusal.worksheetHash !== oldHash && afterRefusal.worksheetHash !== null,
       fileAudits: await auditCount("tax_filing.file", String(fid)),
     }).toEqual({
       status: 409,
       error: "worksheet_changed",
+      message: WORKSHEET_CHANGED_MESSAGE,
       noAmount: true,
       rowStatus: "ready",
+      storedHashRefreshed: true,
       fileAudits: 0,
     });
+    expect(afterRefusal.status).not.toBe("filed");
 
     // Re-open: the new hash differs, and filing with it succeeds.
     const reopened = await t.app.inject({
@@ -595,13 +637,6 @@ describe("G-6 order A: the issue commits, then markFiled with the old hash", () 
       worksheetHash: newHash,
     });
   });
-
-  it("markFiled without expectedWorksheetHash keeps today's behaviour (files)", async () => {
-    await resetFilings();
-    const fid = await putFiling("940", 2025, 0, "ready", { synthetic: true });
-    const res = await markFiledReq(fid);
-    expect(res.statusCode, res.body).toBe(200);
-  });
 });
 
 describe("G-7 order B: markFiled commits, then the issue", () => {
@@ -611,6 +646,7 @@ describe("G-7 order B: markFiled commits, then the issue", () => {
     const id = await draft("2026-03", "2026-03-20");
     await approve(id);
     const fid = await putFiling("941", 2026, 1, "ready");
+    await openFiling(fid); // G-9: a row is filed only after its worksheet was read
     const filed = await markFiledReq(fid);
     expect(filed.statusCode, filed.body).toBe(200);
     const res = await act(id, "issue");
@@ -659,5 +695,250 @@ describe("G-8 the row is filed between markFiled's first read and its lock", () 
       filingMethod: "concurrent",
       fileAudits: 1,
     });
+  });
+});
+
+// ---------------------------------------------------------------- G-9 markFiled without a hash
+
+describe("G-9 markFiled without expectedWorksheetHash = expected the stored hash", () => {
+  it("941: a past-dated run issued after the last read -> 409 worksheet_changed, refreshed worksheet committed; the retry files", async () => {
+    await resetFilings();
+    now = new Date(MAY_2);
+    const fid = await putFiling("941", 2026, 1, "ready");
+    const readHash = await openFiling(fid);
+
+    // A March run is issued after the read (Q1 not filed -> allowed). Issue
+    // does not refresh the worksheet, so the stored hash is now stale.
+    const id = await draft("2026-03", "2026-03-20");
+    await approve(id);
+    const issued = await act(id, "issue");
+    expect(issued.statusCode, issued.body).toBe(200);
+    expect((await filingRow(fid)).worksheetHash).toBe(readHash);
+
+    const res = await markFiledReq(fid); // no expectedWorksheetHash
+    const body = res.json() as Record<string, unknown>;
+    const row = await filingRow(fid); // DB read, not GET
+    expect({
+      status: res.statusCode,
+      error: body.error,
+      message: body.message,
+      rowStatus: row.status,
+      storedHashRefreshed: row.worksheetHash !== readHash && row.worksheetHash !== null,
+      fileAudits: await auditCount("tax_filing.file", String(fid)),
+    }).toEqual({
+      status: 409,
+      error: "worksheet_changed",
+      message: WORKSHEET_CHANGED_MESSAGE,
+      rowStatus: "ready",
+      storedHashRefreshed: true,
+      fileAudits: 0,
+    });
+
+    // The committed worksheet is the current one: a read changes nothing,
+    // and filing again (still without a hash) succeeds with it.
+    const refreshed = row.worksheetHash;
+    expect(await openFiling(fid)).toBe(refreshed);
+    const ok = await markFiledReq(fid);
+    expect(ok.statusCode, ok.body).toBe(200);
+    const filed = await filingRow(fid);
+    expect({ status: filed.status, worksheetHash: filed.worksheetHash }).toEqual({
+      status: "filed",
+      worksheetHash: refreshed,
+    });
+  });
+
+  it("941: nothing changed since the last read -> files (200), stored hash unchanged", async () => {
+    await resetFilings();
+    now = new Date(MAY_2);
+    const fid = await putFiling("941", 2025, 3, "ready");
+    const readHash = await openFiling(fid);
+    const res = await markFiledReq(fid);
+    expect(res.statusCode, res.body).toBe(200);
+    const row = await filingRow(fid);
+    expect({
+      status: row.status,
+      worksheetHash: row.worksheetHash,
+      fileAudits: await auditCount("tax_filing.file", String(fid)),
+    }).toEqual({ status: "filed", worksheetHash: readHash, fileAudits: 1 });
+  });
+});
+
+// ---------------------------------------------------------------- G-10 unlocked refresh vs filed row
+
+describe("G-10 a filed 941 worksheet is never rewritten by an unlocked refresh", () => {
+  it("adjustment: refresh decided on the stale unfiled row, row filed before the write -> worksheet and hash stay as filed", async () => {
+    await resetFilings();
+    now = new Date(MAY_2);
+    const fid = await putFiling("941", 2025, 2, "ready");
+    const filedHash = await openFiling(fid);
+    const filedWorksheet = (await filingRow(fid)).worksheet;
+
+    // addAdjustment reads the row (unfiled) first, then inserts the
+    // adjustment, then refreshes with the row object it read. Stand-in for a
+    // concurrent markFiled (hash = filedHash) that commits in between: right
+    // before the adjustment insert, mark the row filed.
+    hook = {
+      match: (s) => s.tx !== null && /^\s*insert\s+into\s+"?tax_adjustments"?/i.test(s.text),
+      run: async (client) => {
+        await client.query(
+          "UPDATE tax_filings SET status = 'filed', filed_on = '2026-05-01', filing_method = 'concurrent' WHERE id = $1",
+          [fid],
+        );
+      },
+    };
+    // amountPaid feeds 941 line 13: a refresh would compute a different hash.
+    const res = await t.app.inject({
+      method: "POST",
+      url: `/api/admin/tax-filings/${fid}/adjustments`,
+      headers: ADMIN,
+      payload: { kind: "notice", amountDue: "10.00", amountPaid: "10.00" },
+    });
+    const row = await filingRow(fid);
+    expect({
+      hookFired,
+      noServerError: res.statusCode < 500,
+      status: row.status,
+      worksheetHash: row.worksheetHash,
+      worksheet: row.worksheet,
+    }).toEqual({
+      hookFired: true,
+      noServerError: true,
+      status: "filed",
+      worksheetHash: filedHash,
+      worksheet: filedWorksheet,
+    });
+  });
+});
+
+// ---------------------------------------------------------------- G-11 pay_period_filed copy
+
+describe("G-11 pay_period_filed message names only the blocking forms' corrections", () => {
+  const CORRECTION = {
+    "941": "Form 941-X",
+    "940": "an amended Form 940",
+    w2_w3: "Forms W-2c and W-3c",
+  } as const;
+
+  async function refusalMessage(
+    filed: [Form, number][],
+    payDate: string,
+    ym: string,
+    clock: string,
+  ): Promise<string> {
+    await resetFilings();
+    now = new Date(clock);
+    const id = await draft(ym, payDate);
+    for (const [form, quarter] of filed) await putFiling(form, 2026, quarter, "filed");
+    await approve(id);
+    const res = await act(id, "issue");
+    expect(res.statusCode, res.body).toBe(409);
+    const body = res.json() as { error: string; message: string };
+    expect(body.error).toBe("pay_period_filed");
+    return body.message;
+  }
+
+  function copy(message: string) {
+    return {
+      f941x: message.includes(CORRECTION["941"]),
+      amended940: message.includes(CORRECTION["940"]),
+      w2c: message.includes(CORRECTION.w2_w3),
+      anyW2c: message.includes("W-2c"),
+      any940: message.includes("940"),
+      any941x: message.includes("941-X"),
+      nothingIssued: message.includes("Nothing was issued"),
+      dontMoveIt: message.includes("Don't move it"),
+      oldWording: message.includes("A return covering"),
+    };
+  }
+  const common = { nothingIssued: true, dontMoveIt: true, oldWording: false };
+
+  it("only the 941 filed -> 'Form 941-X'; no W-2c, no 940", async () => {
+    const m = await refusalMessage([["941", 1]], "2026-03-20", "2026-03", MAY_2);
+    expect(copy(m)).toEqual({
+      f941x: true,
+      amended940: false,
+      w2c: false,
+      anyW2c: false,
+      any940: false,
+      any941x: true,
+      ...common,
+    });
+  });
+
+  it("only the 940 filed -> 'an amended Form 940'; no 941-X, no W-2c", async () => {
+    const m = await refusalMessage([["940", 0]], "2026-12-31", "2026-12", JAN_10_2027);
+    expect(copy(m)).toEqual({
+      f941x: false,
+      amended940: true,
+      w2c: false,
+      anyW2c: false,
+      any940: true,
+      any941x: false,
+      ...common,
+    });
+  });
+
+  it("only the W-2/W-3 filed -> 'Forms W-2c and W-3c'; no 941-X, no amended 940", async () => {
+    const m = await refusalMessage([["w2_w3", 0]], "2026-12-31", "2026-12", JAN_10_2027);
+    expect(copy(m)).toEqual({
+      f941x: false,
+      amended940: false,
+      w2c: true,
+      anyW2c: true,
+      any940: false,
+      any941x: false,
+      ...common,
+    });
+  });
+
+  it("all three filed -> all three corrections named", async () => {
+    const m = await refusalMessage(
+      [
+        ["941", 4],
+        ["940", 0],
+        ["w2_w3", 0],
+      ],
+      "2026-12-31",
+      "2026-12",
+      JAN_10_2027,
+    );
+    expect(copy(m)).toEqual({
+      f941x: true,
+      amended940: true,
+      w2c: true,
+      anyW2c: true,
+      any940: true,
+      any941x: true,
+      ...common,
+    });
+  });
+});
+
+// ---------------------------------------------------------------- G-12 audit before.status
+
+describe("G-12 markFiled audit before.status comes from the locked re-read", () => {
+  it("row promoted not_started -> ready between the pre-read and the lock -> before.status 'ready'", async () => {
+    await resetFilings();
+    now = new Date(MAY_2);
+    const fid = await putFiling("941", 2025, 1, "not_started");
+    await openFiling(fid);
+    expect((await filingRow(fid)).status).toBe("not_started");
+    hook = {
+      match: (s) => labelOf(s) === "filing_close_lock",
+      run: async (client) => {
+        await client.query("UPDATE tax_filings SET status = 'ready' WHERE id = $1", [fid]);
+      },
+    };
+    const res = await markFiledReq(fid);
+    expect(res.statusCode, res.body).toBe(200);
+    const audits = await t.db
+      .select({ before: auditEvents.before })
+      .from(auditEvents)
+      .where(and(eq(auditEvents.action, "tax_filing.file"), eq(auditEvents.entityId, String(fid))));
+    expect({
+      hookFired,
+      count: audits.length,
+      beforeStatus: (audits[0]?.before as { status?: string } | null)?.status,
+    }).toEqual({ hookFired: true, count: 1, beforeStatus: "ready" });
   });
 });
