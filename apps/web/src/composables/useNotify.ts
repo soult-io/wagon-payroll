@@ -16,12 +16,26 @@ const STALE_DRAFT_MESSAGE =
 const YTD_ORDER_FALLBACK =
   "This employee already has a payroll issued with a later pay date. Payrolls must be issued in the order they are paid. Nothing was approved or issued. Void this draft and generate it again with the date you actually pay it.";
 
-const PAST_YEAR_FALLBACK =
-  "This payroll's pay date is in a year that has ended. Wagon Payroll can't record a payroll in a past year yet, so nothing was issued. If that's the date you paid your team, keep it. Don't change it. Keep your own record of the payment and make sure it's included in that year's payroll tax filings.";
-
 /** PAY-193 (D9.4): the server's text names the pay date and the filed forms. */
 const PERIOD_FILED_FALLBACK =
   "Nothing was issued. You've marked a tax return that covers this pay date as filed. If you really paid your team on that date, keep the date. Don't move it to get around this. Adding this payroll means correcting the filed return with a correction form, which Wagon Payroll doesn't prepare. Keep your own record of this payment and make the correction outside Wagon Payroll.";
+
+/** PAY-193 L4: late-issue refusals (copy 2.2–2.4). The server text names the states. */
+const LATE_INCOMPLETE_FALLBACK =
+  "Answer every question for each state on this payroll. Nothing was issued.";
+const STATE_RETURN_FILED_FALLBACK =
+  "Nothing was issued. You said a return or report for your state that covers this pay date is already filed. Adding this payroll means correcting that filing with a state correction form, which Wagon Payroll doesn't prepare. Keep the pay date as it is. Keep your own record of this payment, and make the correction outside Wagon Payroll or with your tax preparer.";
+const AMOUNT_MISMATCH_FALLBACK =
+  "Nothing was issued. The amount you typed doesn't match this payroll's net pay. Check it against your bank record, including cents. If you paid a different amount, the wages and taxes for that payment may be different from this payroll, and Wagon Payroll can't record it as it is. Talk to your tax preparer before you issue it.";
+
+const LATE_FALLBACKS: Record<string, string> = {
+  late_payment_incomplete: LATE_INCOMPLETE_FALLBACK,
+  state_return_filed: STATE_RETURN_FILED_FALLBACK,
+  late_payment_amount_mismatch: AMOUNT_MISMATCH_FALLBACK,
+};
+
+/** PAY-193 L4: opens the late dialog; never toasted. */
+export const LATE_CONFIRMATION_CODE = "late_payment_confirmation_required";
 
 /** PAY-193 (D9.5): mark-as-filed refused because the figures changed. */
 const WORKSHEET_CHANGED_FALLBACK =
@@ -36,9 +50,10 @@ function serverMessage(err: ApiError): string | null {
 function payrollRunMessage(err: ApiError): string | null {
   if (err.code === "stale_draft") return STALE_DRAFT_MESSAGE;
   if (err.code === "ytd_order_conflict") return serverMessage(err) ?? YTD_ORDER_FALLBACK;
-  if (err.code === "past_pay_date_other_year") return serverMessage(err) ?? PAST_YEAR_FALLBACK;
   if (err.code === "pay_period_filed") return serverMessage(err) ?? PERIOD_FILED_FALLBACK;
   if (err.code === "worksheet_changed") return serverMessage(err) ?? WORKSHEET_CHANGED_FALLBACK;
+  const late = LATE_FALLBACKS[err.code];
+  if (late) return serverMessage(err) ?? late;
   return null;
 }
 
@@ -59,15 +74,22 @@ function w4WindowMessage(err: ApiError): string | null {
 const STICKY_ERROR_CODES = new Set([
   "stale_draft",
   "ytd_order_conflict",
-  "past_pay_date_other_year",
   "pay_period_filed",
+  "late_payment_incomplete",
+  "state_return_filed",
+  "late_payment_amount_mismatch",
   "worksheet_changed",
   "invalid_w4_effective_date",
   "effective_date",
 ]);
 
 /** Issue refusals: the toast title says the payroll was not issued. */
-const ISSUE_REFUSED_CODES = new Set(["past_pay_date_other_year", "pay_period_filed"]);
+const ISSUE_REFUSED_CODES = new Set([
+  "pay_period_filed",
+  "late_payment_incomplete",
+  "state_return_filed",
+  "late_payment_amount_mismatch",
+]);
 
 export function useNotify() {
   const toast = useToast();
@@ -78,6 +100,11 @@ export function useNotify() {
 
   function info(summary: string, detail?: string) {
     toast.add({ severity: "info", summary, detail, life: 4000 });
+  }
+
+  /** Info that tells the admin what to do next: stays until closed (no `life`). */
+  function stickyInfo(summary: string, detail?: string) {
+    toast.add({ severity: "info", summary, detail });
   }
 
   /** Human message out of ApiError / Error / unknown. */
@@ -96,6 +123,8 @@ export function useNotify() {
   }
 
   function error(err: unknown, summary = "Error") {
+    // PAY-193 L4 (W-L5): the confirmation request opens the late dialog instead.
+    if (err instanceof ApiError && err.code === LATE_CONFIRMATION_CODE) return;
     const sticky = err instanceof ApiError && STICKY_ERROR_CODES.has(err.code);
     const notIssued = err instanceof ApiError && ISSUE_REFUSED_CODES.has(err.code);
     toast.add({
@@ -106,5 +135,5 @@ export function useNotify() {
     });
   }
 
-  return { success, info, error, errorMessage };
+  return { success, info, stickyInfo, error, errorMessage };
 }

@@ -17,7 +17,19 @@ import PageHeader from "../../components/PageHeader.vue";
 import BackButton from "../../components/BackButton.vue";
 import EmptyState from "../../components/EmptyState.vue";
 import StatusChip from "../../components/StatusChip.vue";
-import { adminEmployeesApi, adminPayrollApi, isOpenRun, type PayrollRunRow } from "../../lib/api";
+import LateIssueDialog from "../../components/LateIssueDialog.vue";
+import { stateName } from "@payroll/shared";
+import {
+  adminEmployeesApi,
+  adminPayrollApi,
+  ApiError,
+  isOpenRun,
+  type IssueResponse,
+  type LateAttestationBody,
+  type LatePayment,
+  type PayrollRunRow,
+  type RunDetailResponse,
+} from "../../lib/api";
 import { useMoney } from "../../composables/useMoney";
 import { useDates } from "../../composables/useDates";
 import { useNotify } from "../../composables/useNotify";
@@ -26,7 +38,7 @@ import { useYearEndWarning } from "../../composables/useYearEndWarning";
 const route = useRoute();
 const confirm = useConfirm();
 const { money, percent } = useMoney();
-const { date, dateTime } = useDates();
+const { date, dateTime, longDate } = useDates();
 const notify = useNotify();
 
 const publicId = route.params.publicId as string;
@@ -40,6 +52,23 @@ const voidDialog = ref(false);
 const voidReason = ref("");
 const issueDialog = ref(false);
 const issueConfirmText = ref("");
+
+// PAY-193 L4: late dialog, opened only by a 409 late_payment_confirmation_required.
+const lateDialog = ref(false);
+const lateAttestation = ref<LateAttestationBody | null>(null);
+const lateStates = ref<string[]>([]);
+const lateMessage = ref("");
+const lateRefusal = ref<string | null>(null);
+const lateNetPayHint = ref<number | null>(null);
+const lateIssue = ref<RunDetailResponse["lateIssue"]>(null);
+
+/** Refusals shown inside the open late dialog (copy 1.11). */
+const IN_DIALOG_REFUSALS = new Set([
+  "late_payment_incomplete",
+  "state_return_filed",
+  "late_payment_amount_mismatch",
+]);
+const CLOSE_DIALOG_REFUSALS = new Set(["stale_draft", "ytd_order_conflict", "pay_period_filed"]);
 
 const snapshot = computed(() => run.value?.runSnapshot ?? null);
 const canApprove = computed(
@@ -55,11 +84,12 @@ const yearEndNotice = computed(() => runNotice(run.value));
 
 async function load() {
   try {
-    const [{ run: r }, { employees }] = await Promise.all([
+    const [{ run: r, lateIssue: li }, { employees }] = await Promise.all([
       adminPayrollApi.run(publicId),
       adminEmployeesApi.list(),
     ]);
     run.value = r;
+    lateIssue.value = li ?? null;
     employeeName.value =
       employees.find((e) => e.id === r.employeeId)?.legalName ??
       r.runSnapshot?.inputs.employee.legalName ??
@@ -75,14 +105,153 @@ async function load() {
 async function act(action: "approve" | "issue" | "void", reason?: string) {
   busy.value = true;
   try {
-    const { run: updated } = await adminPayrollApi.act(publicId, action, reason);
+    const { run: updated } = await adminPayrollApi.act(publicId, action, reason ? { reason } : {});
     run.value = updated;
     notify.success(
       action === "approve" ? "Run approved" : action === "issue" ? "Payslip issued" : "Run voided",
       action === "issue" ? "The employee was notified by email." : undefined,
     );
   } catch (err) {
+    if (action === "issue" && openLateDialog(err)) return;
     notify.error(err, `Could not ${action} run`);
+  } finally {
+    busy.value = false;
+  }
+}
+
+/** W-L1: a 409 late_payment_confirmation_required opens the late dialog (no toast). */
+function openLateDialog(err: unknown): boolean {
+  if (!(err instanceof ApiError) || err.code !== "late_payment_confirmation_required") return false;
+  const body = err.body ?? {};
+  lateAttestation.value = (body["attestation"] as LateAttestationBody | undefined) ?? null;
+  lateStates.value = Array.isArray(body["stateJurisdictions"])
+    ? (body["stateJurisdictions"] as string[])
+    : [];
+  lateMessage.value = typeof body["message"] === "string" ? body["message"] : "";
+  lateRefusal.value = null;
+  lateNetPayHint.value = null;
+  lateDialog.value = lateAttestation.value !== null;
+  return true;
+}
+
+const MONTHS = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+/** Copy 3.2: "federal" / state name, and the period from the code's periodStart. */
+function depositWords(jurisdiction: string, periodStart: string): { who: string; period: string } {
+  if (jurisdiction === "federal") {
+    const month = MONTHS[Number(periodStart.slice(5, 7)) - 1] ?? periodStart;
+    return { who: "federal", period: `${month} ${periodStart.slice(0, 4)}` };
+  }
+  return {
+    who: stateName(jurisdiction),
+    period: `the period that starts ${longDate(periodStart)}`,
+  };
+}
+
+/** One sticky toast per known follow-up code (copy 3.2); unknown codes show nothing. */
+function followUpToast(code: string, taxYear: number): { summary: string; detail: string } | null {
+  const [kind, jurisdiction = "", periodStart = ""] = code.split(":");
+  if (kind === "w2_changed_notice_sent") {
+    return {
+      summary: "W-2 updated",
+      detail: `${employeeName.value}'s ${taxYear} W-2 changed. We emailed them that a corrected copy is ready.`,
+    };
+  }
+  if (kind === "deposit_sync_deferred") {
+    const who = jurisdiction === "federal" ? "federal" : stateName(jurisdiction);
+    return {
+      summary: "Deposit not updated yet",
+      detail: `The payslip is issued, but we couldn't update your ${who} tax deposit for it. We'll try again tonight and email you if it still doesn't work.`,
+    };
+  }
+  if (kind === "deposit_overdue") {
+    const { who, period } = depositWords(jurisdiction, periodStart);
+    return {
+      summary: "Tax deposit past due",
+      detail: `Your ${who} tax deposit for ${period} is past its due date. Make it as soon as you can; the longer it waits, the more penalties and interest can add up. See Tax deposits for the amount.`,
+    };
+  }
+  if (kind === "deposit_shortfall") {
+    const { who, period } = depositWords(jurisdiction, periodStart);
+    return {
+      summary: "Additional tax deposit",
+      detail: `This payroll adds to your ${who} taxes for ${period}, so you owe an additional deposit. See Tax deposits for the amount and due date. If the due date has passed, make it as soon as you can.`,
+    };
+  }
+  return null;
+}
+
+/** Display order (copy 3.2): most urgent first. */
+const FOLLOW_UP_ORDER = [
+  "deposit_overdue",
+  "deposit_shortfall",
+  "deposit_sync_deferred",
+  "w2_changed_notice_sent",
+];
+
+function showFollowUps(followUps: string[], taxYear: number): void {
+  const rank = (c: string) => {
+    const i = FOLLOW_UP_ORDER.indexOf(c.split(":")[0] ?? "");
+    return i === -1 ? FOLLOW_UP_ORDER.length : i;
+  };
+  for (const code of [...followUps].sort((a, b) => rank(a) - rank(b))) {
+    const toast = followUpToast(code, taxYear);
+    if (toast) notify.stickyInfo(toast.summary, toast.detail);
+  }
+}
+
+/** Success of a late issue: toasts (copy 3.1, 3.2) and the run-detail confirmation line. */
+async function onLateIssued(res: IssueResponse): Promise<void> {
+  run.value = res.run;
+  lateDialog.value = false;
+  const taxYear = res.lateIssue?.taxYear ?? Number(res.run.payDate.slice(0, 4));
+  notify.success(
+    `Payslip issued for ${taxYear}`,
+    `It's now in your ${taxYear} pay and tax totals.`,
+  );
+  if (res.lateIssue) showFollowUps(res.lateIssue.followUps, res.lateIssue.taxYear);
+  try {
+    lateIssue.value = (await adminPayrollApi.run(publicId)).lateIssue ?? null;
+  } catch {
+    // The run is issued; the confirmation line appears on the next load.
+  }
+}
+
+/** Copy 1.11: refusals stay in the open dialog; stale/ordering/filed close it. */
+function onLateRefused(err: unknown): void {
+  if (err instanceof ApiError && IN_DIALOG_REFUSALS.has(err.code)) {
+    // Dialog stays open with every value kept; no duplicate toast.
+    lateRefusal.value = notify.errorMessage(err);
+    if (err.code === "late_payment_amount_mismatch") {
+      lateNetPayHint.value = snapshot.value?.result.netPay ?? null;
+    }
+    return;
+  }
+  if (err instanceof ApiError && CLOSE_DIALOG_REFUSALS.has(err.code)) lateDialog.value = false;
+  notify.error(err, "Could not issue run");
+}
+
+async function issueLate(latePayment: LatePayment) {
+  busy.value = true;
+  lateRefusal.value = null;
+  lateNetPayHint.value = null;
+  try {
+    await onLateIssued(await adminPayrollApi.act(publicId, "issue", { latePayment }));
+  } catch (err) {
+    onLateRefused(err);
   } finally {
     busy.value = false;
   }
@@ -159,6 +328,10 @@ onMounted(() => {
           <dd v-if="run.approvedAt">{{ dateTime(run.approvedAt) }}</dd>
           <dt v-if="run.issuedAt">Issued</dt>
           <dd v-if="run.issuedAt">{{ dateTime(run.issuedAt) }}</dd>
+          <dt v-if="lateIssue">Late issue</dt>
+          <dd v-if="lateIssue">
+            Issued after its tax period ended. Payment confirmed on {{ longDate(lateIssue.confirmedAt) }}.
+          </dd>
           <dt v-if="run.voidedAt">Voided</dt>
           <dd v-if="run.voidedAt">{{ dateTime(run.voidedAt) }} — {{ run.voidReason }}</dd>
           <dt>Snapshot hash</dt>
@@ -242,6 +415,20 @@ onMounted(() => {
         <Button label="Issue payslip" severity="success" :disabled="issueConfirmText.trim().toUpperCase() !== 'ISSUE'" :loading="busy" @click="confirmIssue" />
       </div>
     </Dialog>
+
+    <LateIssueDialog
+      v-if="run"
+      v-model:visible="lateDialog"
+      :attestation="lateAttestation"
+      :state-jurisdictions="lateStates"
+      :message="lateMessage"
+      :pay-date="run.payDate"
+      :employee-name="employeeName"
+      :busy="busy"
+      :refusal="lateRefusal"
+      :net-pay-hint="lateNetPayHint"
+      @submit="issueLate"
+    />
 
     <Dialog v-model:visible="voidDialog" modal header="Void run" :style="{ width: '28rem' }">
       <p>Voiding marks the run as dead. A reason is required and recorded in the audit log.</p>
