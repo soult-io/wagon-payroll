@@ -1363,6 +1363,14 @@ export interface W2FiguresRow {
   blocked: boolean;
   /** PAY-19 — active electronic-delivery consent on file. */
   consented: boolean;
+  /** PAY-206 — the employee may hold a copy with other figures (renders say CORRECTED). */
+  corrected: boolean;
+  /** PAY-206 — corrected and the current figures are not yet furnished. */
+  correctionToFurnish: boolean;
+  /** PAY-206 — how the latest copy reached the employee. */
+  furnished: "none" | "online" | "printed" | "paper";
+  /** PAY-206 — company-local date of the latest furnishing. */
+  furnishedOn: string | null;
 }
 
 /** PAY-162 — one W-2 year on the employee's list; `ready` = downloadable now. */
@@ -1370,6 +1378,8 @@ export interface MyW2Year {
   year: number;
   availableOn: string;
   ready: boolean;
+  /** PAY-206 — this W-2 replaces one with other figures (bare flag). */
+  corrected: boolean;
 }
 
 /** PAY-162 — a filing-level block issue on the tax-filings list. */
@@ -1507,6 +1517,12 @@ export const adminFilingsApi = {
   w2PrintPacketUrl: (employeeId: number, year: number) =>
     `/api/admin/annual-forms/w2/${employeeId}/print-packet?year=${year}`,
   w3PdfUrl: (year: number) => `/api/admin/annual-forms/w3/pdf?year=${year}`,
+  // PAY-206 — the admin gave the employee the current W-2 on paper (idempotent)
+  w2MarkGivenOnPaper: (employeeId: number, year: number) =>
+    post<{ furnished: "paper"; corrected: boolean }>(
+      `/api/admin/annual-forms/w2/${employeeId}/furnished-on-paper?year=${year}`,
+      {},
+    ),
   // PAY-16 — filled official Form 941 PDF from the filing's worksheet
   f941PdfUrl: (id: number) => `/api/admin/tax-filings/${id}/941-pdf`,
   // PAY-33 — filled official Form 940 PDF from the filing's worksheet

@@ -8,6 +8,9 @@
  * PAY-19: the W-2 card gates downloads on electronic-delivery consent
  * (Pub 1141 §2.4) — disclosures + an affirmative consent button first,
  * download buttons and a withdraw link afterwards.
+ *
+ * PAY-206: a corrected W-2 is labelled "{year} W-2 (CORRECTED)"; the PDF
+ * link always serves the current figures.
  */
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
@@ -25,6 +28,7 @@ import {
   type PayslipSummary,
   type W2ConsentStatus,
 } from "../../lib/api";
+import { W2_CARD_HEADING } from "@payroll/shared";
 import { myW2NotReadyText } from "../../lib/w2-issues";
 import { useMoney } from "../../composables/useMoney";
 import { useDates } from "../../composables/useDates";
@@ -43,6 +47,11 @@ const w2Years = ref<MyW2Year[]>([]);
 /** PAY-19: electronic-delivery consent (null while unknown / not a W-2 employee). */
 const w2Consent = ref<W2ConsentStatus | null>(null);
 const consentBusy = ref(false);
+
+/** PAY-206 (R7): "{year} W-2 (CORRECTED)" when the W-2 replaces one with other figures. */
+function w2Label(w2: MyW2Year): string {
+  return w2.corrected ? `${w2.year} W-2 (CORRECTED)` : String(w2.year);
+}
 // PAY-17: the selected year is mirrored to ?year= so it survives detail → back
 // and browser-back. The default (no param) is the newest year with data.
 const selectedYear = ref<string>(typeof route.query.year === "string" ? route.query.year : "");
@@ -161,7 +170,7 @@ onMounted(async () => {
     </p>
 
     <div v-if="w2Years.length > 0" class="card stack">
-      <h3 style="margin: 0">W-2 wage and tax statements</h3>
+      <h3 style="margin: 0">{{ W2_CARD_HEADING }}</h3>
       <p class="muted small" style="margin: 0">
         Your annual W-2 for each year you were paid, available from January of the following year.
       </p>
@@ -184,7 +193,15 @@ onMounted(async () => {
 
       <template v-else-if="w2Consent?.consented">
         <div v-for="w2 in w2Years" :key="w2.year" class="row" style="justify-content: space-between">
-          <span><strong>{{ w2.year }}</strong> <span class="muted small">· available since {{ date(w2.availableOn) }}</span></span>
+          <span>
+            <!-- PAY-206: the current figures replace a copy the employee may hold. -->
+            <strong>{{ w2Label(w2) }}</strong>
+            <span class="muted small">· available since {{ date(w2.availableOn) }}</span>
+            <span v-if="w2.corrected" class="muted small" style="display: block">
+              This replaces the earlier {{ w2.year }} W-2 you received. Use this one for your tax
+              return.
+            </span>
+          </span>
           <a v-if="w2.ready" :href="myW2Api.pdfUrl(w2.year)" target="_blank" rel="noopener">
             <Button label="Download PDF" icon="pi pi-download" size="small" text />
           </a>

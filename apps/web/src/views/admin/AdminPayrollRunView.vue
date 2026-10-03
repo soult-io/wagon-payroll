@@ -189,7 +189,7 @@ function followUpToast(code: string, taxYear: number): { summary: string; detail
   if (kind === "w2_paper_correction_needed") {
     return {
       summary: "W-2 updated",
-      detail: `${employeeName.value}'s ${taxYear} W-2 changed. Print a corrected paper W-2 for them from Tax filings → W-2/W-3.`,
+      detail: `${employeeName.value}'s ${taxYear} W-2 changed. Print a corrected paper W-2 for them from Tax filings → Forms W-2/W-3, then mark it given.`,
     };
   }
   if (kind === "deposit_sync_deferred") {

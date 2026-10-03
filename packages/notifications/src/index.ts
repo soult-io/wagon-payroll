@@ -11,6 +11,8 @@
  * - bank/SSN data never appears in ANY email.
  */
 
+import { PAYSLIPS_NAV_LABEL, W2_CARD_HEADING } from "@payroll/shared";
+
 export const EVENT_TYPE = {
   payrollDraftReady: "payroll_draft_ready",
   payslipIssued: "payslip_issued",
@@ -613,7 +615,7 @@ export function w2Changed(
     const tail =
       "If you already filed your return using the earlier W-2, you may need to amend it.";
     const where = (signIn: string) =>
-      `To view and print it, sign in at ${signIn}, open Payslips, and find "W-2 wage and tax statements".`;
+      `To view and print it, sign in at ${signIn}, open ${PAYSLIPS_NAV_LABEL}, and find "${W2_CARD_HEADING}".`;
     const appUrl = escapeHtml(ctx.appUrl);
     const body = `<p>${lead(escapeHtml(ctx.companyName))}</p><p>${where(`<a href="${appUrl}">${appUrl}</a>`)}</p><p>${tail}</p>`;
     return {
