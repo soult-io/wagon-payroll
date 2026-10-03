@@ -339,7 +339,9 @@ describe("S4 figures defect: no amounts or ids in the employee and filing bodies
   it("GET /api/my/w2 lists the year as not ready, nothing else", async () => {
     const res = await get("/api/my/w2", defect.session);
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ w2s: [{ year: 2025, availableOn: "2026-01-01", ready: false }] });
+    expect(res.json()).toEqual({
+      w2s: [{ year: 2025, availableOn: "2026-01-01", ready: false, corrected: false }],
+    });
     expectBare(res.body, [defect.employeeId]);
   });
 

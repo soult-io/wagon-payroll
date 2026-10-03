@@ -20,7 +20,10 @@
  *    the long US date ("December 31, 2026"); {netPay} is left literal in the
  *    409 and filled ("$3,209.74") in the audit row.
  *  - w2_changed employee mail only when the year's W-2 is available, the
- *    year is in the w2_available notified years, and the employee has a login.
+ *    employee was FURNISHED a W-2 for the year with different figures
+ *    (PAY-206: a w2_furnishings row whose hash differs from the current
+ *    figures; the w2_available notified-years proxy no longer gates it),
+ *    and the employee has a login.
  *
  * Review round (Product Lead decisions 2026-10-03, copy file "Product Lead
  * amendments" + "round 2", round 2 overriding amendment 7):
@@ -196,6 +199,18 @@ async function outboxCount(): Promise<number> {
 
 async function outboxOf(eventType: string) {
   return env.t.db.select().from(emailOutbox).where(eq(emailOutbox.eventType, eventType));
+}
+
+/**
+ * PAY-206: the employee was furnished a W-2 for `year` whose figures differ
+ * from today's (a raw w2_furnishings row with a hash that can never match).
+ */
+async function furnishedEarlier(employeeId: number, year = 2026): Promise<void> {
+  await env.t.pglite.query(
+    `INSERT INTO w2_furnishings (employee_id, tax_year, boxes_hash, corrected, method)
+     VALUES ($1, $2, $3, false, 'backfill')`,
+    [employeeId, year, "0".repeat(64)],
+  );
 }
 
 async function setNotifiedYears(years: number[]): Promise<void> {
@@ -812,6 +827,8 @@ describe("LI-16 lateIssueAllowed() false fails closed", () => {
   it("late run, hook false: without and with a complete latePayment -> 409 late_issue_not_supported {error,message,payDate}; run approved; no deposit, worksheet, outbox or issue rows", async () => {
     const d = await ilDraft();
     await setNotifiedYears([2026]);
+    // PAY-206: a furnished 2026 W-2 would trigger the w2_changed mail on success.
+    await furnishedEarlier(d.emp.id);
     env.setNow(JAN_10_2027);
     lateGate.allowed = false;
     const counts = async () => ({
@@ -1093,10 +1110,10 @@ function paperViolations(subject: string, html: string, text = ""): string[] {
 }
 
 describe("EF-6 w2_changed notice", () => {
-  it("(a) consented to electronic W-2; today 2027-01-10, 2026 already notified -> one w2_changed row, IMPORTANT subject first (no company prefix), round-2 body, no amount; followUps has w2_changed_notice_sent", async () => {
+  it("(a) consented to electronic W-2; today 2027-01-10, a 2026 W-2 furnished with other figures -> one w2_changed row, IMPORTANT subject first (no company prefix), round-2 body, no amount; followUps has w2_changed_notice_sent", async () => {
     const d = await ilDraft();
     await consentElectronicW2(d.emp.id);
-    await setNotifiedYears([2026]);
+    await furnishedEarlier(d.emp.id);
     env.setNow(JAN_10_2027);
     const res = await issue(env, d.publicId, latePayment(NET_IL, [notFiled("IL")]));
     expect(res.status, res.raw).toBe(200);
@@ -1131,9 +1148,9 @@ describe("EF-6 w2_changed notice", () => {
     ]);
   });
 
-  it("(a2) NOT consented (paper) -> one w2_changed row: '{company} — Your 2026 W-2 is being corrected', round-2 paper body; no IMPORTANT phrase, no link, no 'available', no amount; followUps [w2_paper_correction_needed]", async () => {
+  it("(a2) NOT consented (paper), furnished earlier -> one w2_changed row: '{company} — Your 2026 W-2 is being corrected', round-2 paper body; no IMPORTANT phrase, no link, no 'available', no amount; followUps [w2_paper_correction_needed]", async () => {
     const d = await ilDraft();
-    await setNotifiedYears([2026]);
+    await furnishedEarlier(d.emp.id);
     env.setNow(JAN_10_2027);
     const res = await issue(env, d.publicId, latePayment(NET_IL, [notFiled("IL")]));
     expect(res.status, res.raw).toBe(200);
@@ -1168,7 +1185,7 @@ describe("EF-6 w2_changed notice", () => {
       disclosureVersion: "2025-01",
       withdrawnAt: new Date("2026-11-01T00:00:00Z"),
     });
-    await setNotifiedYears([2026]);
+    await furnishedEarlier(d.emp.id);
     env.setNow(JAN_10_2027);
     const res = await issue(env, d.publicId, latePayment(NET_IL, [notFiled("IL")]));
     expect(res.status, res.raw).toBe(200);
@@ -1196,7 +1213,7 @@ describe("EF-6 w2_changed notice", () => {
           set: { enabled: false },
         });
     }
-    await setNotifiedYears([2026]);
+    await furnishedEarlier(d.emp.id);
     env.setNow(JAN_10_2027);
     const res = await issue(env, d.publicId, latePayment(NET_IL, [notFiled("IL")]));
     expect(res.status, res.raw).toBe(200);
@@ -1214,8 +1231,9 @@ describe("EF-6 w2_changed notice", () => {
     }).toEqual({ statuses: ["sent"], employeeSurface: false });
   });
 
-  it("(b) 2026 not yet in the notified years -> no w2_changed row, no follow-up", async () => {
+  it("(b) PAY-206: nothing furnished for 2026 -> no w2_changed row, no follow-up, even with 2026 in the notified years (old gate)", async () => {
     const d = await ilDraft();
+    await setNotifiedYears([2026]);
     env.setNow(JAN_10_2027);
     const res = await issue(env, d.publicId, latePayment(NET_IL, [notFiled("IL")]));
     expect(res.status, res.raw).toBe(200);
@@ -1225,9 +1243,9 @@ describe("EF-6 w2_changed notice", () => {
     }).toEqual({ rows: 0, followUps: [] });
   });
 
-  it("(c) employee without a login (user_id null; can never have consented) -> no email row; followUps [w2_paper_correction_needed] (PL reading B)", async () => {
+  it("(c) employee without a login (user_id null; can never have consented), furnished earlier -> no email row; followUps [w2_paper_correction_needed] (PL reading B)", async () => {
     const d = await ilDraft("2026-12-31", false);
-    await setNotifiedYears([2026]);
+    await furnishedEarlier(d.emp.id);
     env.setNow(JAN_10_2027);
     const res = await issue(env, d.publicId, latePayment(NET_IL, [notFiled("IL")]));
     expect(res.status, res.raw).toBe(200);
@@ -1245,17 +1263,17 @@ describe("EF-6 w2_changed notice", () => {
 
   it("(d) same-year issue on 2026-12-31 (not late) -> no row", async () => {
     const d = await ilDraft();
-    await setNotifiedYears([2026]);
+    await furnishedEarlier(d.emp.id);
     env.setNow("2026-12-31T10:00:00Z");
     const res = await issue(env, d.publicId);
     expect(res.status, res.raw).toBe(200);
     expect((await outboxOf("w2_changed")).length).toBe(0);
   });
 
-  it("(e, auditor) late in-year (paid 2026-09-30, today 2026-10-05): the 2026 W-2 is not available yet -> no row even with 2026 marked notified", async () => {
+  it("(e, auditor) late in-year (paid 2026-09-30, today 2026-10-05): the 2026 W-2 is not available yet -> no row even with a 2026 furnishing row", async () => {
     const d = await ilDraft("2026-09-30");
     await consentElectronicW2(d.emp.id);
-    await setNotifiedYears([2026]);
+    await furnishedEarlier(d.emp.id);
     env.setNow("2026-10-05T10:00:00Z");
     const res = await issue(env, d.publicId, latePayment(NET_IL, [notFiled("IL")]));
     expect(res.status, res.raw).toBe(200);
