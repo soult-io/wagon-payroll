@@ -570,7 +570,7 @@ function toLiveRow(row: TaxDepositRow): LiveDepositRow {
  */
 async function loadStateLiability(
   db: Pick<Db, "select">,
-  filter?: { state: string; year: number; quarter: number },
+  filter?: { state: string; year: number; quarter: number } | { year: number },
 ): Promise<{ state: string; month: string; cents: number }[]> {
   const workState = sql<string>`(${payrollRuns.runSnapshot}#>>'{inputs,state,workState}')`;
   const month = sql<string>`to_char(date_trunc('month', ${payrollRuns.payDate})::date, 'YYYY-MM-DD')`;
@@ -579,10 +579,13 @@ async function loadStateLiability(
     eq(payrollEntries.category, "state_withholding"),
     sql`${workState} IS NOT NULL`,
   ];
-  if (filter) {
+  if (filter && "state" in filter) {
     const first = periodStartFor(filter.year, (filter.quarter - 1) * 3 + 1);
     conditions.push(sql`${workState} = ${filter.state}`);
     conditions.push(sql`date_trunc('quarter', ${payrollRuns.payDate})::date = ${first}::date`);
+  } else if (filter) {
+    conditions.push(sql`${payrollRuns.payDate} >= ${`${filter.year}-01-01`}`);
+    conditions.push(sql`${payrollRuns.payDate} <= ${`${filter.year}-12-31`}`);
   }
   const rows = await db
     .select({
@@ -595,6 +598,23 @@ async function loadStateLiability(
     .where(and(...conditions))
     .groupBy(workState, month);
   return rows.map((r) => ({ state: r.state, month: r.month, cents: parseCents(r.amount) }));
+}
+
+/**
+ * Spec 24 (PAY-116) S24-D10: issued-run state withholding per work state for
+ * pay-date year `year`, in cents — the R9 reconciliation source for the W-3
+ * worksheet. Category state_withholding only; runs without a work state are
+ * not counted. Deposit status never enters it.
+ */
+export async function stateWithholdingByYear(
+  db: Pick<Db, "select">,
+  year: number,
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  for (const l of await loadStateLiability(db, { year })) {
+    out.set(l.state, (out.get(l.state) ?? 0) + l.cents);
+  }
+  return out;
 }
 
 function unitFor(units: Map<string, StateUnit>, state: string, periodStart: string): StateUnit {
