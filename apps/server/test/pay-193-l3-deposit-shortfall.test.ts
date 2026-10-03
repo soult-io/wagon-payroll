@@ -1808,3 +1808,55 @@ describe("PAY-193 L3 round 3 D5 — a failing shortfall mail never loses the dep
     await invariants();
   });
 });
+
+describe("PAY-193 L3 Product Lead decision — federal alreadyDeposited counts lower-seq deposited siblings only", () => {
+  it("seq 0 overdue 910.33, seq 1 overdue 500.83, seq 2 deposited 321.23 -> seq 1: 0.00 / 910.33; seq 2: 0.00 / 1,411.16; 1,732.39 − 0.00 − 1,411.16 = 321.23", async () => {
+    await issue(A, "2026-12-15", null);
+    await sync("2027-01-20");
+    await issue(B, "2026-12-31", null);
+    await sync("2027-01-20");
+    await issue(C, "2026-12-31", null);
+    await sync("2027-01-21");
+    const r0 = await liveRow("federal", DEC, 0);
+    const r1 = await liveRow("federal", DEC, 1);
+    const r2 = await liveRow("federal", DEC, 2);
+    await deposit(r2.id, "2027-01-22", "EFTPS-SYN-L3-PL1");
+    expect(await live("federal")).toEqual([
+      `0 month ${DEC} ${FED_A} ${FED_DUE} overdue`,
+      `1 month ${DEC} ${FED_B} ${FED_DUE} overdue`,
+      `2 month ${DEC} ${FED_C} ${FED_DUE} deposited`,
+    ]);
+
+    // seq 1: the later-paid HIGHER seq 2 never counts as already deposited.
+    // liability is the month's (A+B+C); the liability − … = amount line holds
+    // on the newest row only, so it is not asserted here.
+    const d1 = await detail(r1.id);
+    expect({
+      amount: d1.deposit.amount,
+      liability: d1.liability,
+      alreadyDeposited: d1.alreadyDeposited,
+      stillOwedEarlier: d1.stillOwedEarlier,
+    }).toEqual({
+      amount: money(FED_B),
+      liability: money(FED_A + FED_B + FED_C),
+      alreadyDeposited: "0.00",
+      stillOwedEarlier: money(FED_A),
+    });
+
+    // seq 2 (the newest row): nothing lower is deposited; A + B still owed.
+    const d2 = await detail(r2.id);
+    expect({
+      amount: d2.deposit.amount,
+      liability: d2.liability,
+      alreadyDeposited: d2.alreadyDeposited,
+      stillOwedEarlier: d2.stillOwedEarlier,
+    }).toEqual({
+      amount: money(FED_C),
+      liability: money(FED_A + FED_B + FED_C),
+      alreadyDeposited: "0.00",
+      stillOwedEarlier: money(FED_A + FED_B),
+    });
+    expectLineReconciles(d2, FED_C);
+    expect(r0.status).toBe("overdue");
+  });
+});
