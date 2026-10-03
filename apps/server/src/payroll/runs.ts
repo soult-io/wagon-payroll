@@ -66,6 +66,7 @@ import {
 import { isW2Available, notifiedYears } from "../filings/annual.js";
 import { refreshFilingsForPayDate } from "../filings/service.js";
 import { FILING_CLOSE_LOCK } from "../filings/shared.js";
+import { lockEmployee } from "./locks.js";
 import { syncDepositsForPayDate } from "../deposits/service.js";
 import {
   AMOUNT_MISMATCH_MESSAGE,
@@ -121,17 +122,6 @@ interface GenerateDeps {
 }
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
-
-/**
- * Serialise run generation / approve / issue / void per employee (Spec 26 D4): two
- * runs of one employee can never be issued in parallel with each other's YTD
- * missing. Transaction-scoped; released at commit/rollback.
- */
-async function lockEmployeeRuns(tx: Tx, employeeId: number): Promise<void> {
-  await tx.execute(
-    sql`select pg_advisory_xact_lock(hashtext(${`payroll_run_employee:${employeeId}`}))`,
-  );
-}
 
 /** D6 message: names the conflicting run's pay date only. */
 function ytdOrderConflict(later: { payDate: string }): PayrollServiceError {
@@ -588,7 +578,7 @@ export async function generateDraft(
 
   try {
     return await db.transaction(async (tx) => {
-      await lockEmployeeRuns(tx, input.employeeId);
+      await lockEmployee(tx, input.employeeId);
       const { snapshot, entries, employee, companyRow } = await computeRun(tx, {
         employeeId: input.employeeId,
         period,
@@ -1181,7 +1171,7 @@ async function applyTransition(
 ): Promise<TransitionResult> {
   const found = await getRunByPublicId(tx, input.publicId);
   if (!found) throw new PayrollServiceError("run_not_found", `run ${input.publicId} not found`);
-  await lockEmployeeRuns(tx, found.employeeId);
+  await lockEmployee(tx, found.employeeId);
   // Re-read under the lock: a parallel issue may have changed it.
   const run = (await getRunByPublicId(tx, input.publicId)) ?? found;
   assertTransitionAllowed(rule, run, input);
