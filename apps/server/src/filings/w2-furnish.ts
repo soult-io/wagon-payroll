@@ -30,7 +30,7 @@ import type { AppConfig } from "../config.js";
 import { templateContext } from "../notify/outbox.js";
 import { lockEmployee, type Tx } from "../payroll/locks.js";
 import { localDate } from "../payroll/run-dates.js";
-import { AnnualFiguresDefectError, type W2BoxesCents } from "./w2-boxes.js";
+import { AnnualFiguresDefectError } from "./w2-boxes.js";
 import {
   employeeW2Figures,
   FormNotAvailableError,
@@ -39,6 +39,7 @@ import {
   MissingTaxConfigError,
   notifiedYears,
   readableBoxes,
+  type ReadableW2Figures,
   type W2Figures,
   w2AvailableOn,
   w2FiguresForYear,
@@ -50,9 +51,10 @@ import {
   furnishingRows,
   furnishingRowsByEmployee,
   furnishingState,
+  hashVersionFor,
   isCorrected,
   recordFurnishing,
-  w2BoxesHash,
+  w2FiguresHash,
 } from "./w2-furnish-core.js";
 import { errorClass, FilingServiceError, todayIso } from "./shared.js";
 import { electronicW2Channel } from "./w2-consent.js";
@@ -67,11 +69,13 @@ export {
   furnishCurrent,
   furnishingRows,
   furnishingState,
+  hashVersionFor,
   isCorrected,
   latestRow,
   recordFurnishing,
   W2_HASH_VERSION,
   w2BoxesHash,
+  w2FiguresHash,
 } from "./w2-furnish-core.js";
 
 interface Deps {
@@ -106,7 +110,7 @@ export async function furnishForRender(
     const { corrected } = await furnishCurrent(tx, {
       employeeId,
       taxYear: year,
-      boxes,
+      figures: boxes,
       method: furnishing.method,
       actorId: furnishing.actorId,
     });
@@ -137,11 +141,11 @@ export async function markFurnishedOnPaper(
       );
     }
     if (!hasTemplate(year, "fw2")) throw new FormNotAvailableError(year);
-    const boxes = readableBoxes(await employeeW2Figures(tx, employeeId, year));
+    const figures = readableBoxes(await employeeW2Figures(tx, employeeId, year));
     const { corrected, inserted } = await furnishCurrent(tx, {
       employeeId,
       taxYear: year,
-      boxes,
+      figures,
       method: "paper_handed",
       actorId,
     });
@@ -191,9 +195,13 @@ function viewOf(
   appTz: string,
 ): FurnishingView {
   const blocked = isW2Blocked(f) || f.box1Cents === null;
+  const version = hashVersionFor(year);
   const state = blocked
-    ? furnishingState(rows, "", { consented })
-    : furnishingState(rows, w2BoxesHash(f.employeeId, year, f as W2BoxesCents), { consented });
+    ? furnishingState(rows, "", { consented, version })
+    : furnishingState(rows, w2FiguresHash(f.employeeId, year, f as ReadableW2Figures), {
+        consented,
+        version,
+      });
   const latest = state.latest;
   return {
     corrected: !blocked && state.corrected,
@@ -230,7 +238,7 @@ export async function furnishingViews(
 export async function isMyW2Corrected(db: Db, employeeId: number, year: number): Promise<boolean> {
   const current = await currentHash(db, employeeId, year);
   if (current === null) return false;
-  return isCorrected(await furnishingRows(db, employeeId, year), current);
+  return isCorrected(await furnishingRows(db, employeeId, year), current, hashVersionFor(year));
 }
 
 /**
@@ -276,7 +284,7 @@ async function currentHash(
     throw err;
   }
   if (!figures || isW2Blocked(figures) || figures.box1Cents === null) return null;
-  return w2BoxesHash(employeeId, year, figures);
+  return w2FiguresHash(employeeId, year, figures);
 }
 
 // ---------------------------------------------------------------------------
@@ -375,7 +383,8 @@ export async function furnishCorrectionIfNeeded(
   const employee = found[0];
   if (employee?.employmentType !== "w2") return null;
   const consented = (await electronicW2Channel(tx, [employeeId])).has(employeeId);
-  if (!furnishingState(rows, hash, { consented }).correctionToFurnish) return null;
+  const version = hashVersionFor(taxYear);
+  if (!furnishingState(rows, hash, { consented, version }).correctionToFurnish) return null;
   if (consented && employee.userId) {
     const posted = await recordFurnishing(tx, {
       employeeId,
@@ -474,7 +483,7 @@ async function backfillOneInTx(tx: Tx, employeeId: number, year: number): Promis
   return recordFurnishing(tx, {
     employeeId,
     taxYear: year,
-    boxesHash: w2BoxesHash(employeeId, year, figures),
+    boxesHash: w2FiguresHash(employeeId, year, figures),
     corrected: false,
     method: "backfill",
     actorId: null,

@@ -42,6 +42,8 @@ import {
 import { EVENT_TYPE, w2Available as tplW2Available } from "@payroll/notifications";
 import { formatCents } from "@payroll/shared";
 import type { Db } from "../db.js";
+import { stateWithholdingByYear } from "../deposits/service.js";
+import { type StateIdSource, stateIdAvailability } from "../company/state-ids.js";
 import type { AppConfig } from "../config.js";
 import { templateContext } from "../notify/outbox.js";
 import { w2EmployeeAddressAt } from "../change-requests/address-history.js";
@@ -70,6 +72,15 @@ import {
   w2Boxes,
   w3Totals,
 } from "./w2-boxes.js";
+import {
+  planW2StateLines,
+  STATE_BOXES_FROM_YEAR,
+  type W2LocalLine,
+  type W2StateLine,
+  type W2StatePlan,
+  type W2StateRun,
+} from "./w2-state.js";
+import { loadW2StateRuns, loadWorkStateMoves } from "./w2-state-load.js";
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
@@ -411,6 +422,26 @@ const WITHHELD_BOXES: W2BoxesWithheld = {
   box6Cents: null,
 };
 
+/** One W-2 state line (boxes 15–17) with where its box 15 ID comes from (never the ID). */
+export interface W2FigureLine extends W2StateLine {
+  stateIdSource: StateIdSource | null;
+}
+
+/**
+ * Spec 24 (PAY-116): the W-2's state and local lines. Tax years before
+ * STATE_BOXES_FROM_YEAR, and W-2s whose boxes are withheld: no lines,
+ * formCount 1.
+ */
+export interface W2StateFields {
+  stateLines: W2FigureLine[];
+  /** Always [] from Spec 24 (PAY-171 fills it). */
+  localLines: W2LocalLine[];
+  /** Number of W-2 forms for this employee (two state lines per form). */
+  formCount: number;
+}
+
+const NO_STATE_LINES: W2StateFields = { stateLines: [], localLines: [], formCount: 1 };
+
 /**
  * One employee's annual W-2 box figures in integer cents — NO PII (PII joins
  * at PDF render). PAY-162: boxes are null when an internal_mismatch or
@@ -422,7 +453,11 @@ export type W2Figures = {
   /** Distinct issued runs in the year (box 4/6 check tolerance). */
   runCount: number;
   issues: W2Issue[];
-} & (W2BoxesCents | W2BoxesWithheld);
+} & (W2BoxesCents | W2BoxesWithheld) &
+  W2StateFields;
+
+/** A W-2 whose boxes can be printed. */
+export type ReadableW2Figures = W2Figures & W2BoxesCents;
 
 /** True when any block issue stands (the W-2 cannot be issued). */
 export function isW2Blocked(f: Pick<W2Figures, "issues">): boolean {
@@ -457,17 +492,115 @@ function figuresFor(
   return { ...boxes, issues };
 }
 
+/** The planner's per-year inputs (Spec 24 PR-2 loader). */
+interface StatePlanContext {
+  year: number;
+  runs: Map<number, W2StateRun[]>;
+  moves: Map<number, { effectiveFrom: string }[]>;
+  stateIds: Record<string, StateIdSource | null>;
+}
+
+/** Load the planner inputs of a year ≥ STATE_BOXES_FROM_YEAR; null before it. */
+async function statePlanContext(
+  db: Pick<Db, "select">,
+  year: number,
+): Promise<StatePlanContext | null> {
+  if (year < STATE_BOXES_FROM_YEAR) return null;
+  const runs = await loadW2StateRuns(db, year);
+  const states = new Set<string>();
+  for (const list of runs.values()) {
+    for (const r of list) if (r.workState !== null) states.add(r.workState);
+  }
+  return {
+    year,
+    runs,
+    moves: await loadWorkStateMoves(db, [...runs.keys()]),
+    stateIds: await stateIdAvailability(db, year, [...states]),
+  };
+}
+
+/** One employee's plan (S24-D1); box 1 = the value printed as box 1. */
+function planFor(ctx: StatePlanContext, employeeId: number, box1Cents: number): W2StatePlan {
+  return planW2StateLines({
+    taxYear: ctx.year,
+    runs: ctx.runs.get(employeeId) ?? [],
+    box1Cents,
+    stateIds: ctx.stateIds,
+    // PR-5 (S24-D7) feeds attributions; none exist before it.
+    attributions: {},
+    moves: ctx.moves.get(employeeId) ?? [],
+  });
+}
+
+/**
+ * Add the state lines to one employee's boxes. A planner internal_mismatch
+ * withholds the boxes like PAY-162 and is the only issue (Product Lead
+ * ruling 2026-10-04). Withheld boxes → no lines.
+ */
+function withStateLines(
+  boxed: Pick<W2Figures, "issues"> & (W2BoxesCents | W2BoxesWithheld),
+  ctx: StatePlanContext | null,
+  employeeId: number,
+): Pick<W2Figures, "issues"> & (W2BoxesCents | W2BoxesWithheld) & W2StateFields {
+  if (ctx === null || boxed.box1Cents === null) return { ...boxed, ...NO_STATE_LINES };
+  const plan = planFor(ctx, employeeId, boxed.box1Cents);
+  if (plan.issues.some((i) => i.code === "internal_mismatch")) {
+    return {
+      ...WITHHELD_BOXES,
+      issues: [{ code: "internal_mismatch", severity: "block" }],
+      ...NO_STATE_LINES,
+    };
+  }
+  return {
+    ...boxed,
+    issues: [...boxed.issues, ...plan.issues],
+    stateLines: plan.lines.map((l) => ({ ...l, stateIdSource: ctx.stateIds[l.state] ?? null })),
+    localLines: plan.locals,
+    formCount: plan.formCount,
+  };
+}
+
+/**
+ * Spec 24 (PAY-116) A3: every employee's state lines for `year`, from the
+ * planner alone (no federal config needed). Employees whose box 1 cannot be
+ * read or whose plan is internal_mismatch have none.
+ */
+export async function w2StateLinesForYear(
+  db: Pick<Db, "select">,
+  year: number,
+): Promise<W2FigureLine[][]> {
+  const ctx = await statePlanContext(db, year);
+  if (ctx === null) return [];
+  const out: W2FigureLine[][] = [];
+  for (const [employeeId, sums] of await perEmployeeSums(db, year)) {
+    let box1Cents: number;
+    try {
+      box1Cents = sumCents(sums.sums.gross_pay);
+    } catch (err) {
+      if (err instanceof AnnualFiguresDefectError) continue;
+      throw err;
+    }
+    const plan = planFor(ctx, employeeId, box1Cents);
+    if (plan.issues.some((i) => i.code === "internal_mismatch")) continue;
+    out.push(plan.lines.map((l) => ({ ...l, stateIdSource: ctx.stateIds[l.state] ?? null })));
+  }
+  return out;
+}
+
 /**
  * Annual W-2 figures per W-2 employee from frozen issued-run entries.
  * Contractors never appear (employment_type = 'w2' only). Box 3 applies the
  * pay year's Social Security wage base from tax_config; a year with issued
  * runs and no federal tax_config row throws MissingTaxConfigError (PAY-162).
+ * Spec 24 (PAY-116): years ≥ STATE_BOXES_FROM_YEAR add the planner's state
+ * lines and issues.
  */
 export async function w2FiguresForYear(db: Pick<Db, "select">, year: number): Promise<W2Figures[]> {
   const byEmployee = await perEmployeeSums(db, year);
   const employeeIds = [...byEmployee.keys()];
   if (employeeIds.length === 0) return [];
   const params = await ficaParams(db, year);
+  const ctx = await statePlanContext(db, year);
   const rows = await db
     .select({ id: employees.id, legalName: employees.legalName })
     .from(employees)
@@ -485,7 +618,7 @@ export async function w2FiguresForYear(db: Pick<Db, "select">, year: number): Pr
       employeeId,
       legalName: names.get(employeeId) ?? `#${employeeId}`,
       runCount: sums.runCount,
-      ...figuresFor(sums, params),
+      ...withStateLines(figuresFor(sums, params), ctx, employeeId),
     });
   }
   // Deterministic code-point sort (localeCompare is host-dependent).
@@ -513,7 +646,33 @@ export function w2BoxStrings(b: W2BoxesCents): {
   };
 }
 
-export interface WorksheetW3 {
+/** Spec 24 §7: one state's W-3 reconciliation view (R9). */
+export interface W3StateRow {
+  state: string;
+  /** W-2 rows of this state (a null second row counts). */
+  w2Lines: number;
+  box16: string;
+  box17: string;
+  /** state_withholding of the issued runs with this work state, pay-date year. */
+  runWithholding: string;
+  /** Always "0.00" until PR-5 (S24-D7). */
+  attributedLegacy: string;
+  reconciled: boolean;
+}
+
+/** Spec 24 §7: the W-3 state keys (tax years ≥ STATE_BOXES_FROM_YEAR only). */
+export interface W3StateSection {
+  /** W-3 box c: number of W-2 forms (S24-D12). */
+  w2FormCount: number;
+  /** One state across all lines, "X" for more, null for none (R6). */
+  box15State: string | null;
+  box16StateWages: string;
+  box17StateTax: string;
+  states: W3StateRow[];
+  blockedEmployees: number;
+}
+
+export interface WorksheetW3 extends Partial<W3StateSection> {
   form: "w2_w3";
   year: number;
   /** Number of W-2 statements summarized. */
@@ -527,22 +686,115 @@ export interface WorksheetW3 {
 }
 
 /** The readable W-2s, or W2BlockedError when any W-2's figures are withheld. */
-function readableFigures(figures: readonly W2Figures[]): (W2Figures & W2BoxesCents)[] {
+function readableFigures(figures: readonly W2Figures[]): ReadableW2Figures[] {
   const withheld = figures.filter((f) => f.box1Cents === null);
   if (withheld.length > 0) throw new W2BlockedError(blockCodes(withheld));
-  return figures as (W2Figures & W2BoxesCents)[];
+  return figures as ReadableW2Figures[];
+}
+
+type StateAcc = { lines: number; b16: number; b17: number };
+
+/** Per-state sums of the printed lines (null = 0) and the year's totals. */
+function sumStateLines(figures: readonly ReadableW2Figures[]) {
+  const per = new Map<string, StateAcc>();
+  let forms = 0;
+  let w16 = 0;
+  let w17 = 0;
+  for (const f of figures) {
+    forms += f.formCount;
+    for (const l of f.stateLines) {
+      const acc = per.get(l.state) ?? { lines: 0, b16: 0, b17: 0 };
+      acc.lines += 1;
+      acc.b16 += l.box16Cents ?? 0;
+      acc.b17 += l.box17Cents ?? 0;
+      per.set(l.state, acc);
+      w16 += l.box16Cents ?? 0;
+      w17 += l.box17Cents ?? 0;
+    }
+  }
+  return { per, forms, w16, w17 };
+}
+
+/**
+ * Spec 24 §7 / S24-D10 / S24-D12: W-3 box c, boxes 15–17 and the per-state
+ * reconciliation against the issued runs' state withholding (deposits
+ * module; deposit status never enters). A state with run withholding but no
+ * W-2 line is listed unreconciled (fail closed).
+ */
+async function w3StateSection(
+  db: Pick<Db, "select">,
+  year: number,
+  figures: readonly ReadableW2Figures[],
+): Promise<W3StateSection> {
+  const { per, forms, w16, w17 } = sumStateLines(figures);
+  const runs = await stateWithholdingByYear(db, year);
+  const lineStates = [...per.keys()];
+  for (const [state, cents] of runs) {
+    if (cents !== 0 && !per.has(state)) per.set(state, { lines: 0, b16: 0, b17: 0 });
+  }
+  const codes = [...per.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const values = [w16, w17, ...[...per.values()].flatMap((p) => [p.b16, p.b17])];
+  if (values.some((v) => !Number.isSafeInteger(v))) throw new AnnualFiguresDefectError();
+  return {
+    w2FormCount: forms,
+    box15State: lineStates.length > 1 ? "X" : (lineStates[0] ?? null),
+    box16StateWages: formatCents(w16),
+    box17StateTax: formatCents(w17),
+    states: codes.map((state) => {
+      const p = per.get(state) as StateAcc;
+      const run = runs.get(state) ?? 0;
+      return {
+        state,
+        w2Lines: p.lines,
+        box16: formatCents(p.b16),
+        box17: formatCents(p.b17),
+        runWithholding: formatCents(run),
+        attributedLegacy: "0.00",
+        reconciled: p.b17 === run,
+      };
+    }),
+    blockedEmployees: figures.filter(isW2Blocked).length,
+  };
+}
+
+/**
+ * Spec 24 (PAY-116) §5: the year-level reconciliation_mismatch issues, one
+ * per unreconciled state. None before STATE_BOXES_FROM_YEAR, and none while
+ * any W-2 of the year has withheld boxes (the year is already blocked;
+ * Product Lead ruling 2026-10-04).
+ */
+export async function w2YearIssues(
+  db: Pick<Db, "select">,
+  year: number,
+  figures: readonly W2Figures[],
+): Promise<W2Issue[]> {
+  if (year < STATE_BOXES_FROM_YEAR || figures.length === 0) return [];
+  if (figures.some((f) => f.box1Cents === null)) return [];
+  const section = await w3StateSection(db, year, figures as ReadableW2Figures[]);
+  return section.states
+    .filter((s) => !s.reconciled)
+    .map((s) => ({ code: "reconciliation_mismatch", severity: "block", state: s.state }));
 }
 
 /**
  * W-3 transmittal worksheet — the box-by-box aggregate across all W-2s,
  * exact integer sums (PAY-162; keys and value strings unchanged). Throws
  * W2BlockedError while any W-2 has internal_mismatch / negative_amount, so
- * the stored worksheet is not refreshed until the defect is gone.
+ * the stored worksheet is not refreshed until the defect is gone. Spec 24:
+ * years ≥ STATE_BOXES_FROM_YEAR add the state keys; earlier years are
+ * byte-identical (W15).
  */
 export async function computeW3Worksheet(db: Db, year: number): Promise<WorksheetW3> {
   const figures = readableFigures(await w2FiguresForYear(db, year));
   const totals = w3Totals(figures);
-  return { form: "w2_w3", year, employeeCount: totals.employeeCount, ...w2BoxStrings(totals) };
+  const base: WorksheetW3 = {
+    form: "w2_w3",
+    year,
+    employeeCount: totals.employeeCount,
+    ...w2BoxStrings(totals),
+  };
+  if (year < STATE_BOXES_FROM_YEAR) return base;
+  return { ...base, ...(await w3StateSection(db, year, figures)) };
 }
 
 // ---------------------------------------------------------------------------
@@ -720,10 +972,10 @@ export async function employerBlock(
   };
 }
 
-/** A W-2 PDF input with the integer-cent boxes it was built from (PAY-206 hash). */
+/** A W-2 PDF input with the integer-cent figures it was built from (PAY-206 hash). */
 export interface W2InputWithBoxes {
   input: W2Input;
-  boxes: W2BoxesCents;
+  boxes: ReadableW2Figures;
 }
 
 /**
@@ -797,8 +1049,8 @@ export async function employeeW2Figures(
   return figures;
 }
 
-/** PAY-162: the boxes of a W-2 that may be issued, or W2BlockedError. */
-export function readableBoxes(figures: W2Figures): W2BoxesCents {
+/** PAY-162: the figures of a W-2 that may be issued, or W2BlockedError. */
+export function readableBoxes(figures: W2Figures): ReadableW2Figures {
   if (isW2Blocked(figures) || figures.box1Cents === null) {
     throw new W2BlockedError(blockCodes([figures]));
   }
@@ -825,6 +1077,10 @@ export async function w3InputFor(
   // PAY-162: no W-3 while any W-2 of the year is blocked.
   const blocked = blockCodes(figures);
   if (blocked.length > 0) throw new W2BlockedError(blocked);
+  // Spec 24 (PAY-116) R9: no W-3 while a state does not reconcile.
+  if ((await w2YearIssues(db, year, figures)).length > 0) {
+    throw new W2BlockedError(["reconciliation_mismatch"]);
+  }
   if (opts.requireBundledForm && !hasTemplate(year, "fw3")) throw new FormNotAvailableError(year);
   const totals = w3Totals(readableFigures(figures));
   return {
@@ -969,11 +1225,11 @@ async function sendOneW2AvailableNotice(
   return db.transaction(async (tx) => {
     await lockEmployee(tx, recipient.employeeId);
     if (await hasActiveW2Consent(tx, recipient.employeeId)) {
-      const boxes = readableBoxes(await employeeW2Figures(tx, recipient.employeeId, year));
+      const figures = readableBoxes(await employeeW2Figures(tx, recipient.employeeId, year));
       const { inserted } = await furnishCurrent(tx, {
         employeeId: recipient.employeeId,
         taxYear: year,
-        boxes,
+        figures,
         method: "portal_notice",
         actorId: null,
       });
@@ -1033,14 +1289,19 @@ async function w2sIssuable(db: Db, year: number): Promise<boolean> {
 /**
  * PAY-162: the block codes standing on any W-2 of the year (empty when every
  * W-2 is issuable). Unreadable config figures count as internal_mismatch.
- * MissingTaxConfigError propagates — callers report it on its own.
+ * Spec 24: a year-level reconciliation_mismatch adds that code (it holds the
+ * W-3 and the notice, S24-D11). MissingTaxConfigError propagates — callers
+ * report it on its own.
  */
 export async function yearW2BlockCodes(
   db: Pick<Db, "select">,
   year: number,
 ): Promise<W2IssueCode[]> {
   try {
-    return blockCodes(await w2FiguresForYear(db, year));
+    const figures = await w2FiguresForYear(db, year);
+    const codes = blockCodes(figures);
+    if ((await w2YearIssues(db, year, figures)).length > 0) codes.push("reconciliation_mismatch");
+    return codes;
   } catch (err) {
     if (err instanceof AnnualFiguresDefectError) return ["internal_mismatch"];
     throw err;
