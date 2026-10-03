@@ -1097,6 +1097,8 @@ export interface TaxDepositRow {
   status: TaxDepositStatus;
   /** Stored at write time (PAY-91); never derived from today's schedule. */
   periodKind: DepositPeriodKind;
+  /** PAY-193: 0 for the period's first row; > 0 for an additional (shortfall) deposit. */
+  seq: number;
   /** Set when the row was replaced by a monthly <-> quarterly change (PAY-91). */
   supersededAt: string | null;
   /** List rows only: the state-quarter's overpayment, on its anchor (latest-period) row only. */

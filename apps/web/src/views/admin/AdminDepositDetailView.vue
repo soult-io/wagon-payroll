@@ -94,6 +94,12 @@ function periodLabel(periodStart: string, periodKind?: "month" | "quarter"): str
   return `${monthName(month)} ${periodStart.slice(0, 4)}`;
 }
 
+/** PAY-193 D9.6: a shortfall row (seq > 0) reads "Additional deposit for {period}". */
+function rowPeriodLabel(row: Pick<TaxDepositRow, "periodStart" | "periodKind" | "seq">): string {
+  const label = periodLabel(row.periodStart, row.periodKind);
+  return row.seq > 0 ? `Additional deposit for ${label}` : label;
+}
+
 /** "California (CA)" / "Federal" — shared map (PAY-91 UX). */
 function jurisdictionLabel(jurisdiction: string): string {
   return sharedJurisdictionLabel(jurisdiction);
@@ -282,10 +288,7 @@ async function submitDeposit() {
       depositedOn: iso,
       eftpsConfirmation: eftpsConfirmation.value.trim(),
     });
-    notify.success(
-      "Deposit recorded",
-      `${periodLabel(target.periodStart, target.periodKind)} marked as deposited.`,
-    );
+    notify.success("Deposit recorded", `${rowPeriodLabel(target)} marked as deposited.`);
     depositDialog.value = false;
     await load();
   } catch (err) {
@@ -307,7 +310,11 @@ watch(depositId, load);
     <Skeleton v-if="loading" height="16rem" />
     <template v-else-if="deposit">
 <PageHeader
-        :title="`${periodLabel(deposit.periodStart, deposit.periodKind)} ${stateName(deposit.jurisdiction)} deposit`"
+        :title="
+          deposit.seq > 0
+            ? `${rowPeriodLabel(deposit)} (${stateName(deposit.jurisdiction)})`
+            : `${periodLabel(deposit.periodStart, deposit.periodKind)} ${stateName(deposit.jurisdiction)} deposit`
+        "
         :subtitle="subtitle"
       >
         <BackButton to="admin-deposits" label="Back to deposits" />
@@ -334,6 +341,10 @@ watch(depositId, load);
           </RouterLink>
         </template>
       </Message>
+
+      <p v-if="isState && !isSuperseded" class="muted small" data-testid="state-due-note">
+        Due date is approximate. Check {{ state }}'s deposit schedule.
+      </p>
 
       <Message v-if="paymentsUnavailable" severity="warn" :closable="false">
         We couldn't check the payments already made for this period, so the amount above may not
@@ -529,7 +540,7 @@ watch(depositId, load);
     >
       <div class="stack" v-if="deposit">
         <p class="muted small">
-          {{ periodLabel(deposit.periodStart, deposit.periodKind) }} — {{ money(deposit.amount) }},
+          {{ rowPeriodLabel(deposit) }} — {{ money(deposit.amount) }},
           due {{ date(deposit.dueDate) }}. Pay on eftps.gov first; this records the deposit.
         </p>
         <div class="field">

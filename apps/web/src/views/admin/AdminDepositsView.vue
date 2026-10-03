@@ -67,6 +67,12 @@ function periodLabel(periodStart: string, periodKind?: "month" | "quarter"): str
   return `${monthName(month)} ${periodStart.slice(0, 4)}`;
 }
 
+/** PAY-193 D9.6: a shortfall row (seq > 0) reads "Additional deposit for {period}". */
+function rowPeriodLabel(row: Pick<TaxDepositRow, "periodStart" | "periodKind" | "seq">): string {
+  const label = periodLabel(row.periodStart, row.periodKind);
+  return row.seq > 0 ? `Additional deposit for ${label}` : label;
+}
+
 /** "California (CA)" / "Federal" — shared map (PAY-91 UX). */
 function jurisdictionLabel(jurisdiction: string): string {
   return sharedJurisdictionLabel(jurisdiction);
@@ -186,10 +192,7 @@ async function submitDeposit() {
       depositedOn: iso,
       eftpsConfirmation: eftpsConfirmation.value.trim(),
     });
-    notify.success(
-      "Deposit recorded",
-      `${periodLabel(target.periodStart, target.periodKind)} marked as deposited.`,
-    );
+    notify.success("Deposit recorded", `${rowPeriodLabel(target)} marked as deposited.`);
     depositDialog.value = false;
     await load();
   } catch (err) {
@@ -389,7 +392,7 @@ onMounted(async () => {
           />
         </template>
         <Column field="periodStart" header="Period" style="width: 10rem" sortable>
-          <template #body="{ data }">{{ periodLabel(data.periodStart, data.periodKind) }}</template>
+          <template #body="{ data }">{{ rowPeriodLabel(data) }}</template>
         </Column>
         <Column field="jurisdiction" header="Jurisdiction" style="width: 8rem" sortable sortField="jurisdiction">
   <template #body="{ data }">
@@ -489,7 +492,7 @@ onMounted(async () => {
     >
       <div v-if="attachTarget" class="stack">
         <p class="muted small" style="margin: 0">
-          {{ periodLabel(attachTarget.periodStart, attachTarget.periodKind) }} — {{ money(attachTarget.amount) }}.
+          {{ rowPeriodLabel(attachTarget) }} — {{ money(attachTarget.amount) }}.
           Payment confirmations from eftps.gov (acknowledgment PDFs / receipts). Stored encrypted;
           every download is audit-logged.
         </p>
@@ -545,7 +548,7 @@ onMounted(async () => {
     >
       <div v-if="depositTarget" class="stack">
         <p class="muted small">
-          {{ periodLabel(depositTarget.periodStart, depositTarget.periodKind) }} — {{ money(depositTarget.amount) }},
+          {{ rowPeriodLabel(depositTarget) }} — {{ money(depositTarget.amount) }},
           due {{ date(depositTarget.dueDate) }}. Pay on eftps.gov first; this records the deposit.
         </p>
         <div class="field">
@@ -577,7 +580,7 @@ onMounted(async () => {
     >
       <div v-if="confirmationTarget" class="stack">
         <p class="muted small">
-          {{ periodLabel(confirmationTarget.periodStart, confirmationTarget.periodKind) }}
+          {{ rowPeriodLabel(confirmationTarget) }}
         </p>
         <div class="field">
           <label>Deposited on</label>
