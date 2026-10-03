@@ -88,9 +88,11 @@ function expectMoney(
   expect(textOf(doc, field.cents)).toBe(cents);
 }
 
-// History runs paid in 2025 are issued "in" late 2025: issuing a past pay
-// date in another calendar year is refused (Spec 26 (PAY-173) D9).
-const ISSUE_CLOCK = () => new Date("2025-12-31T12:00:00Z");
+// Runs are issued on their pay date (issueOn): a run whose pay-date quarter
+// has ended is late and needs the PAY-193 L4 confirmation. Outside an issue
+// the clock stays at late 2025.
+let issueOn: string | null = null;
+const ISSUE_CLOCK = () => new Date(`${issueOn ?? "2025-12-31"}T12:00:00Z`);
 
 beforeAll(async () => {
   t = await createTestApp({}, { clock: ISSUE_CLOCK });
@@ -133,6 +135,7 @@ beforeAll(async () => {
   expect(gen.statusCode, gen.body).toBe(201);
   const run = (gen.json() as { generated: (typeof payrollRuns.$inferSelect)[] }).generated[0];
   if (!run) throw new Error(`no run generated: ${gen.body}`);
+  issueOn = run.payDate;
   for (const action of ["approve", "issue"] as const) {
     const res = await t.app.inject({
       method: "POST",
@@ -142,6 +145,7 @@ beforeAll(async () => {
     });
     expect(res.statusCode, res.body).toBe(200);
   }
+  issueOn = null;
 
   const filing = await t.db
     .insert(taxFilings)

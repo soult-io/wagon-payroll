@@ -27,9 +27,11 @@ import { round2 } from "@payroll/engine/money";
 let t: TestContext;
 let adminCookie: string;
 
-// History runs paid in 2025 are issued "in" late 2025: issuing a past pay
-// date in another calendar year is refused (Spec 26 (PAY-173) D9).
-const ISSUE_CLOCK = () => new Date("2025-12-31T12:00:00Z");
+// Runs are issued on their pay date (issueOn): a run whose pay-date quarter
+// has ended is late and needs the PAY-193 L4 confirmation. Outside an issue
+// the clock stays at late 2025.
+let issueOn: string | null = null;
+const ISSUE_CLOCK = () => new Date(`${issueOn ?? "2025-12-31"}T12:00:00Z`);
 
 beforeAll(async () => {
   t = await createTestApp({}, { clock: ISSUE_CLOCK });
@@ -90,12 +92,21 @@ async function generate(employeeId: number, year: number, month: number) {
 }
 
 async function act(publicId: string, action: "approve" | "issue" | "void", reason?: string) {
-  return t.app.inject({
-    method: "POST",
-    url: `/api/admin/payroll-runs/${publicId}/${action}`,
-    headers: sessionHeader(adminCookie),
-    payload: reason ? { reason } : {},
-  });
+  const rows = await t.db
+    .select({ payDate: payrollRuns.payDate })
+    .from(payrollRuns)
+    .where(eq(payrollRuns.publicId, publicId));
+  issueOn = action === "issue" ? (rows[0]?.payDate ?? null) : null;
+  try {
+    return await t.app.inject({
+      method: "POST",
+      url: `/api/admin/payroll-runs/${publicId}/${action}`,
+      headers: sessionHeader(adminCookie),
+      payload: reason ? { reason } : {},
+    });
+  } finally {
+    issueOn = null;
+  }
 }
 
 async function runEntries(runId: number) {
