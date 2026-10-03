@@ -852,47 +852,85 @@ export async function syncDepositsForPayDate(
   input: { payDate: string; jurisdictions: readonly string[]; today: string; actorId: string },
 ): Promise<string[]> {
   const { payDate, today, actorId } = input;
-  const followUps: string[] = [];
-  const codeFor = (jurisdiction: string, periodStart: string, seq: number, status: string) => {
-    if (seq > 0) followUps.push(`deposit_shortfall:${jurisdiction}:${periodStart}`);
-    else if (status === "overdue") followUps.push(`deposit_overdue:${jurisdiction}:${periodStart}`);
-  };
   await tx.execute(SYNC_LOCK);
-  const result: SyncResult = { ...EMPTY_RESULT };
   const monthStart = `${payDate.slice(0, 7)}-01`;
-  const federal = await syncFederalDeposit(tx, config, monthStart, today, result, {
-    actorId,
-    overdueOnInsert: true,
-  });
-  if (federal.inserted) {
-    codeFor("federal", monthStart, federal.inserted.seq, federal.inserted.status);
-  }
+  const federal = await syncFederalDeposit(
+    tx,
+    config,
+    monthStart,
+    today,
+    { ...EMPTY_RESULT },
+    {
+      actorId,
+      overdueOnInsert: true,
+    },
+  );
+  const followUps: string[] = [];
+  const fedCode = federal.inserted && followUpCode("federal", monthStart, federal.inserted);
+  if (fedCode) followUps.push(fedCode);
 
-  const year = Number(payDate.slice(0, 4));
-  const quarter = quarterOfMonth(Number(payDate.slice(5, 7)));
+  const unitKey = {
+    year: Number(payDate.slice(0, 4)),
+    quarter: quarterOfMonth(Number(payDate.slice(5, 7))),
+  };
   const schedules = await loadStateSchedules(tx);
   for (const state of input.jurisdictions) {
-    const codes: string[] = [];
     try {
-      await tx.transaction(async (sp) => {
-        for (const unit of await loadStateUnits(sp, { state, year, quarter })) {
-          const plan = planUnit(unit, schedules, today);
-          await applyPlan(sp, config, unit, plan, { ...EMPTY_RESULT }, actorId);
-          for (const i of plan.inserts) {
-            if (i.seq > 0) codes.push(`deposit_shortfall:${state}:${i.periodStart}`);
-            else if (i.status === "overdue") codes.push(`deposit_overdue:${state}:${i.periodStart}`);
-          }
-        }
-      });
+      followUps.push(
+        ...(await syncStateForPayDate(
+          tx,
+          config,
+          { state, ...unitKey },
+          schedules,
+          today,
+          actorId,
+        )),
+      );
     } catch (err) {
       // Jurisdiction and failure code only: never amounts or row data.
       console.warn(`[deposits] late-issue sync for ${state} deferred (${failureCode(err)})`);
       followUps.push(`deposit_sync_deferred:${state}`);
-      continue;
     }
-    followUps.push(...codes);
   }
   return followUps;
+}
+
+/** A late issue's follow-up code for an inserted deposit row, or null (L4.3). */
+function followUpCode(
+  jurisdiction: string,
+  periodStart: string,
+  row: { seq: number; status: string },
+): string | null {
+  if (row.seq > 0) return `deposit_shortfall:${jurisdiction}:${periodStart}`;
+  if (row.status === "overdue") return `deposit_overdue:${jurisdiction}:${periodStart}`;
+  return null;
+}
+
+/**
+ * One state's unit for the pay-date quarter, planned and applied in its own
+ * savepoint (a failure rolls back that state's writes only). Returns the
+ * follow-up codes of the rows it inserted.
+ */
+async function syncStateForPayDate(
+  tx: Tx,
+  config: AppConfig,
+  filter: { state: string; year: number; quarter: number },
+  schedules: Map<string, StateSchedule>,
+  today: string,
+  actorId: string,
+): Promise<string[]> {
+  const codes: string[] = [];
+  await tx.transaction(async (sp) => {
+    for (const unit of await loadStateUnits(sp, filter)) {
+      const plan = planUnit(unit, schedules, today);
+      await applyPlan(sp, config, unit, plan, { ...EMPTY_RESULT }, actorId);
+      for (const i of plan.inserts) {
+        const code = followUpCode(filter.state, i.periodStart, i);
+        if (code) codes.push(code);
+      }
+    }
+  });
+  return codes;
 }
 
 const EMPTY_RESULT: SyncResult = {

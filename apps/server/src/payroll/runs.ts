@@ -1096,7 +1096,11 @@ export interface TransitionResult {
 async function auditRefusal(db: Db, actorId: string, err: unknown): Promise<void> {
   let row: { action: string; entityId: string; after: Record<string, unknown> } | null = null;
   if (err instanceof StaleDraftError) {
-    row = { action: "run.stale_detected", entityId: err.runPublicId, after: { fields: err.fields } };
+    row = {
+      action: "run.stale_detected",
+      entityId: err.runPublicId,
+      after: { fields: err.fields },
+    };
   } else if (err instanceof LateIssueRefusedError) {
     row = {
       action: "run.late_issue_refused",
@@ -1127,6 +1131,74 @@ async function auditRefusal(db: Db, actorId: string, err: unknown): Promise<void
 }
 
 /**
+ * The conditional status update and its run.<action> audit row. Conditional
+ * on the status read: a writer outside the lock can never be overwritten
+ * (e.g. an issued run turned void).
+ */
+async function writeTransition(
+  tx: Tx,
+  run: RunRow,
+  input: TransitionInput,
+  late: boolean,
+): Promise<RunRow> {
+  const updated = await tx
+    .update(payrollRuns)
+    .set(transitionPatch(input, new Date()))
+    .where(and(eq(payrollRuns.id, run.id), eq(payrollRuns.status, run.status)))
+    .returning();
+  const next = updated[0];
+  if (!next) {
+    throw new PayrollServiceError(
+      "invalid_transition",
+      `cannot ${input.action} this run: its status changed from '${run.status}' while the request was running; reload and try again`,
+    );
+  }
+  await tx.insert(auditEvents).values({
+    actorId: input.actorId,
+    action: `run.${input.action}`,
+    entity: "payroll_run",
+    entityId: run.publicId,
+    before: { status: run.status },
+    after: {
+      status: next.status,
+      ...(input.reason ? { reason: input.reason } : {}),
+      ...(late ? { late: true } : {}),
+    },
+  });
+  return next;
+}
+
+/** One transition inside its transaction (lock order: employee → FILING_CLOSE_LOCK → SYNC_LOCK). */
+async function applyTransition(
+  tx: Tx,
+  deps: GenerateDeps,
+  rule: { from: readonly string[] },
+  input: TransitionInput,
+  today: string,
+): Promise<TransitionResult> {
+  const found = await getRunByPublicId(tx, input.publicId);
+  if (!found) throw new PayrollServiceError("run_not_found", `run ${input.publicId} not found`);
+  await lockEmployeeRuns(tx, found.employeeId);
+  // Re-read under the lock: a parallel issue may have changed it.
+  const run = (await getRunByPublicId(tx, input.publicId)) ?? found;
+  assertTransitionAllowed(rule, run, input);
+  if (input.action === "void") return { run: await writeTransition(tx, run, input, false) };
+  await assertRunCurrent(tx, run, input.action, today);
+  if (input.action === "approve") return { run: await writeTransition(tx, run, input, false) };
+
+  const late = await assertLateIssueConfirmed(tx, run, today, input.latePayment);
+  const next = await writeTransition(tx, run, input, late !== null);
+  const followUps = late
+    ? await applyLateIssueEffects(tx, deps.config, next, late, today, input.actorId)
+    : null;
+  const tplCtx = await templateContext(tx as DbLike, deps.config);
+  await notifyPayslipIssued(tx as DbLike & Pick<Db, "insert">, tplCtx, next);
+  return late && followUps
+    ? { run: next, lateIssue: { taxYear: late.taxYear, followUps } }
+    : { run: next };
+}
+
+/**
  * Apply a state-machine transition with audit_events in the same transaction.
  * Every action takes the per-employee lock; approve and issue then run the
  * Spec 26 checks (assertRunCurrent); a late issue (PAY-193 L4) also needs
@@ -1137,68 +1209,15 @@ export async function transitionRunDetailed(
   deps: GenerateDeps,
   input: TransitionInput,
 ): Promise<TransitionResult> {
-  const { db } = deps;
   const rule = TRANSITIONS[input.action];
   if (!rule) throw new PayrollServiceError("invalid_transition", `unknown action ${input.action}`);
   const today = localToday(deps);
   try {
-    return await db.transaction(async (tx) => {
-      const found = await getRunByPublicId(tx, input.publicId);
-      if (!found) throw new PayrollServiceError("run_not_found", `run ${input.publicId} not found`);
-      await lockEmployeeRuns(tx, found.employeeId);
-      // Re-read under the lock: a parallel issue may have changed it.
-      const run = (await getRunByPublicId(tx, input.publicId)) ?? found;
-      assertTransitionAllowed(rule, run, input);
-      if (input.action !== "void") await assertRunCurrent(tx, run, input.action, today);
-      const late =
-        input.action === "issue"
-          ? await assertLateIssueConfirmed(tx, run, today, input.latePayment)
-          : null;
-
-      // Conditional on the status read: a writer outside the lock can never
-      // be overwritten (e.g. an issued run turned void).
-      const updated = await tx
-        .update(payrollRuns)
-        .set(transitionPatch(input, new Date()))
-        .where(and(eq(payrollRuns.id, run.id), eq(payrollRuns.status, run.status)))
-        .returning();
-      const next = updated[0];
-      if (!next) {
-        throw new PayrollServiceError(
-          "invalid_transition",
-          `cannot ${input.action} this run: its status changed from '${run.status}' while the request was running; reload and try again`,
-        );
-      }
-
-      await tx.insert(auditEvents).values({
-        actorId: input.actorId,
-        action: `run.${input.action}`,
-        entity: "payroll_run",
-        entityId: run.publicId,
-        before: { status: run.status },
-        after: {
-          status: next.status,
-          ...(input.reason ? { reason: input.reason } : {}),
-          ...(late ? { late: true } : {}),
-        },
-      });
-
-      const followUps = late
-        ? await applyLateIssueEffects(tx, deps.config, next, late, today, input.actorId)
-        : null;
-
-      if (input.action === "issue") {
-        const tplCtx = await templateContext(tx as DbLike, deps.config);
-        await notifyPayslipIssued(tx as DbLike & Pick<Db, "insert">, tplCtx, next);
-      }
-      return late && followUps
-        ? { run: next, lateIssue: { taxYear: late.taxYear, followUps } }
-        : { run: next };
-    });
+    return await deps.db.transaction((tx) => applyTransition(tx, deps, rule, input, today));
   } catch (err) {
     // D4 / L4: the refusal rolled the transaction back; record it on its
     // own. A failed audit write is logged and never replaces the 409.
-    await auditRefusal(db, input.actorId, err);
+    await auditRefusal(deps.db, input.actorId, err);
     throw err;
   }
 }
