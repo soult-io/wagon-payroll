@@ -838,7 +838,11 @@ export async function listMyW2Years(
 
 const W2_NOTIFIED_YEARS_KEY = "w2_available_notified_years";
 
-async function notifiedYears(db: Db): Promise<number[]> {
+/**
+ * The tax years whose w2_available notice already went out (PAY-193 L4
+ * reads it to decide the w2_changed notice).
+ */
+export async function notifiedYears(db: Pick<Db, "select">): Promise<number[]> {
   const rows = await db
     .select({ value: appSettings.value })
     .from(appSettings)

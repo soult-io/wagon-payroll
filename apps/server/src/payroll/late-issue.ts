@@ -7,6 +7,7 @@
 
 import { formatMoney, stateName } from "@payroll/shared";
 import { quarterEnd } from "../filings/service.js";
+import type { LateStateQuestions } from "./errors.js";
 
 /**
  * States whose withholding RETURN can be filed before the quarter ends
@@ -131,12 +132,7 @@ export function attestationText(payDate: string, netPay = "{netPay}"): string {
   );
 }
 
-export interface StateQuestions {
-  jurisdiction: string;
-  withholdingReturn: string;
-  suiWageReport: string;
-  annualReconciliation: string;
-}
+export type StateQuestions = LateStateQuestions;
 
 /**
  * Server-rendered state questions (copy 1.7). `noIncomeTax` = the state

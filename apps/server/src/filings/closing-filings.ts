@@ -6,6 +6,7 @@
 import { and, eq, or } from "drizzle-orm";
 import { taxFilings } from "@payroll/db";
 import type { DbLike } from "../payroll/resolve.js";
+import type { RunSnapshot } from "../payroll/snapshot.js";
 
 export interface ClosingFiling {
   formType: "941" | "940" | "w2_w3";
@@ -87,4 +88,23 @@ export function closingFilingCorrection(f: ClosingFiling): string {
 export function joinWithAnd(items: string[]): string {
   if (items.length <= 2) return items.join(" and ");
   return `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
+}
+
+/**
+ * PAY-193 L4 (D9.3): the state jurisdictions a late issue asks about — the
+ * snapshot's work state, or none. kind 'none' states are included (they may
+ * still have SUI). The residence locality joins when Spec 25 local
+ * withholding writes one into the snapshot.
+ */
+export function stateReturnJurisdictions(snapshot: RunSnapshot): string[] {
+  const workState = snapshot.inputs.state?.workState;
+  return workState ? [workState] : [];
+}
+
+/**
+ * PAY-119 hook: refuse a late issue for a semiweekly depositor. Always
+ * allowed until PAY-119 records the depositor schedule.
+ */
+export function lateIssueAllowed(): boolean {
+  return true;
 }

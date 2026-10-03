@@ -5,7 +5,7 @@
  * Every mutation writes audit_events in the same transaction.
  */
 
-import { and, eq, isNull, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
 import {
   auditEvents,
   authUser,
@@ -15,6 +15,7 @@ import {
   payrollEntries,
   payrollRuns,
   paySchedules,
+  stateTaxConfigs,
 } from "@payroll/db";
 import {
   calculatePayroll,
@@ -31,7 +32,9 @@ import {
   payrollDraftReady as tplPayrollDraftReady,
   payslipIssued as tplPayslipIssued,
   type TemplateContext,
+  w2Changed as tplW2Changed,
 } from "@payroll/notifications";
+import { parseCents } from "@payroll/shared";
 import type { Db } from "../db.js";
 import { isUniqueViolation } from "../db.js";
 import type { AppConfig } from "../config.js";
@@ -57,8 +60,28 @@ import {
   closingFilingLabel,
   filedClosingFilings,
   joinWithAnd,
+  lateIssueAllowed,
+  stateReturnJurisdictions,
 } from "../filings/closing-filings.js";
+import { isW2Available, notifiedYears } from "../filings/annual.js";
+import { refreshFilingsForPayDate } from "../filings/service.js";
 import { FILING_CLOSE_LOCK } from "../filings/shared.js";
+import { syncDepositsForPayDate } from "../deposits/service.js";
+import {
+  AMOUNT_MISMATCH_MESSAGE,
+  ATTESTATION_VERSION,
+  attestationText,
+  confirmationRequiredMessage,
+  incompleteMessage,
+  type LateTrigger,
+  lateTrigger,
+  type StateQuestions,
+  stateAttestationText,
+  stateQuestions,
+  type StateReturnAnswer,
+  stateReturnFiledMessage,
+  usd,
+} from "./late-issue.js";
 import { localDate, type Period, type RunDates, runDates, ytdKeyOf } from "./run-dates.js";
 import {
   fingerprintDiff,
@@ -760,6 +783,43 @@ class StaleDraftError extends PayrollServiceError {
 }
 
 /**
+ * PAY-193 L4 (L4.6): a late-issue refusal written to audit_events after the
+ * rollback (run.late_issue_refused). Never carries the typed amount.
+ */
+class LateIssueRefusedError extends PayrollServiceError {
+  constructor(
+    code: "late_payment_incomplete" | "state_return_filed" | "late_payment_amount_mismatch",
+    message: string,
+    details: Readonly<Record<string, string | string[]>>,
+    public runPublicId: string,
+    public payDate: string,
+    public jurisdictions?: string[],
+  ) {
+    super(code, message, details);
+  }
+}
+
+/** PAY-193 L4: the admin's confirmation of a late issue (request body `latePayment`). */
+export interface LatePaymentInput {
+  attestationVersion: 1;
+  netPayCents: number;
+  stateReturns: StateReturnAnswer[];
+}
+
+/** What a late issue needs after the checks pass (L4.4). */
+interface LateIssueContext {
+  trigger: LateTrigger;
+  taxYear: number;
+  questions: StateQuestions[];
+  latePayment: LatePaymentInput;
+}
+
+/** The company-local date of the request (computed once per request). */
+function localToday(deps: GenerateDeps): string {
+  return localDate((deps.clock ?? (() => new Date()))(), deps.config.appTz);
+}
+
+/**
  * PAY-193 (D9.4, D9.5): a past pay date whose federal closing filing is
  * filed cannot be issued. Takes FILING_CLOSE_LOCK after the employee lock
  * (global order: employee → FILING_CLOSE_LOCK → SYNC_LOCK), so a concurrent
@@ -779,29 +839,17 @@ async function assertPayPeriodOpen(tx: Tx, payDate: string): Promise<void> {
 /**
  * Spec 26 (PAY-173) checks before approve/issue, inside the locked
  * transaction: PAY-193 filed-return guard (issue with a past pay date only,
- * first); D9 (issue only) — a past pay date in another calendar year
- * than the company's local today; D6 — an issued run of the same pay-date
- * year already sorts after this one; D4 — recompute the draft (read-only)
- * and refuse when it no longer matches the stored snapshot.
+ * first); D6 — an issued run of the same pay-date year already sorts after
+ * this one; D4 — recompute the draft (read-only) and refuse when it no
+ * longer matches the stored snapshot.
  */
 async function assertRunCurrent(
   tx: Tx,
-  deps: GenerateDeps,
   run: RunRow,
   action: RunAction,
+  today: string,
 ): Promise<void> {
-  if (action === "issue") {
-    const today = localDate((deps.clock ?? (() => new Date()))(), deps.config.appTz);
-    const year = run.payDate.slice(0, 4);
-    const pastPayDate = run.payDate < today;
-    if (pastPayDate) await assertPayPeriodOpen(tx, run.payDate);
-    if (pastPayDate && year !== today.slice(0, 4)) {
-      throw new PayrollServiceError(
-        "past_pay_date_other_year",
-        `This payroll's pay date, ${run.payDate}, is in ${year}, and that year has ended. Wagon Payroll can't record a payroll in a past year yet, so nothing was issued. If you paid your team on ${run.payDate}, keep that date. Don't change it. Keep your own record of the payment and make sure it's included in your ${year} payroll tax filings. A way to record it here is coming soon.`,
-      );
-    }
-  }
+  if (action === "issue" && run.payDate < today) await assertPayPeriodOpen(tx, run.payDate);
   const later = await findLaterIssuedRun(tx, run.employeeId, ytdKeyOf(run, run.id));
   if (later) throw ytdOrderConflict(later);
 
@@ -812,6 +860,192 @@ async function assertRunCurrent(
   });
   const fields = fingerprintDiff(run.runSnapshot as RunSnapshot, recomputed.snapshot);
   if (fields.length > 0) throw new StaleDraftError(fields, run.publicId);
+}
+
+/** PL amendment 3: the no-income-tax variant comes from the state config row's kind. */
+async function noIncomeTaxStates(
+  tx: DbLike,
+  jurisdictions: readonly string[],
+  taxYear: number,
+): Promise<Set<string>> {
+  const none = new Set<string>();
+  for (const code of jurisdictions) {
+    const rows = await tx
+      .select({ kind: stateTaxConfigs.kind })
+      .from(stateTaxConfigs)
+      .where(
+        and(
+          eq(stateTaxConfigs.taxYear, taxYear),
+          or(
+            eq(stateTaxConfigs.jurisdiction, code),
+            sql`${stateTaxConfigs.jurisdiction} LIKE ${`${code}:%`}`,
+          ),
+        ),
+      )
+      .limit(1);
+    if (rows[0]?.kind === "none") none.add(code);
+  }
+  return none;
+}
+
+/** The run's stored net_pay entry in cents (NUMERIC string, exact; no floats). */
+async function storedNetPayCents(tx: DbLike, runId: number): Promise<number | null> {
+  const rows = await tx
+    .select({ amount: payrollEntries.amount })
+    .from(payrollEntries)
+    .where(and(eq(payrollEntries.runId, runId), eq(payrollEntries.category, "net_pay")))
+    .limit(1);
+  return rows[0] ? parseCents(rows[0].amount) : null;
+}
+
+/**
+ * PAY-193 L4 checks 4–9 (L4.4), after D4: null when the run is not late
+ * (any `latePayment` is then ignored); else the confirmation, the state
+ * answers and the net-pay match, in that order.
+ */
+async function assertLateIssueConfirmed(
+  tx: Tx,
+  run: RunRow,
+  today: string,
+  latePayment: LatePaymentInput | undefined,
+): Promise<LateIssueContext | null> {
+  const snapshot = run.runSnapshot as RunSnapshot;
+  const trigger = lateTrigger(run.payDate, today, snapshot.inputs.state?.workState ?? null);
+  if (trigger === null || !lateIssueAllowed()) return null;
+  const payDate = run.payDate;
+  const taxYear = snapshot.inputs.resolution?.taxYear ?? Number(payDate.slice(0, 4));
+  const jurisdictions = stateReturnJurisdictions(snapshot);
+  const none = await noIncomeTaxStates(tx, jurisdictions, taxYear);
+  const questions = jurisdictions.map((j) => stateQuestions(j, payDate, none.has(j)));
+
+  if (!latePayment) {
+    throw new PayrollServiceError(
+      "late_payment_confirmation_required",
+      confirmationRequiredMessage(payDate),
+      {
+        payDate,
+        attestation: {
+          version: ATTESTATION_VERSION,
+          text: attestationText(payDate),
+          stateQuestions: questions,
+        },
+        stateJurisdictions: jurisdictions,
+      },
+    );
+  }
+
+  const answered = latePayment.stateReturns.map((r) => r.jurisdiction);
+  const exact =
+    new Set(answered).size === answered.length &&
+    answered.length === jurisdictions.length &&
+    jurisdictions.every((j) => answered.includes(j));
+  if (!exact) {
+    throw new LateIssueRefusedError(
+      "late_payment_incomplete",
+      incompleteMessage(jurisdictions),
+      { payDate, stateJurisdictions: jurisdictions },
+      run.publicId,
+      payDate,
+    );
+  }
+
+  const filed = latePayment.stateReturns
+    .filter((r) => r.withholdingReturnFiled || r.suiWageReportFiled || r.annualReconciliationFiled)
+    .map((r) => r.jurisdiction);
+  if (filed.length > 0) {
+    throw new LateIssueRefusedError(
+      "state_return_filed",
+      stateReturnFiledMessage(filed),
+      { payDate, jurisdictions: filed },
+      run.publicId,
+      payDate,
+      filed,
+    );
+  }
+
+  if ((await storedNetPayCents(tx, run.id)) !== latePayment.netPayCents) {
+    throw new LateIssueRefusedError(
+      "late_payment_amount_mismatch",
+      AMOUNT_MISMATCH_MESSAGE,
+      { payDate },
+      run.publicId,
+      payDate,
+    );
+  }
+  return { trigger, taxYear, questions, latePayment };
+}
+
+/**
+ * L4.7: the w2_changed notice — only when the year's W-2 is available, its
+ * w2_available notice already went out, and the employee is a W-2 employee
+ * with a login. Returns true when the outbox row was written.
+ */
+async function notifyW2Changed(
+  tx: Tx,
+  config: AppConfig,
+  run: RunRow,
+  taxYear: number,
+  today: string,
+): Promise<boolean> {
+  if (!isW2Available(taxYear, today)) return false;
+  if (!(await notifiedYears(tx)).includes(taxYear)) return false;
+  const rows = await tx.select().from(employees).where(eq(employees.id, run.employeeId)).limit(1);
+  const employee = rows[0];
+  if (!employee?.userId || employee.employmentType !== "w2") return false;
+  const rendered = tplW2Changed(await templateContext(tx as DbLike, config), { taxYear });
+  await tx.insert(emailOutbox).values({
+    userId: employee.userId,
+    eventType: EVENT_TYPE.w2Changed,
+    subject: rendered.subject,
+    bodyHtml: rendered.html,
+  });
+  return true;
+}
+
+/**
+ * L4.5 steps 6–9 for a late run, after the run.issue audit: refresh the
+ * unfiled closing worksheets, sync the pay-date period's deposits under
+ * SYNC_LOCK, send the W-2 changed notice, and write run.issued_late.
+ */
+async function applyLateIssueEffects(
+  tx: Tx,
+  config: AppConfig,
+  run: RunRow,
+  late: LateIssueContext,
+  today: string,
+  actorId: string,
+): Promise<string[]> {
+  await refreshFilingsForPayDate(tx, run.payDate);
+  const followUps = await syncDepositsForPayDate(tx, config, {
+    payDate: run.payDate,
+    jurisdictions: late.questions.map((q) => q.jurisdiction),
+    today,
+    actorId,
+  });
+  if (await notifyW2Changed(tx, config, run, late.taxYear, today)) {
+    followUps.push("w2_changed_notice_sent");
+  }
+  const { latePayment } = late;
+  await tx.insert(auditEvents).values({
+    actorId,
+    action: "run.issued_late",
+    entity: "payroll_run",
+    entityId: run.publicId,
+    before: null,
+    after: {
+      payDate: run.payDate,
+      taxYear: late.taxYear,
+      localToday: today,
+      trigger: late.trigger,
+      attestationVersion: latePayment.attestationVersion,
+      attestationText: attestationText(run.payDate, usd(latePayment.netPayCents)),
+      netPayCents: latePayment.netPayCents,
+      stateReturns: latePayment.stateReturns,
+      stateAttestationText: stateAttestationText(late.questions, latePayment.stateReturns),
+      followUps,
+    },
+  });
+  return followUps;
 }
 
 /** Status precondition of the transition, and void's required reason. */
@@ -843,18 +1077,70 @@ function transitionPatch(
       : { status: "void", voidedAt: now, voidReason: input.reason!.trim(), updatedAt: now };
 }
 
+export interface TransitionInput {
+  publicId: string;
+  action: RunAction;
+  actorId: string;
+  reason?: string;
+  /** PAY-193 L4: the late-issue confirmation; ignored unless the run is late. */
+  latePayment?: LatePaymentInput;
+}
+
+export interface TransitionResult {
+  run: RunRow;
+  /** PAY-193 L4: set only on a late issue. Codes only, no amounts. */
+  lateIssue?: { taxYear: number; followUps: string[] };
+}
+
+/** Audit rows written after the rollback (D4 run.stale_detected, L4 run.late_issue_refused). */
+async function auditRefusal(db: Db, actorId: string, err: unknown): Promise<void> {
+  let row: { action: string; entityId: string; after: Record<string, unknown> } | null = null;
+  if (err instanceof StaleDraftError) {
+    row = { action: "run.stale_detected", entityId: err.runPublicId, after: { fields: err.fields } };
+  } else if (err instanceof LateIssueRefusedError) {
+    row = {
+      action: "run.late_issue_refused",
+      entityId: err.runPublicId,
+      after: {
+        payDate: err.payDate,
+        reason: err.code,
+        ...(err.jurisdictions ? { jurisdictions: err.jurisdictions } : {}),
+      },
+    };
+  }
+  if (!row) return;
+  try {
+    await db.insert(auditEvents).values({
+      actorId,
+      action: row.action,
+      entity: "payroll_run",
+      entityId: row.entityId,
+      before: null,
+      after: row.after,
+    });
+  } catch (auditErr) {
+    // Error class only: a driver message can carry query parameters.
+    console.warn(
+      `[payroll] ${row.action} audit write failed for run ${row.entityId} (${auditErr instanceof Error ? auditErr.name : "unknown"})`,
+    );
+  }
+}
+
 /**
  * Apply a state-machine transition with audit_events in the same transaction.
  * Every action takes the per-employee lock; approve and issue then run the
- * Spec 26 checks (assertRunCurrent). Issue inserts the payslip_issued outbox row.
+ * Spec 26 checks (assertRunCurrent); a late issue (PAY-193 L4) also needs
+ * the admin's confirmation and updates worksheets, deposits and the W-2
+ * notice in the same transaction. Issue inserts the payslip_issued outbox row.
  */
-export async function transitionRun(
+export async function transitionRunDetailed(
   deps: GenerateDeps,
-  input: { publicId: string; action: RunAction; actorId: string; reason?: string },
-): Promise<RunRow> {
+  input: TransitionInput,
+): Promise<TransitionResult> {
   const { db } = deps;
   const rule = TRANSITIONS[input.action];
   if (!rule) throw new PayrollServiceError("invalid_transition", `unknown action ${input.action}`);
+  const today = localToday(deps);
   try {
     return await db.transaction(async (tx) => {
       const found = await getRunByPublicId(tx, input.publicId);
@@ -863,7 +1149,11 @@ export async function transitionRun(
       // Re-read under the lock: a parallel issue may have changed it.
       const run = (await getRunByPublicId(tx, input.publicId)) ?? found;
       assertTransitionAllowed(rule, run, input);
-      if (input.action !== "void") await assertRunCurrent(tx, deps, run, input.action);
+      if (input.action !== "void") await assertRunCurrent(tx, run, input.action, today);
+      const late =
+        input.action === "issue"
+          ? await assertLateIssueConfirmed(tx, run, today, input.latePayment)
+          : null;
 
       // Conditional on the status read: a writer outside the lock can never
       // be overwritten (e.g. an issued run turned void).
@@ -886,37 +1176,54 @@ export async function transitionRun(
         entity: "payroll_run",
         entityId: run.publicId,
         before: { status: run.status },
-        after: { status: next.status, ...(input.reason ? { reason: input.reason } : {}) },
+        after: {
+          status: next.status,
+          ...(input.reason ? { reason: input.reason } : {}),
+          ...(late ? { late: true } : {}),
+        },
       });
+
+      const followUps = late
+        ? await applyLateIssueEffects(tx, deps.config, next, late, today, input.actorId)
+        : null;
 
       if (input.action === "issue") {
         const tplCtx = await templateContext(tx as DbLike, deps.config);
         await notifyPayslipIssued(tx as DbLike & Pick<Db, "insert">, tplCtx, next);
       }
-      return next;
+      return late && followUps
+        ? { run: next, lateIssue: { taxYear: late.taxYear, followUps } }
+        : { run: next };
     });
   } catch (err) {
-    // D4: the refusal rolled the transaction back; record it on its own. A
-    // failed audit write is logged and never replaces the 409 stale_draft.
-    if (err instanceof StaleDraftError) {
-      try {
-        await db.insert(auditEvents).values({
-          actorId: input.actorId,
-          action: "run.stale_detected",
-          entity: "payroll_run",
-          entityId: err.runPublicId,
-          before: null,
-          after: { fields: err.fields },
-        });
-      } catch (auditErr) {
-        // Error class only: a driver message can carry query parameters.
-        console.warn(
-          `[payroll] run.stale_detected audit write failed for run ${err.runPublicId} (${auditErr instanceof Error ? auditErr.name : "unknown"})`,
-        );
-      }
-    }
+    // D4 / L4: the refusal rolled the transaction back; record it on its
+    // own. A failed audit write is logged and never replaces the 409.
+    await auditRefusal(db, input.actorId, err);
     throw err;
   }
+}
+
+/** transitionRunDetailed, returning the run only. */
+export async function transitionRun(deps: GenerateDeps, input: TransitionInput): Promise<RunRow> {
+  return (await transitionRunDetailed(deps, input)).run;
+}
+
+/**
+ * PAY-193 L4 (EF-11): who confirmed a late issue and when — from the newest
+ * run.issued_late audit row; null for any other run.
+ */
+export async function lateIssueOf(
+  db: DbLike,
+  publicId: string,
+): Promise<{ confirmedBy: string; confirmedAt: Date } | null> {
+  const rows = await db
+    .select({ actorId: auditEvents.actorId, createdAt: auditEvents.createdAt })
+    .from(auditEvents)
+    .where(and(eq(auditEvents.action, "run.issued_late"), eq(auditEvents.entityId, publicId)))
+    .orderBy(desc(auditEvents.id))
+    .limit(1);
+  const row = rows[0];
+  return row?.createdAt ? { confirmedBy: row.actorId, confirmedAt: row.createdAt } : null;
 }
 
 export async function getRunByPublicId(db: DbLike, publicId: string): Promise<RunRow | null> {
