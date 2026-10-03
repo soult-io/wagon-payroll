@@ -43,8 +43,10 @@ const TODAY = "2026-09-29";
 
 /**
  * Issue-time wall clock (Spec 26 (PAY-173) D9 refuses issuing a past pay date
- * in an ended year). Each fixture run is issued on Dec 31 of its own pay year,
- * as a real company would have issued it; the W-2 figures do not depend on it.
+ * in an ended year; PAY-193 L4 makes a run late once its pay-date quarter has
+ * ended). Each fixture run is generated with the clock on Dec 31 of its pay
+ * year, then approved and issued on its own pay date, as a real company would
+ * have issued it; the W-2 figures do not depend on it.
  */
 let issueAt = new Date("2025-12-31T12:00:00Z");
 /** Fixture amount fragments that must never appear in a body or a log line. */
@@ -109,8 +111,9 @@ async function issueRun(employeeId: number, year: number, month: number): Promis
     payload: { year, month, employeeId },
   });
   expect(gen.statusCode, gen.body).toBe(201);
-  const run = (gen.json() as { generated: { publicId: string }[] }).generated[0];
+  const run = (gen.json() as { generated: { publicId: string; payDate: string }[] }).generated[0];
   if (!run) throw new Error("no run generated");
+  issueAt = new Date(`${run.payDate}T12:00:00Z`);
   for (const action of ["approve", "issue"] as const) {
     const res = await t.app.inject({
       method: "POST",
