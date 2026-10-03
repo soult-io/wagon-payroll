@@ -21,11 +21,11 @@ const PAST_YEAR_FALLBACK =
 
 /** PAY-193 (D9.4): the server's text names the pay date and the filed forms. */
 const PERIOD_FILED_FALLBACK =
-  "A tax return covering this pay date is already filed. Adding this payroll needs a correction form (941-X, amended 940 or W-2c), which Wagon Payroll doesn't prepare. Nothing was issued.";
+  "Nothing was issued. You've marked a tax return that covers this pay date as filed. If you really paid your team on that date, keep the date. Don't move it to get around this. Adding this payroll means correcting the filed return with a correction form, which Wagon Payroll doesn't prepare. Keep your own record of this payment and make the correction outside Wagon Payroll.";
 
 /** PAY-193 (D9.5): mark-as-filed refused because the figures changed. */
 const WORKSHEET_CHANGED_FALLBACK =
-  "These figures changed since you opened this filing. Review them, then mark it filed again.";
+  "Not recorded yet. The figures on this page changed since you opened it, usually because a payroll was issued or changed. Check the updated figures. If they match what you filed, mark it as filed again. If you already filed different figures, the filed return may need a correction.";
 
 /** The server's own message, or null when the body carried none (err.message is then a generic default). */
 function serverMessage(err: ApiError): string | null {

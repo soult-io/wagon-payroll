@@ -444,9 +444,13 @@ async function submitFiled() {
     fileDialog.value = false;
     await load();
   } catch (err) {
-    notify.error(err, "Could not record the filing");
+    const changed = err instanceof ApiError && err.code === "worksheet_changed";
+    notify.error(
+      err,
+      changed ? "Figures changed. Not marked as filed" : "Could not record the filing",
+    );
     // PAY-193: show the refreshed figures so the admin can review them.
-    if (err instanceof ApiError && err.code === "worksheet_changed") {
+    if (changed) {
       fileDialog.value = false;
       await load();
     }
