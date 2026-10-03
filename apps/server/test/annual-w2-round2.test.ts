@@ -341,7 +341,13 @@ describe("S4 figures defect: no amounts or ids in the employee and filing bodies
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({
       w2s: [
-        { year: 2025, availableOn: "2026-01-01", ready: false, corrected: false, downloadable: false },
+        {
+          year: 2025,
+          availableOn: "2026-01-01",
+          ready: false,
+          corrected: false,
+          downloadable: false,
+        },
       ],
     });
     expectBare(res.body, [defect.employeeId]);

@@ -366,7 +366,13 @@ describe("D2 figures that come back to an earlier hash are furnished again", () 
         list: { corrected: true, correctionToFurnish: false, furnished: "online" },
         myList: {
           w2s: [
-            { year: Y, availableOn: "2026-01-01", ready: true, corrected: true, downloadable: true },
+            {
+              year: Y,
+              availableOn: "2026-01-01",
+              ready: true,
+              corrected: true,
+              downloadable: true,
+            },
           ],
         },
       });
@@ -849,7 +855,9 @@ describe("D9 after consent is withdrawn", () => {
       listed,
       pdfs,
       // Past electronicW2AccessThrough(2025): absent or downloadable: false.
-      afterWindowDownloadable: afterWindow.w2s.some((w) => w.year === Y && w.downloadable !== false),
+      afterWindowDownloadable: afterWindow.w2s.some(
+        (w) => w.year === Y && w.downloadable !== false,
+      ),
     }).toEqual({
       bfRows: ["backfill"],
       listed: {

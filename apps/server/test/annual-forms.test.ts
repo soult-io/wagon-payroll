@@ -984,7 +984,13 @@ describe("my W-2 routes", () => {
     expect(list.statusCode, list.body).toBe(200);
     expect(list.json()).toEqual({
       w2s: [
-        { year: 2025, availableOn: "2026-01-01", ready: true, corrected: false, downloadable: true },
+        {
+          year: 2025,
+          availableOn: "2026-01-01",
+          ready: true,
+          corrected: false,
+          downloadable: true,
+        },
       ],
     });
 
