@@ -1367,8 +1367,8 @@ export interface W2FiguresRow {
   corrected: boolean;
   /** PAY-206 — corrected and the current figures are not yet furnished. */
   correctionToFurnish: boolean;
-  /** PAY-206 — how the latest copy reached the employee. */
-  furnished: "none" | "online" | "printed" | "paper";
+  /** PAY-206 — how the latest copy reached the employee ("unknown" = backfilled, not recorded). */
+  furnished: "none" | "online" | "printed" | "paper" | "unknown";
   /** PAY-206 — company-local date of the latest furnishing. */
   furnishedOn: string | null;
 }

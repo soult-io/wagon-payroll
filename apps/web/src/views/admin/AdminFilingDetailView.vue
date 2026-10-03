@@ -95,13 +95,32 @@ const paperCorrectionRows = computed(() =>
   w2Rows.value.filter((r) => r.correctionToFurnish && !r.consented),
 );
 const markPaperBusy = ref<number | null>(null);
+/** PAY-206: the paper-correction banner, singular or plural. */
+const paperCorrectionBanner = computed(() => {
+  const n = paperCorrectionRows.value.length;
+  const y = filing.value?.year;
+  return n === 1
+    ? `1 employee needs a corrected paper W-2 for ${y}. Print it, give or mail it to them, then choose "Mark given on paper".`
+    : `${n} employees need a corrected paper W-2 for ${y}. Print each one, give or mail it to them, then choose "Mark given on paper".`;
+});
+/** PAY-206: the mark-filed warning, singular or plural. */
+const paperCorrectionWarning = computed(() => {
+  const n = paperCorrectionRows.value.length;
+  return n === 1
+    ? "1 corrected W-2 hasn't been given to the employee yet. You can still record the filing."
+    : `${n} corrected W-2s haven't been given to employees yet. You can still record the filing.`;
+});
 
-/** PAY-206: the furnished column — how and when the latest copy was given. */
+/**
+ * PAY-206: the furnished column — how and when the latest copy was given.
+ * A backfilled row (furnished before this record existed) is "Not recorded".
+ */
 function furnishedText(row: W2FiguresRow): string {
-  const on = row.furnishedOn ? date(row.furnishedOn) : "";
-  if (row.furnished === "online") return `Online since ${on}`;
-  if (row.furnished === "printed") return `Printed ${on}`;
-  if (row.furnished === "paper") return `Given on paper ${on}`;
+  const on = row.furnishedOn ? ` ${date(row.furnishedOn)}` : "";
+  if (row.furnished === "online") return `Online since${on}`;
+  if (row.furnished === "printed") return `Printed${on}`;
+  if (row.furnished === "paper") return `Given on paper${on}`;
+  if (row.furnished === "unknown") return "Not recorded";
   return "Not yet given";
 }
 
@@ -110,11 +129,11 @@ function markGivenOnPaper(row: W2FiguresRow): void {
   const year = filing.value?.year;
   if (year === undefined) return;
   confirm.require({
-    message: `Mark ${row.legalName}'s corrected ${year} W-2 as given on paper?`,
-    header: "Mark given on paper",
+    message: `Only do this after you have handed or mailed ${row.legalName} their corrected ${year} W-2. This removes it from your to-do list and can't be undone.`,
+    header: `Mark ${row.legalName}'s W-2 as given?`,
     icon: "pi pi-check",
     rejectProps: { label: "Cancel", severity: "secondary", text: true },
-    acceptProps: { label: "Mark given on paper" },
+    acceptProps: { label: "Yes, it's been given" },
     accept: async () => {
       markPaperBusy.value = row.employeeId;
       try {
@@ -786,17 +805,17 @@ onMounted(async () => {
           :closable="false"
           data-testid="w2-paper-correction-banner"
         >
-          {{ paperCorrectionRows.length }} employee(s) need a corrected paper W-2 for
-          {{ filing.year }}. Print it, give or mail it to them, then mark it given.
+          {{ paperCorrectionBanner }}
         </Message>
         <Message
-          v-if="!w2LoadError && anyW2Corrected"
+          v-if="!w2LoadError && anyW2Corrected && !filed"
           severity="info"
           :closable="false"
           data-testid="w2-corrected-ssa-note"
         >
-          File the corrected figures with SSA. Don't write CORRECTED on the copy you file. If you
-          already printed a paper Copy A, mark that one VOID.
+          Some W-2s were corrected after employees got them. File the corrected figures with the
+          SSA as normal W-2s. Don't mark them CORRECTED. If you already printed a paper Copy A (the
+          SSA's copy) with the old figures, write VOID on it and don't send it.
         </Message>
 
         <DataTable v-if="worksheetW3" :value="worksheetW3Lines" data-key="line" striped-rows>
@@ -917,6 +936,7 @@ onMounted(async () => {
                   <Button
                     v-if="data.correctionToFurnish && !data.consented"
                     label="Mark given on paper"
+                    :aria-label="`Mark ${data.legalName}'s corrected W-2 as given on paper`"
                     icon="pi pi-check"
                     size="small"
                     text
@@ -1089,8 +1109,7 @@ onMounted(async () => {
             :closable="false"
             data-testid="mark-filed-paper-warning"
           >
-            {{ paperCorrectionRows.length }} corrected W-2(s) haven't been given to employees yet.
-            You can still record the filing.
+            {{ paperCorrectionWarning }}
           </Message>
           <div class="field">
             <label for="filedOn">Filing date</label>

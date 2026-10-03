@@ -50,7 +50,7 @@ const consentBusy = ref(false);
 
 /** PAY-206 (R7): "{year} W-2 (CORRECTED)" when the W-2 replaces one with other figures. */
 function w2Label(w2: MyW2Year): string {
-  return w2.corrected ? `${w2.year} W-2 (CORRECTED)` : String(w2.year);
+  return w2.corrected ? `${w2.year} W-2 (CORRECTED)` : `${w2.year} W-2`;
 }
 // PAY-17: the selected year is mirrored to ?year= so it survives detail → back
 // and browser-back. The default (no param) is the newest year with data.
@@ -198,12 +198,18 @@ onMounted(async () => {
             <strong>{{ w2Label(w2) }}</strong>
             <span class="muted small">· available since {{ date(w2.availableOn) }}</span>
             <span v-if="w2.corrected" class="muted small" style="display: block">
-              This replaces the earlier {{ w2.year }} W-2 you received. Use this one for your tax
+              This replaces any earlier {{ w2.year }} W-2 you may have. Use this one for your tax
               return.
             </span>
           </span>
           <a v-if="w2.ready" :href="myW2Api.pdfUrl(w2.year)" target="_blank" rel="noopener">
-            <Button label="Download PDF" icon="pi pi-download" size="small" text />
+            <Button
+              label="Download PDF"
+              :aria-label="`Download ${w2Label(w2)} PDF`"
+              icon="pi pi-download"
+              size="small"
+              text
+            />
           </a>
           <!-- PAY-162: not ready (held, or the form is not in the app yet) — no reason given. -->
           <Message v-else severity="info" :closable="false" role="status">
