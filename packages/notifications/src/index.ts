@@ -505,18 +505,27 @@ export function taxDepositSyncFailed(
 
 /**
  * Admin (PAY-193): a payroll was issued for a period whose deposit was
- * already made, so an additional deposit row was created for the
- * difference. One mail per new row. No amounts — the app shows them.
+ * already made (or already due), so an additional deposit row was created
+ * for the difference. One mail per new row. No amounts — the app shows them.
+ * `earlierDeposited`: some earlier row of the period is deposited ("was
+ * made"); otherwise the earlier row is unpaid ("was already due").
  */
 export function taxDepositShortfall(
   ctx: TemplateContext,
-  data: { jurisdictionLabel: string; periodLabel: string; overdue: boolean },
+  data: {
+    jurisdictionLabel: string;
+    periodLabel: string;
+    overdue: boolean;
+    earlierDeposited: boolean;
+  },
 ): RenderedEmail {
   const j = data.jurisdictionLabel;
   const period = data.periodLabel;
   const depositsUrl = `${ctx.appUrl}/admin/deposits`;
   const sentences = [
-    `A payroll for ${period} was issued after the ${j} deposit for that period was made.`,
+    data.earlierDeposited
+      ? `A payroll for ${period} was issued after the ${j} deposit for that period was made.`
+      : `A payroll for ${period} was issued after the ${j} deposit for that period was already due, so its taxes weren't included in it.`,
     `${ctx.brandName} added an additional deposit for the difference.`,
     "Open Tax deposits to see the amount and due date.",
     ...(data.overdue ? ["It is already past its due date."] : []),

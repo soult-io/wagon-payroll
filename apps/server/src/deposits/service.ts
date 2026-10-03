@@ -130,9 +130,18 @@ export interface DepositDetailRow extends DepositDetailBase {
   replacedBy: { id: number; periodStart: string; periodKind: PeriodKind }[];
   /** PAY-193: the period's OTHER live rows (same jurisdiction, period, kind), seq ascending. */
   siblings: DepositSibling[];
-  /** PAY-193: Σ siblings that are deposited or overdue (D9.6 F). */
+  /**
+   * PAY-193: what is already deposited toward this row's period — federal: Σ
+   * deposited siblings; state: the planner's credits (+ the month's own
+   * deposited rows on a month row).
+   */
   alreadyDeposited: string;
-  /** PAY-193: on a seq 0 row, its live seq > 0 row (the highest seq); else null. */
+  /** PAY-193: Σ open (pending/overdue) siblings with a lower seq. */
+  stillOwedEarlier: string;
+  /**
+   * PAY-193: on a seq 0 row, the lowest-seq open seq > 0 row and Σ the period's
+   * non-deposited seq > 0 rows; null when none or 0.00, and on seq > 0 rows.
+   */
   additionalDeposit: { id: number; amount: string } | null;
   /** PAY-193: federal rows — the Form 941 due date of the row's quarter; null for state rows. */
   form941DueDate: string | null;
@@ -348,26 +357,47 @@ async function auditShortfall(
 
 /**
  * PAY-193: one email_outbox row per active admin for a new shortfall row
- * (seq > 0). No amounts; "already past its due date" when inserted overdue.
+ * (seq > 0). No amounts; "already past its due date" when inserted overdue;
+ * "was made" when an earlier row of the period is deposited, else "was
+ * already due". The mail runs in its own savepoint: a failure writes no mail
+ * rows, is logged (jurisdiction only), and never loses the deposit row, its
+ * audit row, or the sync.
  */
 async function mailShortfall(
   db: Tx,
   config: AppConfig,
-  row: { jurisdiction: string; periodStart: string; periodKind: PeriodKind; overdue: boolean },
+  row: {
+    jurisdiction: string;
+    periodStart: string;
+    periodKind: PeriodKind;
+    overdue: boolean;
+    earlierDeposited: boolean;
+  },
 ): Promise<void> {
-  const ctx = await templateContext(db, config);
-  const rendered = tplTaxDepositShortfall(ctx, {
-    jurisdictionLabel: stateName(row.jurisdiction),
-    periodLabel: periodLabel(row.periodStart, row.periodKind),
-    overdue: row.overdue,
-  });
-  for (const userId of await adminUserIds(db)) {
-    await db.insert(emailOutbox).values({
-      userId,
-      eventType: EVENT_TYPE.taxDepositShortfall,
-      subject: rendered.subject,
-      bodyHtml: rendered.html,
+  try {
+    await db.transaction(async (sp) => {
+      const ctx = await templateContext(sp, config);
+      const rendered = tplTaxDepositShortfall(ctx, {
+        jurisdictionLabel: stateName(row.jurisdiction),
+        periodLabel: periodLabel(row.periodStart, row.periodKind),
+        overdue: row.overdue,
+        earlierDeposited: row.earlierDeposited,
+      });
+      const userIds = await adminUserIds(sp);
+      if (userIds.length === 0) return;
+      await sp.insert(emailOutbox).values(
+        userIds.map((userId) => ({
+          userId,
+          eventType: EVENT_TYPE.taxDepositShortfall,
+          subject: rendered.subject,
+          bodyHtml: rendered.html,
+        })),
+      );
     });
+  } catch (err) {
+    console.warn(
+      `[deposits] shortfall mail for ${row.jurisdiction} ${row.periodStart} failed (${failureCode(err)})`,
+    );
   }
 }
 
@@ -464,6 +494,7 @@ async function syncFederalDeposit(
       periodStart,
       periodKind: "month",
       overdue: status === "overdue",
+      earlierDeposited: live.some((r) => r.status === "deposited"),
     });
   }
 }
@@ -625,15 +656,28 @@ async function applyPlan(
             createdBy: "scheduler",
           })),
         )
-        .returning({ id: taxDeposits.id })
+        .returning({
+          id: taxDeposits.id,
+          periodKind: taxDeposits.periodKind,
+          periodStart: taxDeposits.periodStart,
+          seq: taxDeposits.seq,
+        })
     : [];
   result.superseded += superseded.length;
   result.recomputed += plan.updates.length;
   result.created += inserted.length;
-  for (const [n, r] of inserted.entries()) {
-    const i = plan.inserts[n];
-    if (!i || i.seq === 0) continue;
-    await auditShortfall(tx, r.id, {
+  // Match RETURNING rows to the plan by key, never by position (RETURNING
+  // order is not guaranteed for a multi-row INSERT).
+  const insertedId = (i: (typeof plan.inserts)[number]): number | undefined =>
+    inserted.find(
+      (r) => r.periodKind === i.kind && r.periodStart === i.periodStart && r.seq === i.seq,
+    )?.id;
+  for (const i of plan.inserts) {
+    if (i.seq === 0) continue;
+    const id = insertedId(i);
+    // Fail closed: the unit's savepoint rolls back and the unit is reported.
+    if (id === undefined) throw new Error("applyPlan: inserted row not returned");
+    await auditShortfall(tx, id, {
       jurisdiction: unit.state,
       periodStart: i.periodStart,
       periodKind: i.kind,
@@ -645,6 +689,13 @@ async function applyPlan(
       periodStart: i.periodStart,
       periodKind: i.kind,
       overdue: i.status === "overdue",
+      earlierDeposited: unit.live.some(
+        (r) =>
+          r.kind === i.kind &&
+          r.periodStart === i.periodStart &&
+          r.seq < i.seq &&
+          r.status === "deposited",
+      ),
     });
   }
 
@@ -659,7 +710,7 @@ async function applyPlan(
       after: {
         superseded: superseded.map((r) => r.id),
         updated: plan.updates,
-        inserted: inserted.map((r, n) => ({ id: r.id, ...plan.inserts[n] })),
+        inserted: plan.inserts.map((i) => ({ id: insertedId(i), ...i })),
         liabilityCents: plan.liabilityCents,
         creditsCents: plan.depositedCents,
         overpaidCents: plan.overpaidCents,
@@ -1281,23 +1332,36 @@ export async function getDepositDetail(db: Db, id: number): Promise<DepositDetai
       ? await getQuarterlyDepositDetail(db, withKind, deposit.periodStart)
       : await getFederalOrMonthlyDepositDetail(db, deposit, deposit.periodStart);
   const total = base.breakdown.reduce((a, b) => a + parseCents(b.amount), 0);
+  const transition = await transitionDetail(db, withKind, formatCents(total));
   return {
     ...base,
-    ...(await transitionDetail(db, withKind, formatCents(total))),
-    ...(await periodRows(db, withKind)),
+    ...transition,
+    ...(await periodRows(db, withKind, transition)),
   };
 }
 
 /**
  * PAY-193: the period's other live rows (same jurisdiction, period_start and
- * period_kind; superseded excluded), what they already cover, and — on a
- * seq 0 row — the additional deposit that follows it.
+ * period_kind; superseded excluded), what is already deposited and still owed
+ * on earlier rows, and — on a seq 0 row — the additional deposit still to pay.
+ *
+ * alreadyDeposited (round 3 D1/D2): federal = Σ deposited siblings; state =
+ * the planner's credits for this row (any period kind), plus — on a month
+ * row — the month's own deposited rows (the planner pays a month from its
+ * own rows before crediting it). stillOwedEarlier = Σ open (pending/overdue)
+ * siblings with a lower seq. additionalDeposit (D3, seq 0 only) = the
+ * lowest-seq open seq > 0 sibling and Σ non-deposited seq > 0 siblings; null
+ * when there is none or that sum is 0.00.
  */
 async function periodRows(
   db: Db,
   deposit: TaxDepositWithPeriodKind,
+  transition: Pick<DepositDetailRow, "credits" | "paymentsUnavailable">,
 ): Promise<
-  Pick<DepositDetailRow, "siblings" | "alreadyDeposited" | "additionalDeposit" | "form941DueDate">
+  Pick<
+    DepositDetailRow,
+    "siblings" | "alreadyDeposited" | "stillOwedEarlier" | "additionalDeposit" | "form941DueDate"
+  >
 > {
   const rows = await db
     .select()
@@ -1313,18 +1377,34 @@ async function periodRows(
     )
     .orderBy(asc(taxDeposits.seq), asc(taxDeposits.id));
   const siblings = rows.map((r) => ({ id: r.id, seq: r.seq, status: r.status, amount: r.amount }));
-  const covered = siblings
-    .filter((r) => r.status === "deposited" || r.status === "overdue")
-    .reduce((a, r) => a + parseCents(r.amount), 0);
-  const additional = deposit.seq === 0 ? siblings.filter((r) => r.seq > 0).at(-1) : undefined;
+  const sum = (list: DepositSibling[]) => list.reduce((a, r) => a + parseCents(r.amount), 0);
+  const isOpen = (r: DepositSibling) => r.status === "pending" || r.status === "overdue";
+  const depositedSiblings = sum(siblings.filter((r) => r.status === "deposited"));
+  const fromCredits =
+    deposit.jurisdiction !== "federal" && !transition.paymentsUnavailable
+      ? transition.credits.reduce((a, c) => a + parseCents(c.applied), 0) +
+        (deposit.periodKind === "month" ? depositedSiblings : 0)
+      : depositedSiblings;
+  const stillOwedEarlier = sum(siblings.filter((r) => isOpen(r) && r.seq < deposit.seq));
   const year = Number(deposit.periodStart.slice(0, 4));
   const quarter = quarterOfMonth(Number(deposit.periodStart.slice(5, 7)));
   return {
     siblings,
-    alreadyDeposited: formatCents(covered),
-    additionalDeposit: additional ? { id: additional.id, amount: additional.amount } : null,
+    alreadyDeposited: formatCents(fromCredits),
+    stillOwedEarlier: formatCents(stillOwedEarlier),
+    additionalDeposit: deposit.seq === 0 ? additionalFor(siblings) : null,
     form941DueDate: deposit.jurisdiction === "federal" ? filingDueDate(year, quarter) : null,
   };
+}
+
+/** PAY-193 round 3 D3: what a seq 0 row's period still owes on its seq > 0 rows. */
+function additionalFor(siblings: DepositSibling[]): DepositDetailRow["additionalDeposit"] {
+  const later = siblings.filter((r) => r.seq > 0);
+  const unpaid = later.filter((r) => r.status !== "deposited");
+  const cents = unpaid.reduce((a, r) => a + parseCents(r.amount), 0);
+  const target = unpaid[0] ?? later.at(-1);
+  if (!target || cents === 0) return null;
+  return { id: target.id, amount: formatCents(cents) };
 }
 
 function toCreditRow(c: DepositCredit): DepositCreditRow {
