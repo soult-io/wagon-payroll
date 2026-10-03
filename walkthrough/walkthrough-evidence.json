@@ -1,0 +1,546 @@
+{
+  "schema": "journey-walkthrough/1",
+  "mode": "walkthrough",
+  "commitSha": "a05a03e8fea3d8af0dcea26ce17062464232d889",
+  "gatingRunId": "37129727637",
+  "runId": "37130197906",
+  "source": "ci",
+  "generatedAt": "2026-10-03T14:45:45.610Z",
+  "journeys": [
+    {
+      "testId": "aa09586c1d16412a1f00-7e841f6d5dfb4625552d",
+      "fullName": "journeys.spec.ts journey 1: invite onboarding wizard → backup codes → fresh login with TOTP",
+      "title": "journey 1: invite onboarding wizard → backup codes → fresh login with TOTP",
+      "file": "journeys.spec.ts",
+      "status": "passed",
+      "video": {
+        "path": "videos/journey-1-invite-onboarding-wizard-backup-codes-fresh-login--5dfb4625552d.webm",
+        "contentType": "video/webm",
+        "durationMs": 61160
+      },
+      "steps": [
+        {
+          "title": "Set a password from the invite link",
+          "status": "passed",
+          "offsetMs": 1500
+        },
+        {
+          "title": "Enrol an authenticator app (TOTP)",
+          "status": "passed",
+          "offsetMs": 16843
+        },
+        {
+          "title": "Backup codes are shown once",
+          "status": "passed",
+          "offsetMs": 21292
+        },
+        {
+          "title": "Sign in with password + TOTP",
+          "status": "passed",
+          "offsetMs": 22803
+        },
+        {
+          "title": "Sign out and sign in again",
+          "status": "passed",
+          "offsetMs": 40978
+        }
+      ]
+    },
+    {
+      "testId": "aa09586c1d16412a1f00-a5156610775a46dfb2b8",
+      "fullName": "journeys.spec.ts journey 2: admin approves + issues payroll run; employee sees payslip + PDF",
+      "title": "journey 2: admin approves + issues payroll run; employee sees payslip + PDF",
+      "file": "journeys.spec.ts",
+      "status": "passed",
+      "video": {
+        "path": "videos/journey-2-admin-approves-issues-payroll-run-employee-sees-pa-775a46dfb2b8.webm",
+        "contentType": "video/webm",
+        "durationMs": 52520
+      },
+      "steps": [
+        {
+          "title": "Admin signs in",
+          "status": "passed",
+          "offsetMs": 1500
+        },
+        {
+          "title": "Open the run awaiting approval",
+          "status": "passed",
+          "offsetMs": 17055
+        },
+        {
+          "title": "Approve the run",
+          "status": "passed",
+          "offsetMs": 29082
+        },
+        {
+          "title": "Issue the payslip (type-to-confirm)",
+          "status": "passed",
+          "offsetMs": 34722
+        },
+        {
+          "title": "Employee opens the issued payslip",
+          "status": "passed",
+          "offsetMs": 43946
+        },
+        {
+          "title": "Payslip PDF downloads (%PDF, non-trivial size)",
+          "status": "passed",
+          "offsetMs": 48798
+        }
+      ]
+    },
+    {
+      "testId": "aa09586c1d16412a1f00-db0f86adabe26411cd3d",
+      "fullName": "journeys.spec.ts journey 3: address change request round-trip (employee → admin approve → applied)",
+      "title": "journey 3: address change request round-trip (employee → admin approve → applied)",
+      "file": "journeys.spec.ts",
+      "status": "passed",
+      "video": {
+        "path": "videos/journey-3-address-change-request-round-trip-employee-admin-a-abe26411cd3d.webm",
+        "contentType": "video/webm",
+        "durationMs": 39800
+      },
+      "steps": [
+        {
+          "title": "Employee fills in a new address",
+          "status": "passed",
+          "offsetMs": 1500
+        },
+        {
+          "title": "Employee submits the request (Pending)",
+          "status": "passed",
+          "offsetMs": 20347
+        },
+        {
+          "title": "Admin reviews the proposed vs current address",
+          "status": "passed",
+          "offsetMs": 24750
+        },
+        {
+          "title": "Admin approves and applies",
+          "status": "passed",
+          "offsetMs": 29583
+        },
+        {
+          "title": "Employee sees Approved and the new address on the profile",
+          "status": "passed",
+          "offsetMs": 33926.60009765625
+        }
+      ]
+    },
+    {
+      "testId": "aa09586c1d16412a1f00-8e4839777667171cc14b",
+      "fullName": "journeys.spec.ts journey 4: session expiry mid-session redirects to login (PAY-6)",
+      "title": "journey 4: session expiry mid-session redirects to login (PAY-6)",
+      "file": "journeys.spec.ts",
+      "status": "passed",
+      "video": {
+        "path": "videos/journey-4-session-expiry-mid-session-redirects-to-login-pay--7667171cc14b.webm",
+        "contentType": "video/webm",
+        "durationMs": 6360
+      },
+      "steps": [
+        {
+          "title": "Employee is on the dashboard",
+          "status": "passed",
+          "offsetMs": 1500
+        },
+        {
+          "title": "Session expires; next navigation lands on login",
+          "status": "passed",
+          "offsetMs": 3469
+        }
+      ]
+    },
+    {
+      "testId": "aa09586c1d16412a1f00-76a4160ab1475d7f6f8b",
+      "fullName": "journeys.spec.ts journey 5: back navigation preserves the list filter state (PAY-17)",
+      "title": "journey 5: back navigation preserves the list filter state (PAY-17)",
+      "file": "journeys.spec.ts",
+      "status": "passed",
+      "video": {
+        "path": "videos/journey-5-back-navigation-preserves-the-list-filter-state-pa-b1475d7f6f8b.webm",
+        "contentType": "video/webm",
+        "durationMs": 23080
+      },
+      "steps": [
+        {
+          "title": "Filter the runs list to 2025 (the URL carries it)",
+          "status": "passed",
+          "offsetMs": 1500
+        },
+        {
+          "title": "Open the run; the filter rides along",
+          "status": "passed",
+          "offsetMs": 9229
+        },
+        {
+          "title": "Back to runs keeps the 2025 filter",
+          "status": "passed",
+          "offsetMs": 13556
+        },
+        {
+          "title": "Browser back keeps the 2025 filter too",
+          "status": "passed",
+          "offsetMs": 16396
+        }
+      ]
+    },
+    {
+      "testId": "aa09586c1d16412a1f00-5a6557519caad2752ce7",
+      "fullName": "journeys.spec.ts journey 6: admin user visiting /my/dashboard is redirected to /admin/dashboard",
+      "title": "journey 6: admin user visiting /my/dashboard is redirected to /admin/dashboard",
+      "file": "journeys.spec.ts",
+      "status": "passed",
+      "video": {
+        "path": "videos/journey-6-admin-user-visiting-my-dashboard-is-redirected-to--9caad2752ce7.webm",
+        "contentType": "video/webm",
+        "durationMs": 8280
+      },
+      "steps": [
+        {
+          "title": "Admin visiting /my/dashboard lands on /admin/dashboard",
+          "status": "passed",
+          "offsetMs": 1500
+        },
+        {
+          "title": "Admin visiting / lands on /admin/dashboard",
+          "status": "passed",
+          "offsetMs": 3445
+        },
+        {
+          "title": "Header shows the product name; Payroll nav opens the payroll list",
+          "status": "passed",
+          "offsetMs": 5335
+        }
+      ]
+    },
+    {
+      "testId": "aa09586c1d16412a1f00-0b9c0c4a05be516c7011",
+      "fullName": "journeys.spec.ts journey 7: deposit detail view (PAY-36/PAY-37/PAY-38)",
+      "title": "journey 7: deposit detail view (PAY-36/PAY-37/PAY-38)",
+      "file": "journeys.spec.ts",
+      "status": "passed",
+      "video": {
+        "path": "videos/journey-7-deposit-detail-view-pay-36-pay-37-pay-38-05be516c7011.webm",
+        "contentType": "video/webm",
+        "durationMs": 9560
+      },
+      "steps": [
+        {
+          "title": "Deposits list for 2025: readable, sortable, no EFTPS noise",
+          "status": "passed",
+          "offsetMs": 1500
+        },
+        {
+          "title": "Open the October federal deposit detail",
+          "status": "passed",
+          "offsetMs": 3790
+        },
+        {
+          "title": "Back to the deposits list",
+          "status": "passed",
+          "offsetMs": 6676
+        }
+      ]
+    },
+    {
+      "testId": "aa09586c1d16412a1f00-163fdf8761f642a9ecb1",
+      "fullName": "journeys.spec.ts journey 8: a state that moved to quarterly shows payments already made (PAY-91)",
+      "title": "journey 8: a state that moved to quarterly shows payments already made (PAY-91)",
+      "file": "journeys.spec.ts",
+      "status": "passed",
+      "video": {
+        "path": "videos/journey-8-a-state-that-moved-to-quarterly-shows-payments-alr-61f642a9ecb1.webm",
+        "contentType": "video/webm",
+        "durationMs": 6240
+      },
+      "steps": [
+        {
+          "title": "IL 2023 list: one quarter row, the replaced month is gone",
+          "status": "passed",
+          "offsetMs": 1500
+        },
+        {
+          "title": "Quarter detail lists the July payment and the overpayment",
+          "status": "passed",
+          "offsetMs": 3473
+        }
+      ]
+    },
+    {
+      "testId": "3dc73adc681a7f066ffc-0a1229aa363e5757facf",
+      "fullName": "qa.spec.ts login: password + TOTP (fixed seeded credentials in live QA)",
+      "title": "login: password + TOTP (fixed seeded credentials in live QA)",
+      "file": "qa.spec.ts",
+      "status": "passed",
+      "video": {
+        "path": "videos/login-password-totp-fixed-seeded-credentials-in-live-qa-363e5757facf.webm",
+        "contentType": "video/webm",
+        "durationMs": 19080
+      },
+      "steps": [
+        {
+          "title": "Sign in with password + TOTP",
+          "status": "passed",
+          "offsetMs": 1500
+        }
+      ]
+    },
+    {
+      "testId": "3dc73adc681a7f066ffc-803af191ba62e828316c",
+      "fullName": "qa.spec.ts payslip PDF download round-trip (%PDF magic, non-trivial bytes)",
+      "title": "payslip PDF download round-trip (%PDF magic, non-trivial bytes)",
+      "file": "qa.spec.ts",
+      "status": "passed",
+      "video": {
+        "path": "videos/payslip-pdf-download-round-trip-pdf-magic-non-trivial-bytes-ba62e828316c.webm",
+        "contentType": "video/webm",
+        "durationMs": 3600
+      },
+      "steps": [
+        {
+          "title": "Payslip PDF downloads (%PDF, non-trivial size)",
+          "status": "passed",
+          "offsetMs": 1500
+        }
+      ]
+    },
+    {
+      "testId": "3dc73adc681a7f066ffc-928c88dd86f45f521e4e",
+      "fullName": "qa.spec.ts scheduler draft: seeded current-period run shows in admin approvals (read-only)",
+      "title": "scheduler draft: seeded current-period run shows in admin approvals (read-only)",
+      "file": "qa.spec.ts",
+      "status": "passed",
+      "video": {
+        "path": "videos/scheduler-draft-seeded-current-period-run-shows-in-admin-app-86f45f521e4e.webm",
+        "contentType": "video/webm",
+        "durationMs": 5400
+      },
+      "steps": [
+        {
+          "title": "Current-period draft awaits approval in the runs list",
+          "status": "passed",
+          "offsetMs": 1500
+        }
+      ]
+    },
+    {
+      "testId": "3dc73adc681a7f066ffc-578e6d8a7844ca263a82",
+      "fullName": "qa.spec.ts contractor My Invoices: Dave sees approved+paid invoices, PDF round-trips (PAY-7)",
+      "title": "contractor My Invoices: Dave sees approved+paid invoices, PDF round-trips (PAY-7)",
+      "file": "qa.spec.ts",
+      "status": "passed",
+      "video": {
+        "path": "videos/contractor-my-invoices-dave-sees-approved-paid-invoices-pdf--7844ca263a82.webm",
+        "contentType": "video/webm",
+        "durationMs": 6520
+      },
+      "steps": [
+        {
+          "title": "Contractor sees invoices with status chips",
+          "status": "passed",
+          "offsetMs": 1500
+        },
+        {
+          "title": "Only approved/paid invoices leave the server",
+          "status": "passed",
+          "offsetMs": 3402
+        },
+        {
+          "title": "Invoice PDF downloads (%PDF, non-trivial size)",
+          "status": "passed",
+          "offsetMs": 4919
+        }
+      ]
+    },
+    {
+      "testId": "3dc73adc681a7f066ffc-726fc9866cd1f6fb9907",
+      "fullName": "qa.spec.ts PAY-8 scoped UI: contractor sees Invoices, not Payslips; /my/payslips redirects",
+      "title": "PAY-8 scoped UI: contractor sees Invoices, not Payslips; /my/payslips redirects",
+      "file": "qa.spec.ts",
+      "status": "passed",
+      "video": {
+        "path": "videos/pay-8-scoped-ui-contractor-sees-invoices-not-payslips-my-pay-6cd1f6fb9907.webm",
+        "contentType": "video/webm",
+        "durationMs": 8880
+      },
+      "steps": [
+        {
+          "title": "Contractor nav shows Invoices, not Payslips",
+          "status": "passed",
+          "offsetMs": 1500
+        },
+        {
+          "title": "Direct /my/payslips redirects to the dashboard",
+          "status": "passed",
+          "offsetMs": 3469
+        },
+        {
+          "title": "Admin-only notification events are not offered",
+          "status": "passed",
+          "offsetMs": 5359
+        }
+      ]
+    },
+    {
+      "testId": "3dc73adc681a7f066ffc-9a5188f24382feb23262",
+      "fullName": "qa.spec.ts tax deposits: admin sees the computed schedule incl. last month (PAY-9)",
+      "title": "tax deposits: admin sees the computed schedule incl. last month (PAY-9)",
+      "file": "qa.spec.ts",
+      "status": "passed",
+      "video": {
+        "path": "videos/tax-deposits-admin-sees-the-computed-schedule-incl-last-mont-4382feb23262.webm",
+        "contentType": "video/webm",
+        "durationMs": 5240
+      },
+      "steps": [
+        {
+          "title": "Deposit schedule lists last month",
+          "status": "passed",
+          "offsetMs": 1500
+        },
+        {
+          "title": "Deposits API: federal + IL, newest first",
+          "status": "passed",
+          "offsetMs": 3656
+        }
+      ]
+    },
+    {
+      "testId": "3dc73adc681a7f066ffc-2aab70a19eaa97028f51",
+      "fullName": "qa.spec.ts W-2/W-3 filing detail: full headers, Documents column, W-3 action placement (PAY-23)",
+      "title": "W-2/W-3 filing detail: full headers, Documents column, W-3 action placement (PAY-23)",
+      "file": "qa.spec.ts",
+      "status": "passed",
+      "video": {
+        "path": "videos/w-2-w-3-filing-detail-full-headers-documents-column-w-3-acti-9eaa97028f51.webm",
+        "contentType": "video/webm",
+        "durationMs": 7760
+      },
+      "steps": [
+        {
+          "title": "Open last year's W-2/W-3 filing",
+          "status": "passed",
+          "offsetMs": 1500
+        },
+        {
+          "title": "W-3 action in the transmittal; full W-2 column titles",
+          "status": "passed",
+          "offsetMs": 6289
+        }
+      ]
+    },
+    {
+      "testId": "3dc73adc681a7f066ffc-08a587c2f6a026adb3f1",
+      "fullName": "qa.spec.ts email capture: admin test email lands in Mailpit (via /api/qa/mailbox)",
+      "title": "email capture: admin test email lands in Mailpit (via /api/qa/mailbox)",
+      "file": "qa.spec.ts",
+      "status": "skipped",
+      "video": null,
+      "steps": []
+    },
+    {
+      "testId": "2d6887e324933beb1cf7-ad56f10cca3224f17d5c",
+      "fullName": "state-taxes.spec.ts config page: State taxes tab renders",
+      "title": "config page: State taxes tab renders",
+      "file": "state-taxes.spec.ts",
+      "status": "passed",
+      "video": {
+        "path": "videos/config-page-state-taxes-tab-renders-ca3224f17d5c.webm",
+        "contentType": "video/webm",
+        "durationMs": 6280
+      },
+      "steps": [
+        {
+          "title": "Config page: State taxes tab lists jurisdictions",
+          "status": "passed",
+          "offsetMs": 1500
+        }
+      ]
+    },
+    {
+      "testId": "2d6887e324933beb1cf7-a2530b840bd6601a5ee7",
+      "fullName": "state-taxes.spec.ts employee detail: State tax tab renders work-state and election tables",
+      "title": "employee detail: State tax tab renders work-state and election tables",
+      "file": "state-taxes.spec.ts",
+      "status": "passed",
+      "video": {
+        "path": "videos/employee-detail-state-tax-tab-renders-work-state-and-electio-0bd6601a5ee7.webm",
+        "contentType": "video/webm",
+        "durationMs": 9040
+      },
+      "steps": [
+        {
+          "title": "Employee State tax tab shows work state + elections",
+          "status": "passed",
+          "offsetMs": 1500
+        }
+      ]
+    },
+    {
+      "testId": "2d6887e324933beb1cf7-0ed04d7714f757106d06",
+      "fullName": "state-taxes.spec.ts ephemeral only: assign a work state and see it in the history",
+      "title": "ephemeral only: assign a work state and see it in the history",
+      "file": "state-taxes.spec.ts",
+      "status": "passed",
+      "video": {
+        "path": "videos/ephemeral-only-assign-a-work-state-and-see-it-in-the-history-14f757106d06.webm",
+        "contentType": "video/webm",
+        "durationMs": 16560
+      },
+      "steps": [
+        {
+          "title": "Open the employee's State tax tab",
+          "status": "passed",
+          "offsetMs": 1500
+        },
+        {
+          "title": "Assign work state IL",
+          "status": "passed",
+          "offsetMs": 9109
+        }
+      ]
+    },
+    {
+      "testId": "2d6887e324933beb1cf7-8951d4ba06483fe95360",
+      "fullName": "state-taxes.spec.ts ephemeral only: employee state election flows request → approval → payslip",
+      "title": "ephemeral only: employee state election flows request → approval → payslip",
+      "file": "state-taxes.spec.ts",
+      "status": "passed",
+      "video": {
+        "path": "videos/ephemeral-only-employee-state-election-flows-request-approva-06483fe95360.webm",
+        "contentType": "video/webm",
+        "durationMs": 37520
+      },
+      "steps": [
+        {
+          "title": "Employee fills in an IL withholding election",
+          "status": "passed",
+          "offsetMs": 1500
+        },
+        {
+          "title": "Employee submits the request (Pending)",
+          "status": "passed",
+          "offsetMs": 14332
+        },
+        {
+          "title": "Admin approves the election request",
+          "status": "passed",
+          "offsetMs": 18677.2998046875
+        },
+        {
+          "title": "Election and IL work state on the State tax tab",
+          "status": "passed",
+          "offsetMs": 26262.2998046875
+        },
+        {
+          "title": "Issued payslip shows IL state withholding −$195.93",
+          "status": "passed",
+          "offsetMs": 35454.999755859375
+        }
+      ]
+    }
+  ]
+}
