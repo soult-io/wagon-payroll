@@ -712,12 +712,15 @@ export async function generateDraftsForPeriod(
 // State machine
 // ---------------------------------------------------------------------------
 
-const TRANSITIONS: Record<string, { from: string[]; to: string }> = {
+/** Statuses a run can still be issued (or voided) from. */
+export const OPEN_RUN_STATUSES = ["draft", "awaiting_approval", "approved"] as const;
+
+const TRANSITIONS: Record<string, { from: readonly string[]; to: string }> = {
   approve: { from: ["draft", "awaiting_approval"], to: "approved" },
   issue: { from: ["approved"], to: "issued" },
   // Spec: void pre-issued only. (The DB immutability trigger additionally
   // permits issued→void bookkeeping; the app is stricter per spec.)
-  void: { from: ["draft", "awaiting_approval", "approved"], to: "void" },
+  void: { from: OPEN_RUN_STATUSES, to: "void" },
 };
 
 export type RunAction = keyof typeof TRANSITIONS;
@@ -813,7 +816,7 @@ async function assertRunCurrent(
 
 /** Status precondition of the transition, and void's required reason. */
 function assertTransitionAllowed(
-  rule: { from: string[] },
+  rule: { from: readonly string[] },
   run: RunRow,
   input: { action: RunAction; reason?: string },
 ): void {

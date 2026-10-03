@@ -21,6 +21,11 @@ export interface Address {
 }
 
 export type RunStatus = "draft" | "awaiting_approval" | "approved" | "issued" | "void";
+/** Statuses a run can still be issued (or voided) from. Server: OPEN_RUN_STATUSES in payroll/runs.ts. */
+export const OPEN_RUN_STATUSES: readonly RunStatus[] = ["draft", "awaiting_approval", "approved"];
+export function isOpenRun(status: RunStatus): boolean {
+  return OPEN_RUN_STATUSES.includes(status);
+}
 export type RequestStatus = "pending" | "approved" | "denied" | "withdrawn";
 export type ChangeRequestType =
   | "address"
@@ -202,6 +207,15 @@ export interface MyProfile {
 export interface NotificationSetting {
   eventType: string;
   enabled: boolean;
+}
+
+/** PAY-193 (D9.8): year-end warning window; dates are company-local, from the server. */
+export interface YearEndStatus {
+  today: string;
+  year: number | null;
+  phase: "december" | "after_year_end" | null;
+  closesOn: string | null;
+  openRuns: { publicId: string; payDate: string; status: RunStatus }[];
 }
 
 export interface PayrollRunRow {
@@ -629,6 +643,7 @@ export const adminPayrollApi = {
   runs: (filter: { status?: RunStatus; employeeId?: number; year?: number } = {}) =>
     get<{ runs: PayrollRunRow[] }>(`/api/admin/payroll-runs${qs(filter)}`),
   run: (publicId: string) => get<{ run: PayrollRunRow }>(`/api/admin/payroll-runs/${publicId}`),
+  yearEnd: () => get<YearEndStatus>("/api/admin/payroll-runs/year-end"),
   generate: (input: { year: number; month: number; employeeId?: number }) =>
     post<{ generated: PayrollRunRow[]; skipped: { employeeId: number; reason: string }[] }>(
       "/api/admin/payroll-runs/generate",

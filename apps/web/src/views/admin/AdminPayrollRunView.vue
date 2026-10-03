@@ -11,15 +11,17 @@ import Skeleton from "primevue/skeleton";
 import Dialog from "primevue/dialog";
 import Textarea from "primevue/textarea";
 import InputText from "primevue/inputtext";
+import Message from "primevue/message";
 import { useConfirm } from "primevue/useconfirm";
 import PageHeader from "../../components/PageHeader.vue";
 import BackButton from "../../components/BackButton.vue";
 import EmptyState from "../../components/EmptyState.vue";
 import StatusChip from "../../components/StatusChip.vue";
-import { adminEmployeesApi, adminPayrollApi, type PayrollRunRow } from "../../lib/api";
+import { adminEmployeesApi, adminPayrollApi, isOpenRun, type PayrollRunRow } from "../../lib/api";
 import { useMoney } from "../../composables/useMoney";
 import { useDates } from "../../composables/useDates";
 import { useNotify } from "../../composables/useNotify";
+import { useYearEndWarning } from "../../composables/useYearEndWarning";
 
 const route = useRoute();
 const confirm = useConfirm();
@@ -44,9 +46,12 @@ const canApprove = computed(
   () => run.value && ["draft", "awaiting_approval"].includes(run.value.status),
 );
 const canIssue = computed(() => run.value?.status === "approved");
-const canVoid = computed(
-  () => run.value && ["draft", "awaiting_approval", "approved"].includes(run.value.status),
-);
+const canVoid = computed(() => run.value && isOpenRun(run.value.status));
+
+// PAY-193 (D9.8): year-end notice for a run still to issue with a pay date in
+// the warning's year.
+const { load: loadYearEnd, runNotice } = useYearEndWarning();
+const yearEndNotice = computed(() => runNotice(run.value));
 
 async function load() {
   try {
@@ -116,7 +121,10 @@ async function confirmVoid() {
   await act("void", voidReason.value.trim());
 }
 
-onMounted(load);
+onMounted(() => {
+  void loadYearEnd();
+  void load();
+});
 </script>
 
 <template>
@@ -129,6 +137,8 @@ onMounted(load);
         <Button v-if="canVoid" label="Void" icon="pi pi-ban" severity="danger" outlined :loading="busy" @click="voidRun" />
       </template>
     </PageHeader>
+
+    <Message v-if="yearEndNotice" severity="warn" :closable="false">{{ yearEndNotice }}</Message>
 
     <Skeleton v-if="loading" height="20rem" />
 

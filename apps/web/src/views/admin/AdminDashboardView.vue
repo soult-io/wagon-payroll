@@ -24,6 +24,7 @@ import { localityName, stateName } from "@payroll/shared";
 import { requestTypeLabel } from "../../composables/useRequestTypes";
 import { useDates } from "../../composables/useDates";
 import { useNotify } from "../../composables/useNotify";
+import { useYearEndWarning } from "../../composables/useYearEndWarning";
 
 const { date, dateTime } = useDates();
 const notify = useNotify();
@@ -69,6 +70,8 @@ function placeName(code: string | null): string {
   return code.includes("-") ? localityName(code) : stateName(code);
 }
 
+const { yearEnd, load: loadYearEnd, dashboardText: yearEndText } = useYearEndWarning();
+
 async function loadLocalTax() {
   try {
     localTax.value = await adminPayrollApi.localTaxCheck();
@@ -79,6 +82,7 @@ async function loadLocalTax() {
 
 onMounted(async () => {
   void loadLocalTax();
+  void loadYearEnd();
   try {
     const [runs, requests, health, employees] = await Promise.all([
       adminPayrollApi.runs({ status: "awaiting_approval" }),
@@ -105,6 +109,15 @@ function employeeName(id: number): string {
 <template>
   <div class="page stack">
     <PageHeader title="Admin dashboard" subtitle="Everything waiting on your decision." />
+
+    <Message
+      v-if="yearEnd && yearEndText"
+      :severity="yearEnd.openRuns.length > 0 ? 'warn' : 'info'"
+      :closable="false"
+    >
+      {{ yearEndText }}
+      <RouterLink :to="{ name: 'admin-payroll', query: { year: yearEnd.year } }">See {{ yearEnd.year }} payrolls</RouterLink>
+    </Message>
 
     <Message v-if="localTax && localTaxTodo.length > 0" severity="info" :closable="false">
       <strong>New: tell us where each employee lives and works.</strong>

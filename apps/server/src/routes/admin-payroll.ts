@@ -28,6 +28,8 @@ import {
   transitionRun,
   type RunAction,
 } from "../payroll/runs.js";
+import { localDate } from "../payroll/run-dates.js";
+import { getYearEndStatus } from "../payroll/year-end.js";
 
 interface AdminPayrollDeps {
   db: Db;
@@ -35,7 +37,10 @@ interface AdminPayrollDeps {
   guards: Guards;
   /** Re-register pg-boss cron after a pay-schedule change (no-op without scheduler). */
   onScheduleChange?: () => Promise<void>;
-  /** Wall clock for the issue-time pay-date check (Spec 26 (PAY-173) D9); default now. */
+  /**
+   * Wall clock for the issue-time pay-date check (Spec 26 (PAY-173) D9) and
+   * the year-end warning (PAY-193 D9.8); default now.
+   */
   clock?: () => Date;
 }
 
@@ -79,6 +84,7 @@ const serviceError = (
 
 export function registerAdminPayrollRoutes(app: FastifyInstance, deps: AdminPayrollDeps): void {
   const { db, config, guards } = deps;
+  const now = deps.clock ?? (() => new Date());
   const admin = guards.requireRole("admin");
 
   async function audit(
@@ -129,6 +135,12 @@ export function registerAdminPayrollRoutes(app: FastifyInstance, deps: AdminPayr
       .where(conditions.length ? and(...conditions) : undefined)
       .orderBy(desc(payrollRuns.payDate), desc(payrollRuns.periodStart), desc(payrollRuns.id));
     return { runs: rows };
+  });
+
+  // PAY-193 (D9.8): year-end warning window. Registered before /:publicId.
+  app.get("/api/admin/payroll-runs/year-end", { preHandler: admin }, async () => {
+    const today = localDate(now(), config.appTz);
+    return getYearEndStatus(db, today);
   });
 
   app.get("/api/admin/payroll-runs/:publicId", { preHandler: admin }, async (req, reply) => {
@@ -341,9 +353,7 @@ export function registerAdminPayrollRoutes(app: FastifyInstance, deps: AdminPayr
       .safeParse(req.body);
     if (!body.success)
       return reply.code(400).send({ error: "invalid_body", details: body.error.issues });
-    if (
-      isFiledDateInFuture(body.data.filedDate, (deps.clock ?? (() => new Date()))(), config.appTz)
-    ) {
+    if (isFiledDateInFuture(body.data.filedDate, now(), config.appTz)) {
       return reply.code(400).send(FILED_DATE_IN_FUTURE);
     }
     // Spec 26 (PAY-173) D3 step 4: effective date inside the lawful window.
