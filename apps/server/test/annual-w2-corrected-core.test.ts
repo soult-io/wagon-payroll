@@ -207,11 +207,11 @@ describe("T2 furnishingState truth table (review round D1, D3)", () => {
       [true, true, false, 3],
     ],
     [
-      "P [pn H1, pn H2] cur H2 (consent withdrawn: portal rows do not deliver paper)",
+      "P [pn H1, pn H2] cur H2 (consent withdrawn, R1: the latest portal_notice carries the current figures -> delivered)",
       P,
       [r(1, H1, PN), r(2, H2, PN)],
       H2,
-      [true, true, true, 2],
+      [true, true, false, 2],
     ],
     ["P [dl H1, dl H2] cur H2", P, [r(1, H1, DL), r(2, H2, DL)], H2, [true, true, true, 2]],
     ["P [bf H1] cur H1", P, [r(1, H1, BF)], H1, [true, false, false, 1]],
