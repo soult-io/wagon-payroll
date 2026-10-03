@@ -13,18 +13,21 @@ import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
 
 /**
- * Spec 24 (PAY-116): one advisory lock serializes marking a w2_w3 filing
- * filed with employer state ID writes, whose filed-year check must see
- * every filing marked filed before it writes.
+ * D9.5 (PAY-193): one advisory lock orders every write that changes whether
+ * a pay date is closed — issue with a past pay date, markFiled (every form
+ * type) and employer state ID writes (Spec 24, PAY-116: their filed-year
+ * check must see every filing marked filed before it writes). The key is
+ * Spec 24's, unchanged. Global order: payroll_run_employee:{id} →
+ * FILING_CLOSE_LOCK → SYNC_LOCK.
  */
-export const W2W3_FILING_LOCK = sql`SELECT pg_advisory_xact_lock(hashtext('w2_w3_filing_state_ids'))`;
+export const FILING_CLOSE_LOCK = sql`SELECT pg_advisory_xact_lock(hashtext('w2_w3_filing_state_ids'))`;
 
 export type TaxFilingRow = typeof taxFilings.$inferSelect;
 export type TaxAdjustmentRow = typeof taxAdjustments.$inferSelect;
 
 export class FilingServiceError extends Error {
   constructor(
-    public code: "not_found" | "invalid_input" | "invalid_transition",
+    public code: "not_found" | "invalid_input" | "invalid_transition" | "worksheet_changed",
     message: string,
   ) {
     super(message);

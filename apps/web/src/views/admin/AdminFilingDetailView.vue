@@ -421,10 +421,13 @@ async function submitFiled() {
   if (!iso) return;
   fileBusy.value = true;
   try {
+    const shownHash = filing.value?.worksheetHash;
     await adminFilingsApi.markFiled(filingId, {
       filedOn: iso,
       filingMethod: filingMethod.value,
       filingReference: filingReference.value.trim(),
+      // PAY-193: refuse when the figures changed since this page loaded them.
+      ...(shownHash ? { expectedWorksheetHash: shownHash } : {}),
     });
     // PAY-24: upload the confirmation document right after recording.
     const file = filedAttachment.value;
@@ -441,7 +444,16 @@ async function submitFiled() {
     fileDialog.value = false;
     await load();
   } catch (err) {
-    notify.error(err, "Could not record the filing");
+    const changed = err instanceof ApiError && err.code === "worksheet_changed";
+    notify.error(
+      err,
+      changed ? "Figures changed. Not marked as filed" : "Could not record the filing",
+    );
+    // PAY-193: show the refreshed figures so the admin can review them.
+    if (changed) {
+      fileDialog.value = false;
+      await load();
+    }
   } finally {
     fileBusy.value = false;
   }

@@ -55,6 +55,11 @@ const filedBody = z.object({
   filedOn: z.string().regex(ISO_DATE, "filedOn must be YYYY-MM-DD"),
   filingMethod: z.string().trim().min(1).max(50),
   filingReference: z.string().trim().max(100).default(""),
+  // PAY-193 (D9.5): the worksheet hash the admin saw (sha-256, lowercase hex).
+  expectedWorksheetHash: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/, "expectedWorksheetHash must be 64 lowercase hex characters")
+    .optional(),
 });
 
 const fractionsBody = z.object({
@@ -83,6 +88,19 @@ const offsetsBody = z.object({
     .max(FILING_REMINDER_OFFSET_MAX_ENTRIES),
 });
 
+function filingErrorStatus(err: FilingServiceError): number {
+  switch (err.code) {
+    case "not_found":
+      return 404;
+    case "invalid_input":
+      return 400;
+    case "invalid_transition":
+    // PAY-193 (D9.5): markFiled refused because the worksheet figures moved.
+    case "worksheet_changed":
+      return 409;
+  }
+}
+
 function serviceError(
   err: unknown,
   reply: { code: (n: number) => { send: (b: unknown) => unknown } },
@@ -91,8 +109,7 @@ function serviceError(
   const block = annualBlockBody(err);
   if (block) return reply.code(409).send(block);
   if (err instanceof FilingServiceError) {
-    const status = err.code === "not_found" ? 404 : err.code === "invalid_input" ? 400 : 409;
-    return reply.code(status).send({ error: err.code, message: err.message });
+    return reply.code(filingErrorStatus(err)).send({ error: err.code, message: err.message });
   }
   throw err;
 }

@@ -23,7 +23,7 @@ import { auditEvents, company, companyStateIds, taxFilings } from "@payroll/db";
 import { EIN_DEFAULT_STATES } from "@payroll/shared";
 import { decryptField, encryptField } from "../crypto/field-encryption.js";
 import type { Db } from "../db.js";
-import { W2W3_FILING_LOCK } from "../filings/shared.js";
+import { FILING_CLOSE_LOCK } from "../filings/shared.js";
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type Reader = Db | Tx;
@@ -134,7 +134,7 @@ interface WriteTarget {
  * the changed row.
  */
 async function filedYearConflict(tx: Tx, target: WriteTarget): Promise<number | null> {
-  await tx.execute(W2W3_FILING_LOCK);
+  await tx.execute(FILING_CLOSE_LOCK);
   const filings = await tx
     .select({ year: taxFilings.year, status: taxFilings.status })
     .from(taxFilings)

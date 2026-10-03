@@ -31,6 +31,8 @@ export const TARGETS = {
       "test/futa-*.test.ts",
       // PAY-162: the W-2 box module suites (pure + integration).
       "test/w2-boxes*.test.ts",
+      // PAY-193: filed-return guard (closing-filings, markFiled lock).
+      "test/pay-193-*.test.ts",
       // Import from src/filings without the module in their names.
       "test/calendar.test.ts",
       "test/mailing-address.test.ts",

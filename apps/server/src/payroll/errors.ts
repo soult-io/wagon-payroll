@@ -19,8 +19,15 @@ export class PayrollServiceError extends Error {
       | "invalid_period"
       | "stale_draft"
       | "ytd_order_conflict"
-      | "past_pay_date_other_year",
+      | "past_pay_date_other_year"
+      // PAY-193 (D9.4)
+      | "pay_period_filed",
     message: string,
+    /**
+     * Extra body fields (PAY-193 D9.3), spread into the error body before
+     * error/message. Never an amount.
+     */
+    public details?: Readonly<Record<string, string | string[]>>,
   ) {
     super(message);
   }

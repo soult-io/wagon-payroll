@@ -1392,7 +1392,13 @@ export const adminFilingsApi = {
     ),
   markFiled: (
     id: number,
-    input: { filedOn: string; filingMethod: string; filingReference: string },
+    input: {
+      filedOn: string;
+      filingMethod: string;
+      filingReference: string;
+      /** PAY-193: the worksheet hash shown; a changed worksheet is refused (409 worksheet_changed). */
+      expectedWorksheetHash?: string;
+    },
   ) => post<{ filing: TaxFilingRow }>(`/api/admin/tax-filings/${id}/file`, input),
   setFractionsOfCents: (id: number, amount: string) =>
     put<{ filing: TaxFilingRow }>(`/api/admin/tax-filings/${id}/fractions-of-cents`, { amount }),

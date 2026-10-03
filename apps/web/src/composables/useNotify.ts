@@ -19,6 +19,14 @@ const YTD_ORDER_FALLBACK =
 const PAST_YEAR_FALLBACK =
   "This payroll's pay date is in a year that has ended. Wagon Payroll can't record a payroll in a past year yet, so nothing was issued. If that's the date you paid your team, keep it. Don't change it. Keep your own record of the payment and make sure it's included in that year's payroll tax filings.";
 
+/** PAY-193 (D9.4): the server's text names the pay date and the filed forms. */
+const PERIOD_FILED_FALLBACK =
+  "Nothing was issued. You've marked a tax return that covers this pay date as filed. If you really paid your team on that date, keep the date. Don't move it to get around this. Adding this payroll means correcting the filed return with a correction form, which Wagon Payroll doesn't prepare. Keep your own record of this payment and make the correction outside Wagon Payroll.";
+
+/** PAY-193 (D9.5): mark-as-filed refused because the figures changed. */
+const WORKSHEET_CHANGED_FALLBACK =
+  "Not recorded yet. The figures on this page changed since you opened it, usually because a payroll was issued or changed. Check the updated figures. If they match what you filed, mark it as filed again. If you already filed different figures, the filed return may need a correction.";
+
 /** The server's own message, or null when the body carried none (err.message is then a generic default). */
 function serverMessage(err: ApiError): string | null {
   const message = err.body?.["message"];
@@ -29,6 +37,8 @@ function payrollRunMessage(err: ApiError): string | null {
   if (err.code === "stale_draft") return STALE_DRAFT_MESSAGE;
   if (err.code === "ytd_order_conflict") return serverMessage(err) ?? YTD_ORDER_FALLBACK;
   if (err.code === "past_pay_date_other_year") return serverMessage(err) ?? PAST_YEAR_FALLBACK;
+  if (err.code === "pay_period_filed") return serverMessage(err) ?? PERIOD_FILED_FALLBACK;
+  if (err.code === "worksheet_changed") return serverMessage(err) ?? WORKSHEET_CHANGED_FALLBACK;
   return null;
 }
 
@@ -50,9 +60,14 @@ const STICKY_ERROR_CODES = new Set([
   "stale_draft",
   "ytd_order_conflict",
   "past_pay_date_other_year",
+  "pay_period_filed",
+  "worksheet_changed",
   "invalid_w4_effective_date",
   "effective_date",
 ]);
+
+/** Issue refusals: the toast title says the payroll was not issued. */
+const ISSUE_REFUSED_CODES = new Set(["past_pay_date_other_year", "pay_period_filed"]);
 
 export function useNotify() {
   const toast = useToast();
@@ -82,10 +97,10 @@ export function useNotify() {
 
   function error(err: unknown, summary = "Error") {
     const sticky = err instanceof ApiError && STICKY_ERROR_CODES.has(err.code);
-    const pastYear = err instanceof ApiError && err.code === "past_pay_date_other_year";
+    const notIssued = err instanceof ApiError && ISSUE_REFUSED_CODES.has(err.code);
     toast.add({
       severity: "error",
-      summary: pastYear ? "Payroll not issued" : summary,
+      summary: notIssued ? "Payroll not issued" : summary,
       detail: errorMessage(err),
       ...(sticky ? {} : { life: 5000 }),
     });

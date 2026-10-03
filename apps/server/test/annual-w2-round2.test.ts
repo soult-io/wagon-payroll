@@ -405,16 +405,20 @@ async function cleanYear(year: number, cap: string) {
 }
 
 describe("R3 / R2 / R5 mark-filed on a clean year (each test owns its year)", () => {
-  it("R3 no blocks but a null worksheet -> 409 w2_not_ready", async () => {
+  it("R3 no blocks but a null worksheet -> 409 worksheet_changed; the worksheet is computed, not filed", async () => {
     const { row } = await cleanYear(2019, "132900.00");
     await t.db
       .update(taxFilings)
       .set({ worksheet: null, worksheetHash: null })
       .where(eq(taxFilings.id, row.id));
+    // PAY-193 (G-9): markFiled refreshes under the lock; the stored (null)
+    // hash differs from the fresh one, so the null worksheet is never filed.
     const res = await markFiled(row.id);
     expect(res.statusCode, res.body).toBe(409);
-    expect(res.json()).toEqual({ error: "w2_not_ready", issues: [] });
-    expect((await w2w3Row(2019)).status).not.toBe("filed");
+    expect((res.json() as { error: string }).error).toBe("worksheet_changed");
+    const after = await w2w3Row(2019);
+    expect(after.status).not.toBe("filed");
+    expect(after.worksheet).not.toBeNull();
   });
 
   it("R2 a second mark-filed is refused and writes no second audit row", async () => {

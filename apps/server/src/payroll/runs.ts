@@ -51,6 +51,14 @@ import {
   type DbLike,
 } from "./resolve.js";
 import { PayrollServiceError } from "./errors.js";
+import {
+  closingFilingCode,
+  closingFilingCorrection,
+  closingFilingLabel,
+  filedClosingFilings,
+  joinWithAnd,
+} from "../filings/closing-filings.js";
+import { FILING_CLOSE_LOCK } from "../filings/shared.js";
 import { localDate, type Period, type RunDates, runDates, ytdKeyOf } from "./run-dates.js";
 import {
   fingerprintDiff,
@@ -749,14 +757,32 @@ class StaleDraftError extends PayrollServiceError {
 }
 
 /**
+ * PAY-193 (D9.4, D9.5): a past pay date whose federal closing filing is
+ * filed cannot be issued. Takes FILING_CLOSE_LOCK after the employee lock
+ * (global order: employee → FILING_CLOSE_LOCK → SYNC_LOCK), so a concurrent
+ * markFiled either commits first (refused here) or waits for this issue.
+ */
+async function assertPayPeriodOpen(tx: Tx, payDate: string): Promise<void> {
+  await tx.execute(FILING_CLOSE_LOCK);
+  const filed = await filedClosingFilings(tx, payDate);
+  if (filed.length === 0) return;
+  throw new PayrollServiceError(
+    "pay_period_filed",
+    `Nothing was issued. You've marked ${joinWithAnd(filed.map(closingFilingLabel))} as filed, and that covers the pay date ${payDate}. If you really paid your team on that date, keep the date. Don't move it to get around this. Adding this payroll means correcting the filed return with ${joinWithAnd(filed.map(closingFilingCorrection))}, which Wagon Payroll doesn't prepare. Keep your own record of this payment and make the correction outside Wagon Payroll.`,
+    { payDate, forms: filed.map(closingFilingCode) },
+  );
+}
+
+/**
  * Spec 26 (PAY-173) checks before approve/issue, inside the locked
- * transaction: D9 (issue only) — a past pay date in another calendar year
+ * transaction: PAY-193 filed-return guard (issue with a past pay date only,
+ * first); D9 (issue only) — a past pay date in another calendar year
  * than the company's local today; D6 — an issued run of the same pay-date
  * year already sorts after this one; D4 — recompute the draft (read-only)
  * and refuse when it no longer matches the stored snapshot.
  */
 async function assertRunCurrent(
-  tx: DbLike,
+  tx: Tx,
   deps: GenerateDeps,
   run: RunRow,
   action: RunAction,
@@ -764,7 +790,9 @@ async function assertRunCurrent(
   if (action === "issue") {
     const today = localDate((deps.clock ?? (() => new Date()))(), deps.config.appTz);
     const year = run.payDate.slice(0, 4);
-    if (run.payDate < today && year !== today.slice(0, 4)) {
+    const pastPayDate = run.payDate < today;
+    if (pastPayDate) await assertPayPeriodOpen(tx, run.payDate);
+    if (pastPayDate && year !== today.slice(0, 4)) {
       throw new PayrollServiceError(
         "past_pay_date_other_year",
         `This payroll's pay date, ${run.payDate}, is in ${year}, and that year has ended. Wagon Payroll can't record a payroll in a past year yet, so nothing was issued. If you paid your team on ${run.payDate}, keep that date. Don't change it. Keep your own record of the payment and make sure it's included in your ${year} payroll tax filings. A way to record it here is coming soon.`,
