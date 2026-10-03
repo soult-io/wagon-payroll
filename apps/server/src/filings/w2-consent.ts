@@ -12,8 +12,8 @@
  * retained through at least Oct 15).
  */
 
-import { eq, inArray } from "drizzle-orm";
-import { auditEvents, w2DeliveryConsents } from "@payroll/db";
+import { and, eq, inArray, isNotNull, isNull } from "drizzle-orm";
+import { auditEvents, employees, w2DeliveryConsents } from "@payroll/db";
 import type { Db } from "../db.js";
 import { FilingServiceError } from "./shared.js";
 
@@ -129,16 +129,27 @@ export async function withdrawW2Consent(
   return w2ConsentStatus(db, employeeId);
 }
 
-/** Active-consent flags for a set of employees (admin list — no timestamps). */
-export async function w2ConsentFlags(db: Db, employeeIds: number[]): Promise<Map<number, boolean>> {
-  const flags = new Map<number, boolean>(employeeIds.map((id) => [id, false]));
-  if (employeeIds.length === 0) return flags;
+/**
+ * The employees whose W-2 delivery channel is electronic (D1, round 3 R4):
+ * an active (not withdrawn) consent AND a login. The one definition — the
+ * admin list `consented`, correctionToFurnish and the correction follow-up
+ * all use it.
+ */
+export async function electronicW2Channel(
+  db: Pick<Db, "select">,
+  employeeIds: readonly number[],
+): Promise<Set<number>> {
+  if (employeeIds.length === 0) return new Set();
   const rows = await db
-    .select()
+    .select({ employeeId: w2DeliveryConsents.employeeId })
     .from(w2DeliveryConsents)
-    .where(inArray(w2DeliveryConsents.employeeId, employeeIds));
-  for (const row of rows) {
-    if (flags.has(row.employeeId)) flags.set(row.employeeId, row.withdrawnAt === null);
-  }
-  return flags;
+    .innerJoin(employees, eq(employees.id, w2DeliveryConsents.employeeId))
+    .where(
+      and(
+        inArray(w2DeliveryConsents.employeeId, [...employeeIds]),
+        isNull(w2DeliveryConsents.withdrawnAt),
+        isNotNull(employees.userId),
+      ),
+    );
+  return new Set(rows.map((r) => r.employeeId));
 }

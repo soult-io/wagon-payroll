@@ -42,7 +42,7 @@ import {
   w2InputFor,
   w3InputFor,
 } from "../filings/annual.js";
-import { w2ConsentFlags } from "../filings/w2-consent.js";
+import { electronicW2Channel } from "../filings/w2-consent.js";
 import { PDF_RATE_LIMIT, refuseCrossSite } from "../plugins/fetch-site.js";
 import { FilingServiceError } from "../filings/shared.js";
 import {
@@ -140,7 +140,7 @@ export function registerAdminAnnualFormRoutes(app: FastifyInstance, deps: Deps):
     } catch (err) {
       return serviceError(err, reply);
     }
-    const consent = await w2ConsentFlags(
+    const electronic = await electronicW2Channel(
       db,
       figures.map((f) => f.employeeId),
     );
@@ -152,15 +152,18 @@ export function registerAdminAnnualFormRoutes(app: FastifyInstance, deps: Deps):
       // PAY-162 (D3): the official W-2/W-3 form is bundled for the year.
       formAvailable: hasTemplate(q.data.year, "fw2") && hasTemplate(q.data.year, "fw3"),
       w2s: figures.map((f) =>
-        listRow(f, consent.get(f.employeeId) ?? false, furnishing.get(f.employeeId)),
+        listRow(f, electronic.has(f.employeeId), furnishing.get(f.employeeId)),
       ),
     };
   });
 
-  /** Copy D for one employee (employer records; PII at render time only). */
+  /**
+   * Copy D for one employee (employer records; PII at render time only).
+   * Round 3 R5: refused cross-site / same-site before auth; 20/min per client.
+   */
   app.get(
     "/api/admin/annual-forms/w2/:employeeId/pdf",
-    { preHandler: admin },
+    { preHandler: [refuseCrossSite, admin], config: { rateLimit: PDF_RATE_LIMIT } },
     async (req, reply) => {
       const employeeId = Number((req.params as { employeeId: string }).employeeId);
       if (!Number.isInteger(employeeId) || employeeId <= 0) {

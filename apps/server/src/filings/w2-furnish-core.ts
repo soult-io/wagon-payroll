@@ -81,18 +81,16 @@ export interface FurnishingState<R extends FurnishingRef = FurnishingRef> {
   /** Some furnishing (any method) carried other figures: every render is CORRECTED. */
   corrected: boolean;
   /**
-   * Corrected and the latest DELIVERY of the employee's channel is not the
-   * current figures (review round D1): consented → portal_notice; otherwise
-   * → paper_handed. employee_download, admin_print and backfill never clear it.
+   * Corrected and no DELIVERY of the employee's channel carries the current
+   * figures (review round D1, round 3 R1): consented → the latest
+   * portal_notice; otherwise → the latest paper_handed OR the latest
+   * portal_notice (a notice delivered before consent was withdrawn stays
+   * delivered, 26 CFR 31.6051-1(j)(3)(v)(C)). employee_download,
+   * admin_print and backfill never clear it.
    */
   correctionToFurnish: boolean;
   /** Latest furnishing of any method: the highest id (D3; furnishedAt never orders). */
   latest: R | null;
-}
-
-/** The method that delivers a W-2 on the employee's channel (D1). */
-export function deliveryMethod(consented: boolean): FurnishMethod {
-  return consented ? "portal_notice" : "paper_handed";
 }
 
 /** The row with the highest id, optionally of one method only (D3). */
@@ -119,11 +117,15 @@ export function furnishingState<R extends FurnishingRef>(
 ): FurnishingState<R> {
   const latest = latestRow(rows);
   const corrected = rows.some((r) => r.boxesHash !== currentHash);
-  const delivered = latestRow(rows, deliveryMethod(opts.consented));
+  const deliveredCurrent = (method: FurnishMethod) =>
+    latestRow(rows, method)?.boxesHash === currentHash;
+  const delivered = opts.consented
+    ? deliveredCurrent("portal_notice")
+    : deliveredCurrent("paper_handed") || deliveredCurrent("portal_notice");
   return {
     furnished: latest !== null,
     corrected,
-    correctionToFurnish: corrected && delivered?.boxesHash !== currentHash,
+    correctionToFurnish: corrected && !delivered,
     latest,
   };
 }

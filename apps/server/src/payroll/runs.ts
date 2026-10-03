@@ -5,7 +5,7 @@
  * Every mutation writes audit_events in the same transaction.
  */
 
-import { and, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, ne, or } from "drizzle-orm";
 import {
   auditEvents,
   authUser,

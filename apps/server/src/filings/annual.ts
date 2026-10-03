@@ -18,7 +18,7 @@
  * available on January 1 of the following year (w2AvailableOn gate).
  */
 
-import { and, eq, isNull, ne, sql } from "drizzle-orm";
+import { and, eq, isNull, like, ne, sql } from "drizzle-orm";
 import {
   appSettings,
   company,
@@ -925,6 +925,31 @@ export async function hasActiveW2Consent(
   return rows.length > 0;
 }
 
+/** The outbox marker of a year notice (one per recipient per year). */
+function yearNoticeMarker(year: number): string {
+  return `<!-- w2-available:${year} -->`;
+}
+
+/** True when the user's year notice for `year` is already in the outbox. */
+async function yearNoticeQueued(
+  db: Pick<Db, "select">,
+  userId: string,
+  year: number,
+): Promise<boolean> {
+  const rows = await db
+    .select({ id: emailOutbox.id })
+    .from(emailOutbox)
+    .where(
+      and(
+        eq(emailOutbox.userId, userId),
+        eq(emailOutbox.eventType, EVENT_TYPE.w2Available),
+        like(emailOutbox.bodyHtml, `%${yearNoticeMarker(year)}%`),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
+}
+
 /**
  * One recipient's year notice, in its own transaction under the employee
  * lock. PAY-206 (R2, 26 CFR 31.6051-1(j)(5)): a recipient with active
@@ -932,7 +957,8 @@ export async function hasActiveW2Consent(
  * without consent nothing is furnished (they cannot download). Review round
  * D6: a consented recipient whose latest portal_notice already carries the
  * current figures (a rerun after a partial failure) is skipped — no row, no
- * mail. Returns true when a mail was queued.
+ * mail; round 3 R2: so is a recipient without consent whose year notice is
+ * already in the outbox. Returns true when a mail was queued.
  */
 async function sendOneW2AvailableNotice(
   db: Db,
@@ -952,12 +978,16 @@ async function sendOneW2AvailableNotice(
         actorId: null,
       });
       if (!inserted) return false;
+    } else if (await yearNoticeQueued(tx, recipient.userId, year)) {
+      // Round 3 R2: no furnishing row to dedupe on — the outbox marker is
+      // the record that this recipient already got the year's notice.
+      return false;
     }
     await tx.insert(emailOutbox).values({
       userId: recipient.userId,
       eventType: EVENT_TYPE.w2Available,
       subject: rendered.subject,
-      bodyHtml: `${rendered.html}<!-- w2-available:${year} -->`,
+      bodyHtml: `${rendered.html}${yearNoticeMarker(year)}`,
     });
     return true;
   });

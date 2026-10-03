@@ -11,13 +11,21 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 
 const REFUSED = new Set(["cross-site", "same-site"]);
 
-/** preHandler: 403 { error: "cross_site" } for a cross-site or same-site fetch. */
-export async function refuseCrossSite(req: FastifyRequest, reply: FastifyReply): Promise<void> {
+/**
+ * preHandler: 403 { error: "cross_site" } for a cross-site or same-site
+ * fetch. Runs before the session guard. Returns the reply when it refuses,
+ * so Fastify stops the chain and sends exactly one response.
+ */
+export async function refuseCrossSite(
+  req: FastifyRequest,
+  reply: FastifyReply,
+): Promise<FastifyReply | undefined> {
   const site = req.headers["sec-fetch-site"];
   const value = Array.isArray(site) ? site[0] : site;
   if (value !== undefined && REFUSED.has(value.toLowerCase())) {
-    await reply.code(403).send({ error: "cross_site" });
+    return reply.code(403).send({ error: "cross_site" });
   }
+  return undefined;
 }
 
 /** Per-route limit for the PDF routes (D10): 20 per minute per client. */
