@@ -79,3 +79,19 @@ export function closingFilingLabel(f: ClosingFiling): string {
   if (f.formType === "940") return `Form 940 for ${f.year}`;
   return `Forms W-2/W-3 for ${f.year}`;
 }
+
+/**
+ * The correction that a payroll added under a filed closing return needs
+ * (federal-payroll-tax-sme 2026-10-03; IRS i941x, i940, iw2w3).
+ */
+export function closingFilingCorrection(f: ClosingFiling): string {
+  if (f.formType === "941") return "Form 941-X";
+  if (f.formType === "940") return "an amended Form 940";
+  return "Forms W-2c and W-3c";
+}
+
+/** "a", "a and b", "a, b and c". */
+export function joinWithAnd(items: string[]): string {
+  if (items.length <= 1) return items.join("");
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}

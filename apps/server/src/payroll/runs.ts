@@ -53,9 +53,11 @@ import {
 import { PayrollServiceError } from "./errors.js";
 import {
   closingFilingCode,
+  closingFilingCorrection,
   closingFilingLabel,
   FILING_CLOSE_LOCK,
   filedClosingFilings,
+  joinWithAnd,
 } from "../filings/closing-filings.js";
 import { localDate, type Period, type RunDates, runDates, ytdKeyOf } from "./run-dates.js";
 import {
@@ -766,7 +768,7 @@ async function assertPayPeriodOpen(tx: Tx, payDate: string): Promise<void> {
   if (filed.length === 0) return;
   throw new PayrollServiceError(
     "pay_period_filed",
-    `A return covering ${payDate} is already filed (${filed.map(closingFilingLabel).join(", ")}). Adding this payroll needs a correction form (941-X, amended 940 or W-2c), which Wagon Payroll doesn't prepare. Nothing was issued.`,
+    `Nothing was issued. You've marked ${joinWithAnd(filed.map(closingFilingLabel))} as filed, and that covers the pay date ${payDate}. If you really paid your team on that date, keep the date. Don't move it to get around this. Adding this payroll means correcting the filed return with ${joinWithAnd(filed.map(closingFilingCorrection))}, which Wagon Payroll doesn't prepare. Keep your own record of this payment and make the correction outside Wagon Payroll.`,
     { payDate, forms: filed.map(closingFilingCode) },
   );
 }
