@@ -132,7 +132,7 @@ export interface DepositDetailRow extends DepositDetailBase {
   siblings: DepositSibling[];
   /**
    * PAY-193: what is already deposited toward this row's period — federal: Σ
-   * deposited siblings; state: the planner's credits (+ the month's own
+   * deposited siblings with a lower seq; state: the planner's credits (+ the month's own
    * deposited rows on a month row).
    */
   alreadyDeposited: string;
@@ -1345,7 +1345,8 @@ export async function getDepositDetail(db: Db, id: number): Promise<DepositDetai
  * period_kind; superseded excluded), what is already deposited and still owed
  * on earlier rows, and — on a seq 0 row — the additional deposit still to pay.
  *
- * alreadyDeposited (round 3 D1/D2): federal = Σ deposited siblings; state =
+ * alreadyDeposited (round 3 D1/D2, L3): federal = Σ deposited siblings with a
+ * lower seq; state =
  * the planner's credits for this row (any period kind), plus — on a month
  * row — the month's own deposited rows (the planner pays a month from its
  * own rows before crediting it). stillOwedEarlier = Σ open (pending/overdue)
@@ -1380,11 +1381,16 @@ async function periodRows(
   const sum = (list: DepositSibling[]) => list.reduce((a, r) => a + parseCents(r.amount), 0);
   const isOpen = (r: DepositSibling) => r.status === "pending" || r.status === "overdue";
   const depositedSiblings = sum(siblings.filter((r) => r.status === "deposited"));
+  const depositedEarlier = sum(
+    siblings.filter((r) => r.status === "deposited" && r.seq < deposit.seq),
+  );
   const fromCredits =
     deposit.jurisdiction !== "federal" && !transition.paymentsUnavailable
       ? transition.credits.reduce((a, c) => a + parseCents(c.applied), 0) +
         (deposit.periodKind === "month" ? depositedSiblings : 0)
-      : depositedSiblings;
+      : deposit.jurisdiction === "federal"
+        ? depositedEarlier
+        : depositedSiblings;
   const stillOwedEarlier = sum(siblings.filter((r) => isOpen(r) && r.seq < deposit.seq));
   const year = Number(deposit.periodStart.slice(0, 4));
   const quarter = quarterOfMonth(Number(deposit.periodStart.slice(5, 7)));

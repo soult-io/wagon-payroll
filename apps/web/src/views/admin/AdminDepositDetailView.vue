@@ -168,11 +168,21 @@ const pageTitle = computed(() => {
     ? `${rowPeriodLabel(d)} (${state.value})`
     : `${period.value} ${state.value} deposit`;
 });
-/** PAY-193: the shortfall notice shows while the additional deposit is still open. */
+/**
+ * PAY-193: the shortfall notice shows while the additional deposit is still
+ * open and has something to pay (L3: a 0.00 row shows no pay/penalty/EFTPS copy).
+ */
 const showAdditionalNotice = computed(
-  () => isAdditional.value && !isSuperseded.value && deposit.value?.status !== "deposited",
+  () =>
+    isAdditional.value &&
+    !isSuperseded.value &&
+    deposit.value?.status !== "deposited" &&
+    !nothingToPay.value,
 );
-/** PAY-193 round 3: some earlier row of the period is deposited ("was made" wording). */
+/**
+ * PAY-193 round 3 / L3: a lower-seq row of the period is deposited ("was made"
+ * wording); the server's federal alreadyDeposited counts lower-seq rows only.
+ */
 const earlierDeposited = computed(() => centsOf(alreadyDeposited.value) > 0);
 /** PAY-193 round 3: the period's newest live row (no live sibling with a higher seq). */
 const isNewestRow = computed(
@@ -181,6 +191,15 @@ const isNewestRow = computed(
 /** PAY-193 round 3: the seq 0 notice shows only once this row is paid. */
 const showAdditionalLink = computed(
   () => !isAdditional.value && deposit.value?.status === "deposited" && !!additionalDeposit.value,
+);
+/** PAY-193 L3: an unpaid seq 0 row points to the period's additional deposit too. */
+const showUnpaidAdditionalLink = computed(
+  () =>
+    !isAdditional.value &&
+    !isSuperseded.value &&
+    !!deposit.value &&
+    deposit.value.status !== "deposited" &&
+    !!additionalDeposit.value,
 );
 const isState = computed(() => !!deposit.value && deposit.value.jurisdiction !== "federal");
 const subtitle = computed(() => {
@@ -216,7 +235,7 @@ const statusChip = computed(() => {
 const extraOverpaidChip = computed(() => overpaidChip.value && !nothingToPay.value);
 
 const isOverdue = computed(() => {
-  if (!deposit.value) return false;
+  if (!deposit.value || nothingToPay.value) return false;
   const today = new Date().toISOString().slice(0, 10);
   return (
     deposit.value.status === "overdue" ||
@@ -371,21 +390,15 @@ watch(depositId, load);
         <template v-if="earlierDeposited">
           A payroll for {{ period }} was issued after your deposit for that period was made, so its
           taxes weren't included.
-          <template v-if="!nothingToPay">
-            Pay {{ money(deposit.amount) }} as an additional deposit for {{ period }}.
-          </template>
+          Pay {{ money(deposit.amount) }} as an additional deposit for {{ period }}.
         </template>
         <template v-else>
           A payroll for {{ period }} was issued after your earlier deposit for that period was
           already due, so its taxes weren't included in it.
-          <template v-if="!nothingToPay">
-            Pay {{ money(deposit.amount) }} as an additional deposit for {{ period }}, and pay the
-            earlier deposit too.
-          </template>
+          Pay {{ money(deposit.amount) }} as an additional deposit for {{ period }}, and pay the
+          earlier deposit too.
         </template>
-        <template v-if="!nothingToPay">
-          The amount shown is only what's left to pay, not the full period.
-        </template>
+        The amount shown is only what's left to pay, not the full period.
         <template v-if="!isState">
           <template v-if="isOverdue">
             This deposit was due {{ date(deposit.dueDate) }}. The IRS can charge a late-deposit
@@ -420,6 +433,19 @@ watch(depositId, load);
       >
         A payroll was added to {{ period }} after you paid this. The extra
         {{ money(additionalDeposit.amount) }} is on a separate additional deposit.
+        <RouterLink :to="{ name: 'admin-deposit-detail', params: { id: additionalDeposit.id } }">
+          View additional deposit
+        </RouterLink>
+      </Message>
+
+      <Message
+        v-if="showUnpaidAdditionalLink && additionalDeposit"
+        severity="info"
+        :closable="false"
+        data-testid="additional-pointer"
+      >
+        There is also an additional deposit of {{ money(additionalDeposit.amount) }} for
+        {{ period }}.
         <RouterLink :to="{ name: 'admin-deposit-detail', params: { id: additionalDeposit.id } }">
           View additional deposit
         </RouterLink>
