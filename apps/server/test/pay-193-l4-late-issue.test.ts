@@ -1225,16 +1225,22 @@ describe("EF-6 w2_changed notice", () => {
     }).toEqual({ rows: 0, followUps: [] });
   });
 
-  it("(c) employee without a login (user_id null) -> no row, no follow-up", async () => {
+  it("(c) employee without a login (user_id null; can never have consented) -> no email row; followUps [w2_paper_correction_needed] (PL reading B)", async () => {
     const d = await ilDraft("2026-12-31", false);
     await setNotifiedYears([2026]);
     env.setNow(JAN_10_2027);
     const res = await issue(env, d.publicId, latePayment(NET_IL, [notFiled("IL")]));
     expect(res.status, res.raw).toBe(200);
+    const late = await audits(env.t, "run.issued_late", d.publicId);
     expect({
       rows: (await outboxOf("w2_changed")).length,
       followUps: (res.body.lateIssue as { followUps: string[] }).followUps,
-    }).toEqual({ rows: 0, followUps: [] });
+      auditFollowUps: (late[0]?.after as { followUps?: string[] } | undefined)?.followUps,
+    }).toEqual({
+      rows: 0,
+      followUps: ["w2_paper_correction_needed"],
+      auditFollowUps: ["w2_paper_correction_needed"],
+    });
   });
 
   it("(d) same-year issue on 2026-12-31 (not late) -> no row", async () => {
