@@ -314,6 +314,9 @@ describe("W27 filed-year freeze", () => {
       .select({ id: taxFilings.id })
       .from(taxFilings)
       .where(and(eq(taxFilings.formType, "w2_w3"), eq(taxFilings.year, 2026)));
+    // PAY-193 (G-9): a row is filed only after its worksheet was read.
+    const opened = await api("GET", `/api/admin/tax-filings/${row?.id}`);
+    expect(opened.statusCode, opened.body).toBe(200);
     const filed = await api("POST", `/api/admin/tax-filings/${row?.id}/file`, {
       filedOn: "2027-01-20",
       filingMethod: "bso",

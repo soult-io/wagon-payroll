@@ -427,7 +427,7 @@ async function refreshWorksheet(db: Db, filing: TaxFilingRow): Promise<boolean> 
   const fresh = await computeFreshWorksheet(db, filing);
   const fractions = fresh.fractionsOfCents ?? filing.fractionsOfCents;
   if (fresh.hash === filing.worksheetHash && filing.fractionsOfCents === fractions) return false;
-  await db
+  const updated = await db
     .update(taxFilings)
     .set({
       worksheet: fresh.worksheet,
@@ -435,8 +435,11 @@ async function refreshWorksheet(db: Db, filing: TaxFilingRow): Promise<boolean> 
       ...(fresh.fractionsOfCents !== undefined ? { fractionsOfCents: fresh.fractionsOfCents } : {}),
       updatedAt: new Date(),
     })
-    .where(eq(taxFilings.id, filing.id));
-  return true;
+    // PAY-193 (G-10): `filing` may be a stale read — a mark-filed that
+    // committed since then must never have its frozen worksheet overwritten.
+    .where(and(eq(taxFilings.id, filing.id), ne(taxFilings.status, "filed")))
+    .returning({ id: taxFilings.id });
+  return updated.length > 0;
 }
 
 /**
@@ -651,8 +654,9 @@ export interface MarkFiledInput {
   filingMethod: string;
   filingReference: string;
   /**
-   * PAY-193 (D9.5): the worksheet hash the admin saw. When given, the
-   * worksheet is refreshed under FILING_CLOSE_LOCK and a different hash is
+   * PAY-193 (D9.5): the worksheet hash the admin saw. The worksheet is
+   * always refreshed under FILING_CLOSE_LOCK; a fresh hash different from
+   * this one (or, when omitted, from the hash stored before the refresh) is
    * refused with worksheet_changed (the refreshed figures are kept).
    */
   expectedWorksheetHash?: string | undefined;
@@ -694,8 +698,8 @@ export async function markFiled(
   }
 
   const result = await db.transaction(async (tx) => {
-    const current = await fileableRowUnderLock(tx, filingId, input.expectedWorksheetHash);
-    if (current === "worksheet_changed") return current;
+    const locked = await fileableRowUnderLock(tx, filingId, input.expectedWorksheetHash);
+    if (locked === "worksheet_changed") return locked;
     const updated = await tx
       .update(taxFilings)
       .set({
@@ -715,7 +719,7 @@ export async function markFiled(
       action: "tax_filing.file",
       entity: "tax_filing",
       entityId: String(filingId),
-      before: { status: before.status, dueDate: before.dueDate },
+      before: { status: locked.status, dueDate: locked.dueDate },
       after: {
         status: "filed",
         filedOn: input.filedOn,
@@ -728,18 +732,21 @@ export async function markFiled(
   // Outside the transaction: the refreshed worksheet is committed, so the
   // admin sees the new figures on reload.
   if (result === "worksheet_changed") {
-    throw new FilingServiceError(
-      "worksheet_changed",
-      "These figures changed since you opened this filing. Review them, then mark it filed again.",
-    );
+    throw new FilingServiceError("worksheet_changed", WORKSHEET_CHANGED_MESSAGE);
   }
   return result;
 }
 
+/** 409 worksheet_changed: markFiled refused because the figures moved. */
+export const WORKSHEET_CHANGED_MESSAGE =
+  "Not recorded yet. The figures on this page changed since you opened it, usually because a payroll was issued or changed. Check the updated figures. If they match what you filed, mark it as filed again. If you already filed different figures, the filed return may need a correction.";
+
 /**
  * markFiled's checks under FILING_CLOSE_LOCK (D9.5, PAY-162): the row re-read
- * after the lock, the W-3 refusals, and — when the admin sent the hash they
- * saw — a refresh of the unfiled worksheet compared with that hash.
+ * after the lock, the W-3 refusals, and a refresh of the unfiled worksheet
+ * compared with the hash the admin saw — or, when the client sent none, the
+ * hash stored before the refresh (G-9). The returned row is the locked
+ * re-read (status and dueDate as they stood under the lock).
  */
 async function fileableRowUnderLock(
   tx: Tx,
@@ -760,13 +767,12 @@ async function fileableRowUnderLock(
     const codes = await yearW2BlockCodes(tx, current.year);
     if (codes.length > 0) throw new W2BlockedError(codes);
   }
-  if (expectedWorksheetHash !== undefined) {
-    // The compute helpers are typed Db; the transaction serves every call.
-    if (await refreshWorksheet(tx as unknown as Db, current)) {
-      current = (await lockedFilingRow(tx, filingId)) ?? current;
-    }
-    if (current.worksheetHash !== expectedWorksheetHash) return "worksheet_changed";
+  const expected = expectedWorksheetHash ?? current.worksheetHash;
+  // The compute helpers are typed Db; the transaction serves every call.
+  if (await refreshWorksheet(tx as unknown as Db, current)) {
+    current = (await lockedFilingRow(tx, filingId)) ?? current;
   }
+  if (current.worksheetHash !== expected) return "worksheet_changed";
   // PAY-162: a W-3 whose worksheet was never computed cannot be recorded filed.
   if (current.formType === "w2_w3" && !current.worksheet) throw new W2BlockedError([]);
   return current;
