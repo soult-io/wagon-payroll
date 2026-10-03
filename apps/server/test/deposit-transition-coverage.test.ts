@@ -30,6 +30,7 @@ function r(
     dueDate,
     status,
     depositedOn: status === "deposited" ? "2026-09-05" : null,
+    seq: 0,
   };
 }
 const q3 = (over: Partial<QuarterInput>): QuarterInput => ({

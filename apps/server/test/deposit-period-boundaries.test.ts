@@ -97,6 +97,7 @@ describe("(2) quarter range is exactly its three months", () => {
             dueDate: "2026-06-15",
             status: "pending",
             depositedOn: null,
+            seq: 0,
           },
         ],
         today: "2026-07-01",

@@ -30,7 +30,7 @@ function row(
   depositedOn: string | null = null,
 ): LiveDepositRow {
   nextId += 1;
-  return { id: nextId, kind, periodStart, cents, dueDate, status, depositedOn };
+  return { id: nextId, kind, periodStart, cents, dueDate, status, depositedOn, seq: 0 };
 }
 
 function q3(over: Partial<QuarterInput>): QuarterInput {
