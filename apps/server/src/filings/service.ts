@@ -694,29 +694,8 @@ export async function markFiled(
   }
 
   const result = await db.transaction(async (tx) => {
-    await tx.execute(FILING_CLOSE_LOCK);
-    // Re-read under the lock (row-locked): a concurrent mark-filed that won
-    // the race is refused here, not recorded twice.
-    let current = await lockedFilingRow(tx, filingId);
-    if (!current || current.status === "filed") {
-      throw new FilingServiceError("invalid_transition", "filing is already recorded");
-    }
-    // PAY-162: no W-3 figure is computed or recorded without the year's
-    // federal tax_config row, nor with a blocked W-2.
-    if (current.formType === "w2_w3") {
-      await assertFederalTaxConfig(tx, current.year);
-      const codes = await yearW2BlockCodes(tx, current.year);
-      if (codes.length > 0) throw new W2BlockedError(codes);
-    }
-    if (input.expectedWorksheetHash !== undefined) {
-      // The refresh only reads (the compute helpers take Db for select).
-      if (await refreshWorksheet(tx as unknown as Db, current)) {
-        current = (await lockedFilingRow(tx, filingId))!;
-      }
-      if (current.worksheetHash !== input.expectedWorksheetHash) return "worksheet_changed";
-    }
-    // PAY-162: a W-3 whose worksheet was never computed cannot be recorded filed.
-    if (current.formType === "w2_w3" && !current.worksheet) throw new W2BlockedError([]);
+    const current = await fileableRowUnderLock(tx, filingId, input.expectedWorksheetHash);
+    if (current === "worksheet_changed") return current;
     const updated = await tx
       .update(taxFilings)
       .set({
@@ -755,6 +734,42 @@ export async function markFiled(
     );
   }
   return result;
+}
+
+/**
+ * markFiled's checks under FILING_CLOSE_LOCK (D9.5, PAY-162): the row re-read
+ * after the lock, the W-3 refusals, and — when the admin sent the hash they
+ * saw — a refresh of the unfiled worksheet compared with that hash.
+ */
+async function fileableRowUnderLock(
+  tx: Tx,
+  filingId: number,
+  expectedWorksheetHash: string | undefined,
+): Promise<TaxFilingRow | "worksheet_changed"> {
+  await tx.execute(FILING_CLOSE_LOCK);
+  // Re-read under the lock (row-locked): a concurrent mark-filed that won
+  // the race is refused here, not recorded twice.
+  let current = await lockedFilingRow(tx, filingId);
+  if (!current || current.status === "filed") {
+    throw new FilingServiceError("invalid_transition", "filing is already recorded");
+  }
+  // PAY-162: no W-3 figure is computed or recorded without the year's
+  // federal tax_config row, nor with a blocked W-2.
+  if (current.formType === "w2_w3") {
+    await assertFederalTaxConfig(tx, current.year);
+    const codes = await yearW2BlockCodes(tx, current.year);
+    if (codes.length > 0) throw new W2BlockedError(codes);
+  }
+  if (expectedWorksheetHash !== undefined) {
+    // The compute helpers are typed Db; the transaction serves every call.
+    if (await refreshWorksheet(tx as unknown as Db, current)) {
+      current = (await lockedFilingRow(tx, filingId)) ?? current;
+    }
+    if (current.worksheetHash !== expectedWorksheetHash) return "worksheet_changed";
+  }
+  // PAY-162: a W-3 whose worksheet was never computed cannot be recorded filed.
+  if (current.formType === "w2_w3" && !current.worksheet) throw new W2BlockedError([]);
+  return current;
 }
 
 async function lockedFilingRow(tx: Tx, filingId: number): Promise<TaxFilingRow | undefined> {
