@@ -364,7 +364,11 @@ describe("D2 figures that come back to an earlier hash are furnished again", () 
         ],
         idsAscending: true,
         list: { corrected: true, correctionToFurnish: false, furnished: "online" },
-        myList: { w2s: [{ year: Y, availableOn: "2026-01-01", ready: true, corrected: true }] },
+        myList: {
+          w2s: [
+            { year: Y, availableOn: "2026-01-01", ready: true, corrected: true, downloadable: true },
+          ],
+        },
       });
     });
   });
@@ -799,6 +803,62 @@ describe("D9 after consent is withdrawn", () => {
       apRows: ["backfill", "admin_print"],
       bf: [409, "consent_required"],
       ap: [409, "consent_required"],
+    });
+  });
+
+  it("GET /api/my/w2 after withdrawal lists each year still downloadable under D9 with downloadable: true; a backfill-only year downloadable: false; a consented employee's year downloadable: true", async () => {
+    const { backfillW2Furnishings } = await furnishModule();
+    const c = await makeW2Emp(env, { grossCents: G, login: true, consent: true });
+    await seedHistory2025(env, c, JAN_DEC);
+    const dl = await makeW2Emp(env, { grossCents: G, login: true, consent: true });
+    await seedHistory2025(env, dl, JAN_DEC);
+    const bf = await makeW2Emp(env, { grossCents: G, login: true, consent: true });
+    await seedHistory2025(env, bf, JAN_DEC);
+    // dl downloads (employee_download) before the backfill, so only c and bf
+    // get backfill rows; bf never receives an electronic furnishing.
+    expect((await myPdf(env, dl)).statusCode).toBe(200);
+    await setNotifiedYears(env.t, [Y]);
+    await backfillW2Furnishings(deps(), { today: "2026-03-01" });
+    await withdrawConsent(env, dl);
+    await withdrawConsent(env, bf);
+    env.setNow("2026-10-15T12:00:00Z");
+    const row = (downloadable: boolean) => ({
+      year: Y,
+      availableOn: "2026-01-01",
+      ready: true,
+      corrected: false,
+      downloadable,
+    });
+    const listed = {
+      consented: (await myList(env, c)).json(),
+      withdrawnDownloaded: (await myList(env, dl)).json(),
+      withdrawnBackfillOnly: (await myList(env, bf)).json(),
+    };
+    // The listing agrees with the PDF route on the same day.
+    const pdfs = {
+      consented: (await myPdf(env, c)).statusCode,
+      withdrawnDownloaded: (await myPdf(env, dl)).statusCode,
+      withdrawnBackfillOnly: (await myPdf(env, bf)).statusCode,
+    };
+    env.setNow("2026-10-16T12:00:00Z");
+    const afterWindow = (await myList(env, dl)).json() as {
+      w2s: { year: number; downloadable?: boolean }[];
+    };
+    expect({
+      bfRows: (await furnishings(env.t, bf.id)).map((r) => r.method),
+      listed,
+      pdfs,
+      // Past electronicW2AccessThrough(2025): absent or downloadable: false.
+      afterWindowDownloadable: afterWindow.w2s.some((w) => w.year === Y && w.downloadable !== false),
+    }).toEqual({
+      bfRows: ["backfill"],
+      listed: {
+        consented: { w2s: [row(true)] },
+        withdrawnDownloaded: { w2s: [row(true)] },
+        withdrawnBackfillOnly: { w2s: [row(false)] },
+      },
+      pdfs: { consented: 200, withdrawnDownloaded: 200, withdrawnBackfillOnly: 409 },
+      afterWindowDownloadable: false,
     });
   });
 

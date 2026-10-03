@@ -307,7 +307,9 @@ describe("R7/R8 list fields", () => {
     expect((await myPdf(env, a)).statusCode).toBe(200);
     const res = await myList(env, a);
     expect(res.json()).toEqual({
-      w2s: [{ year: Y, availableOn: "2026-01-01", ready: true, corrected: false }],
+      w2s: [
+        { year: Y, availableOn: "2026-01-01", ready: true, corrected: false, downloadable: true },
+      ],
     });
   });
 
