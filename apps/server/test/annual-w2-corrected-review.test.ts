@@ -29,8 +29,10 @@
  *      withdrawal takes the paper path and the CORRECTED copy stays
  *      downloadable. 26 CFR 31.6051-1(j)(3)(v)(C), (j)(6).
  *  D10 GET /api/my/w2/:year/pdf and GET …/w2/:id/print-packet: 403
- *      { error: "cross_site" } when Sec-Fetch-Site is present and is not
- *      "same-origin"; rate limit 20 per minute (21st -> 429).
+ *      { error: "cross_site" } when Sec-Fetch-Site is "cross-site" or
+ *      "same-site"; "same-origin", "none" (user opened the link: typed,
+ *      bookmark, new tab) or no header -> allowed (coordinator 2026-10-03);
+ *      rate limit 20 per minute (21st -> 429).
  *  D11 (UX item 2) w2_changed bodies state no payroll cause (outbox check).
  *
  * Interfaces required beyond the earlier suites:
@@ -841,7 +843,7 @@ describe("D9 after consent is withdrawn", () => {
 // ---------------------------------------------------------------- D10
 
 describe("D10 PDF routes: Sec-Fetch-Site and rate limit", () => {
-  for (const site of ["cross-site", "same-site", "none"]) {
+  for (const site of ["cross-site", "same-site"]) {
     it(`Sec-Fetch-Site: ${site} -> 403 { error: "cross_site" } on both PDF routes, no PDF, nothing recorded`, async () => {
       const a = await makeW2Emp(env, { grossCents: G, login: true, consent: true });
       await seedHistory2025(env, a, JAN_DEC);
@@ -860,17 +862,20 @@ describe("D10 PDF routes: Sec-Fetch-Site and rate limit", () => {
     });
   }
 
-  it("Sec-Fetch-Site: same-origin and no header -> 200 PDF on both routes", async () => {
+  it("Sec-Fetch-Site: same-origin, none (user opened the link: typed, bookmark, new tab) and no header -> 200 PDF on both routes", async () => {
     const a = await makeW2Emp(env, { grossCents: G, login: true, consent: true });
     await seedHistory2025(env, a, JAN_DEC);
     const so = { "sec-fetch-site": "same-origin" };
+    const none = { "sec-fetch-site": "none" };
     const statuses = [
       (await myPdf(env, a, Y, { headers: so })).statusCode,
+      (await myPdf(env, a, Y, { headers: none })).statusCode,
       (await myPdf(env, a)).statusCode,
       (await printPacket(env, a.id, Y, { headers: so })).statusCode,
+      (await printPacket(env, a.id, Y, { headers: none })).statusCode,
       (await printPacket(env, a.id)).statusCode,
     ];
-    expect(statuses).toEqual([200, 200, 200, 200]);
+    expect(statuses).toEqual([200, 200, 200, 200, 200, 200]);
   });
 
   it("20 requests per minute pass the limiter; the 21st -> 429 (employee PDF and admin print-packet)", async () => {
