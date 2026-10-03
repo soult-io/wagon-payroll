@@ -28,6 +28,7 @@ import { sendDepositReminders, syncDeposits } from "../deposits/service.js";
 import { sendFilingReminders, syncFilings } from "../filings/service.js";
 import { sendW2AvailableNotices, syncAnnualFilings } from "../filings/annual.js";
 import { backfillW2Furnishings, reconcileW2Furnishings } from "../filings/w2-furnish.js";
+import { errorClass } from "../filings/shared.js";
 
 const TICK_QUEUE = "payroll-draft-tick";
 const GENERATE_QUEUE = "payroll-generate-draft";
@@ -47,30 +48,43 @@ function currentPeriod(): { year: number; month: number } {
   return { year: now.getFullYear(), month: now.getMonth() + 1 };
 }
 
+/** Run one annual step; a failure is logged by class only and never stops the next step. */
+async function annualStep<T>(name: string, step: () => Promise<T>): Promise<T | null> {
+  try {
+    return await step();
+  } catch (err) {
+    console.error(`[filings] ${name} failed (${errorClass(err)})`);
+    return null;
+  }
+}
+
 /**
  * PAY-11: annual forms (940 + W-2/W-3) fold into the daily deposit tick —
  * year-end row sync, the PAY-206 W-2 furnishing backfill and corrections,
- * then the once-per-year W-2 availability notices. All idempotent.
+ * then the once-per-year W-2 availability notices. All idempotent. PAY-206
+ * review round D5: no step's failure blocks the year notice.
  */
-async function annualTick(deps: { db: Db; config: AppConfig }): Promise<void> {
+export async function annualTick(deps: { db: Db; config: AppConfig }): Promise<void> {
   const { db, config } = deps;
-  const annualSync = await syncAnnualFilings({ db, config });
-  if (annualSync.created + annualSync.refreshed > 0) {
+  const annualSync = await annualStep("annual sync", () => syncAnnualFilings({ db, config }));
+  if (annualSync && annualSync.created + annualSync.refreshed > 0) {
     console.log(`[filings] annual sync: ${JSON.stringify(annualSync)}`);
   }
   // PAY-206: one-shot backfill of years the previous release notified,
   // then furnish any W-2 correction (R6) — both idempotent. Before the
   // year notice, so a correction is never delayed by it.
-  const backfill = await backfillW2Furnishings({ db, config });
-  if (backfill.inserted > 0) {
+  const backfill = await annualStep("W-2 furnishing backfill", () =>
+    backfillW2Furnishings({ db, config }),
+  );
+  if (backfill && backfill.inserted + backfill.failed > 0) {
     console.log(`[filings] W-2 furnishing backfill: ${JSON.stringify(backfill)}`);
   }
-  const reconcile = await reconcileW2Furnishings({ db, config });
-  if (reconcile.followUps > 0) {
+  const reconcile = await annualStep("W-2 reconcile", () => reconcileW2Furnishings({ db, config }));
+  if (reconcile && reconcile.followUps + reconcile.failed > 0) {
     console.log(`[filings] W-2 corrections: ${JSON.stringify(reconcile)}`);
   }
-  const w2Notices = await sendW2AvailableNotices({ db, config });
-  if (w2Notices.sent > 0) {
+  const w2Notices = await annualStep("W-2 notices", () => sendW2AvailableNotices({ db, config }));
+  if (w2Notices && w2Notices.sent > 0) {
     console.log(`[filings] W-2 notices: ${JSON.stringify(w2Notices)}`);
   }
 }

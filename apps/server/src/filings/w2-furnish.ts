@@ -14,16 +14,17 @@
  * (R10). The figures hash never leaves the database.
  */
 
-import { and, eq, like } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, like } from "drizzle-orm";
 import {
   appSettings,
   auditEvents,
   emailOutbox,
   employees,
   taxFilings,
+  w2DeliveryConsents,
   w2Furnishings,
 } from "@payroll/db";
-import type { W2Input } from "@payroll/documents";
+import { hasTemplate, type W2Input } from "@payroll/documents";
 import { EVENT_TYPE, w2Changed as tplW2Changed } from "@payroll/notifications";
 import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
@@ -33,6 +34,7 @@ import { localDate } from "../payroll/run-dates.js";
 import { AnnualFiguresDefectError, type W2BoxesCents } from "./w2-boxes.js";
 import {
   employeeW2Figures,
+  FormNotAvailableError,
   hasActiveW2Consent,
   isW2Available,
   isW2Blocked,
@@ -45,24 +47,30 @@ import {
   w2InputWithBoxes,
 } from "./annual.js";
 import {
+  electronicW2AccessThrough,
   type FurnishingRow,
-  furnishCurrent,
   furnishingRows,
   furnishingRowsByEmployee,
   furnishingState,
+  isCorrected,
   recordFurnishing,
   w2BoxesHash,
 } from "./w2-furnish-core.js";
-import { FilingServiceError, todayIso } from "./shared.js";
+import { errorClass, FilingServiceError, todayIso } from "./shared.js";
+import { furnishCurrent } from "./w2-furnish-core.js";
 
 export {
   type FurnishingRef,
   type FurnishingRow,
   type FurnishingState,
   type FurnishMethod,
+  deliveryMethod,
+  electronicW2AccessThrough,
   furnishCurrent,
   furnishingRows,
   furnishingState,
+  isCorrected,
+  latestRow,
   recordFurnishing,
   W2_HASH_VERSION,
   w2BoxesHash,
@@ -95,9 +103,7 @@ export async function furnishForRender(
       { db: tx, config: deps.config },
       employeeId,
       year,
-      {
-        requireBundledForm: true,
-      },
+      { requireBundledForm: true },
     );
     const { corrected } = await furnishCurrent(tx, {
       employeeId,
@@ -111,9 +117,12 @@ export async function furnishForRender(
 }
 
 /**
- * R8: the admin handed the employee the current W-2 on paper. Idempotent:
- * one row and one audit row (w2_furnishing.paper_handed) per figures.
- * Throws the W-2 service errors (not_found, W2BlockedError, …).
+ * R8: the admin handed the employee the current W-2 on paper. Idempotent
+ * while the figures stand: no new row (and no audit row) when the latest
+ * paper_handed already carries them (review round D2). Throws the W-2
+ * service errors (not_found, W2BlockedError, …); FormNotAvailableError
+ * (409 form_not_available) when the year has no bundled W-2 form — no
+ * paper copy can have been printed (D8).
  */
 export async function markFurnishedOnPaper(
   deps: Deps,
@@ -129,6 +138,7 @@ export async function markFurnishedOnPaper(
         `W-2 for ${year} becomes available on ${w2AvailableOn(year)}`,
       );
     }
+    if (!hasTemplate(year, "fw2")) throw new FormNotAvailableError(year);
     const boxes = readableBoxes(await employeeW2Figures(tx, employeeId, year));
     const { corrected, inserted } = await furnishCurrent(tx, {
       employeeId,
@@ -155,12 +165,13 @@ export async function markFurnishedOnPaper(
 // Read side (admin list, employee list)
 // ---------------------------------------------------------------------------
 
-export type FurnishedVia = "none" | "online" | "printed" | "paper";
+/** How the latest furnishing reached the employee; "unknown" = backfill (D7). */
+export type FurnishedVia = "none" | "online" | "printed" | "paper" | "unknown";
 
 const VIA: Record<string, FurnishedVia> = {
   portal_notice: "online",
   employee_download: "online",
-  backfill: "online",
+  backfill: "unknown",
   admin_print: "printed",
   paper_handed: "paper",
 };
@@ -178,19 +189,43 @@ function viewOf(
   f: W2Figures,
   year: number,
   rows: readonly FurnishingRow[],
+  consented: boolean,
   appTz: string,
 ): FurnishingView {
   const blocked = isW2Blocked(f) || f.box1Cents === null;
   const state = blocked
-    ? furnishingState(rows, "")
-    : furnishingState(rows, w2BoxesHash(f.employeeId, year, f as W2BoxesCents));
+    ? furnishingState(rows, "", { consented })
+    : furnishingState(rows, w2BoxesHash(f.employeeId, year, f as W2BoxesCents), { consented });
   const latest = state.latest;
   return {
     corrected: !blocked && state.corrected,
     correctionToFurnish: !blocked && state.correctionToFurnish,
-    furnished: latest ? (VIA[latest.method] ?? "online") : "none",
+    furnished: latest ? (VIA[latest.method] ?? "unknown") : "none",
     furnishedOn: latest ? localDate(latest.furnishedAt, appTz) : null,
   };
+}
+
+/**
+ * The employees whose delivery channel is electronic (D1): an active
+ * (not withdrawn) consent AND a login.
+ */
+async function electronicChannel(
+  db: Pick<Db, "select">,
+  employeeIds: readonly number[],
+): Promise<Set<number>> {
+  if (employeeIds.length === 0) return new Set();
+  const rows = await db
+    .select({ employeeId: w2DeliveryConsents.employeeId })
+    .from(w2DeliveryConsents)
+    .innerJoin(employees, eq(employees.id, w2DeliveryConsents.employeeId))
+    .where(
+      and(
+        inArray(w2DeliveryConsents.employeeId, [...employeeIds]),
+        isNull(w2DeliveryConsents.withdrawnAt),
+        isNotNull(employees.userId),
+      ),
+    );
+  return new Set(rows.map((r) => r.employeeId));
 }
 
 /** R8: furnishing fields for every W-2 of the year, by employee. */
@@ -199,15 +234,19 @@ export async function furnishingViews(
   year: number,
   figures: readonly W2Figures[],
 ): Promise<Map<number, FurnishingView>> {
-  const rows = await furnishingRowsByEmployee(
-    deps.db,
-    figures.map((f) => f.employeeId),
-    year,
-  );
+  const ids = figures.map((f) => f.employeeId);
+  const rows = await furnishingRowsByEmployee(deps.db, ids, year);
+  const electronic = await electronicChannel(deps.db, ids);
   return new Map(
     figures.map((f) => [
       f.employeeId,
-      viewOf(f, year, rows.get(f.employeeId) ?? [], deps.config.appTz),
+      viewOf(
+        f,
+        year,
+        rows.get(f.employeeId) ?? [],
+        electronic.has(f.employeeId),
+        deps.config.appTz,
+      ),
     ]),
   );
 }
@@ -216,7 +255,34 @@ export async function furnishingViews(
 export async function isMyW2Corrected(db: Db, employeeId: number, year: number): Promise<boolean> {
   const current = await currentHash(db, employeeId, year);
   if (current === null) return false;
-  return furnishingState(await furnishingRows(db, employeeId, year), current).corrected;
+  return isCorrected(await furnishingRows(db, employeeId, year), current);
+}
+
+/**
+ * Review round D9 (26 CFR 31.6051-1(j)(3)(v)(C), (j)(6)): after consent is
+ * withdrawn, a year furnished ELECTRONICALLY (a portal_notice or
+ * employee_download row) stays downloadable through
+ * electronicW2AccessThrough(year). backfill and admin_print rows never count.
+ */
+export async function electronicAccessAfterWithdrawal(
+  db: Pick<Db, "select">,
+  employeeId: number,
+  year: number,
+  today: string,
+): Promise<boolean> {
+  if (today > electronicW2AccessThrough(year)) return false;
+  const rows = await db
+    .select({ id: w2Furnishings.id })
+    .from(w2Furnishings)
+    .where(
+      and(
+        eq(w2Furnishings.employeeId, employeeId),
+        eq(w2Furnishings.taxYear, year),
+        inArray(w2Furnishings.method, ["portal_notice", "employee_download"]),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
 }
 
 /** The current figures hash, or null (no W-2, blocked, or unreadable). */
@@ -262,8 +328,12 @@ async function w2w3Filed(db: Pick<Db, "select">, year: number): Promise<boolean>
 }
 
 /**
- * The paper courtesy mail, once per furnished state: the marker counts the
- * distinct furnished hashes (never the hash itself).
+ * The paper courtesy mail, once per correction: the marker carries n = the
+ * number of runs of equal hashes in id order, after dropping the trailing
+ * rows that already carry the current figures (a reprint of the corrected
+ * copy is not a new correction). Never a hash. n equals the count of
+ * distinct furnished hashes until figures come back to an earlier hash —
+ * then n still grows, so the return mails again (D2).
  */
 async function sendPaperCourtesy(
   tx: Tx,
@@ -272,8 +342,13 @@ async function sendPaperCourtesy(
   employeeId: number,
   year: number,
   rows: readonly FurnishingRow[],
+  currentHash: string,
 ): Promise<void> {
-  const n = new Set(rows.map((r) => r.boxesHash)).size;
+  const ordered = [...rows].sort((x, y) => x.id - y.id);
+  while (ordered.length > 0 && ordered[ordered.length - 1]!.boxesHash === currentHash) {
+    ordered.pop();
+  }
+  const n = ordered.filter((r, i) => i === 0 || r.boxesHash !== ordered[i - 1]!.boxesHash).length;
   const marker = `<!-- w2-changed:${year}:${employeeId}:${n} -->`;
   const sent = await tx
     .select({ id: emailOutbox.id })
@@ -300,8 +375,9 @@ async function sendPaperCourtesy(
 }
 
 /**
- * R6: when the employee may hold a copy with other figures and the latest
- * furnishing is not the current figures, furnish the correction. Consent +
+ * R6 + review round D1: when the employee may hold a copy with other figures
+ * and the latest DELIVERY of their channel is not the current figures,
+ * furnish the correction. Consent +
  * login → the w2_changed (consented) mail and a portal_notice furnishing
  * (corrected) → "w2_changed_notice_sent". Otherwise → paper: a courtesy mail
  * when there is a login → "w2_paper_correction_needed". Not furnished,
@@ -319,11 +395,13 @@ export async function furnishCorrectionIfNeeded(
   const rows = await furnishingRows(tx, employeeId, taxYear);
   if (rows.length === 0 || (await w2w3Filed(tx, taxYear))) return null;
   const hash = await currentHash(tx, employeeId, taxYear);
-  if (hash === null || !furnishingState(rows, hash).correctionToFurnish) return null;
+  if (hash === null) return null;
   const found = await tx.select().from(employees).where(eq(employees.id, employeeId)).limit(1);
   const employee = found[0];
   if (employee?.employmentType !== "w2") return null;
-  if (employee.userId && (await hasActiveW2Consent(tx, employeeId))) {
+  const consented = employee.userId !== null && (await hasActiveW2Consent(tx, employeeId));
+  if (!furnishingState(rows, hash, { consented }).correctionToFurnish) return null;
+  if (consented && employee.userId) {
     const posted = await recordFurnishing(tx, {
       employeeId,
       taxYear,
@@ -332,8 +410,7 @@ export async function furnishCorrectionIfNeeded(
       method: "portal_notice",
       actorId: null,
     });
-    // These figures were already posted and notified once (they came back):
-    // the employee was told; never mail the same figures twice.
+    // The latest notice already carries these figures (D2): never mail twice.
     if (!posted) return null;
     const rendered = tplW2Changed(await templateContext(tx, config), {
       taxYear,
@@ -348,7 +425,7 @@ export async function furnishCorrectionIfNeeded(
     return "w2_changed_notice_sent";
   }
   if (employee.userId) {
-    await sendPaperCourtesy(tx, config, employee.userId, employeeId, taxYear, rows);
+    await sendPaperCourtesy(tx, config, employee.userId, employeeId, taxYear, rows, hash);
   }
   return "w2_paper_correction_needed";
 }
@@ -357,17 +434,23 @@ export async function furnishCorrectionIfNeeded(
 // Daily tick: reconcile + one-shot backfill
 // ---------------------------------------------------------------------------
 
+/** Log one failed employee-year by error class only (D5). */
+function logFailure(step: string, year: number, err: unknown): void {
+  console.error(`[filings] ${step}: one ${year} employee-year failed (${errorClass(err)})`);
+}
+
 /**
  * R6 caller 2 (daily, after syncAnnualFilings): every employee-year with a
  * furnishing in an available, unfiled year gets furnishCorrectionIfNeeded
  * under its own lock. Catches figure changes that are not an issue (e.g. a
  * tax_config edit). Idempotent: once the correction is furnished the latest
- * row equals the current figures.
+ * delivery equals the current figures. D5: one failing employee-year is
+ * rolled back, logged by class and skipped; the others continue.
  */
 export async function reconcileW2Furnishings(
   deps: Deps,
   opts: { today?: string } = {},
-): Promise<{ checked: number; followUps: number }> {
+): Promise<{ checked: number; followUps: number; failed: number }> {
   const today = opts.today ?? localDate(new Date(), deps.config.appTz);
   const pairs = await deps.db
     .selectDistinct({ employeeId: w2Furnishings.employeeId, taxYear: w2Furnishings.taxYear })
@@ -375,22 +458,28 @@ export async function reconcileW2Furnishings(
     .orderBy(w2Furnishings.taxYear, w2Furnishings.employeeId);
   let checked = 0;
   let followUps = 0;
+  let failed = 0;
   for (const { employeeId, taxYear } of pairs) {
     if (!isW2Available(taxYear, today)) continue;
     checked += 1;
-    const code = await deps.db.transaction(async (tx) => {
-      await lockEmployee(tx, employeeId);
-      return furnishCorrectionIfNeeded(tx, deps.config, employeeId, taxYear, today);
-    });
-    if (code) followUps += 1;
+    try {
+      const code = await deps.db.transaction(async (tx) => {
+        await lockEmployee(tx, employeeId);
+        return furnishCorrectionIfNeeded(tx, deps.config, employeeId, taxYear, today);
+      });
+      if (code) followUps += 1;
+    } catch (err) {
+      failed += 1;
+      logFailure("W-2 reconcile", taxYear, err);
+    }
   }
-  return { checked, followUps };
+  return { checked, followUps, failed };
 }
 
 const BACKFILLED_KEY = "w2_furnishings_backfilled";
 
 /** The W-2 figures of a year, or [] when its config/figures cannot be read. */
-async function figuresOrNone(db: Db, year: number): Promise<W2Figures[]> {
+async function figuresOrNone(db: Pick<Db, "select">, year: number): Promise<W2Figures[]> {
   try {
     return await w2FiguresForYear(db, year);
   } catch (err) {
@@ -399,52 +488,99 @@ async function figuresOrNone(db: Db, year: number): Promise<W2Figures[]> {
   }
 }
 
-/** One backfill row, under the employee lock, only when the employee-year has none. */
-async function backfillOne(deps: Deps, employeeId: number, year: number): Promise<boolean> {
-  return deps.db.transaction(async (tx) => {
-    await lockEmployee(tx, employeeId);
-    const figures = (await w2FiguresForYear(tx, year)).find((f) => f.employeeId === employeeId);
-    if (!figures || isW2Blocked(figures) || figures.box1Cents === null) return false;
-    if ((await furnishingRows(tx, employeeId, year)).length > 0) return false;
-    return recordFurnishing(tx, {
-      employeeId,
-      taxYear: year,
-      boxesHash: w2BoxesHash(employeeId, year, figures),
-      corrected: false,
-      method: "backfill",
-      actorId: null,
-    });
+/**
+ * One backfill row for the employee-year when it has none. The caller holds
+ * the employee lock in `tx`.
+ */
+async function backfillOneInTx(tx: Tx, employeeId: number, year: number): Promise<boolean> {
+  const figures = (await figuresOrNone(tx, year)).find((f) => f.employeeId === employeeId);
+  if (!figures || isW2Blocked(figures) || figures.box1Cents === null) return false;
+  if ((await furnishingRows(tx, employeeId, year)).length > 0) return false;
+  return recordFurnishing(tx, {
+    employeeId,
+    taxYear: year,
+    boxesHash: w2BoxesHash(employeeId, year, figures),
+    corrected: false,
+    method: "backfill",
+    actorId: null,
   });
 }
 
-/**
- * R9 (one-shot): years the previous release notified (notifiedYears) and
- * not filed with SSA get one backfill row per non-blocked W-2 employee
- * without a furnishing; then the flag is set and later ticks do nothing.
- * Safe: before this release no path changed a notified year's figures.
- */
-export async function backfillW2Furnishings(
-  deps: Deps,
-  opts: { today?: string } = {},
-): Promise<{ inserted: number; skipped: boolean }> {
-  const { db } = deps;
+/** True once the one-shot backfill ran. */
+async function backfillDone(db: Pick<Db, "select">): Promise<boolean> {
   const flag = await db
     .select({ key: appSettings.key })
     .from(appSettings)
     .where(eq(appSettings.key, BACKFILLED_KEY))
     .limit(1);
-  if (flag.length > 0) return { inserted: 0, skipped: true };
+  return flag.length > 0;
+}
+
+/** Years the backfill covers on `today`: notified by the previous release, available, unfiled. */
+async function backfillYear(db: Pick<Db, "select">, year: number, today: string) {
+  return (
+    isW2Available(year, today) &&
+    (await notifiedYears(db)).includes(year) &&
+    !(await w2w3Filed(db, year))
+  );
+}
+
+/**
+ * Review round D4 (lazy): while the one-shot backfill has not run, a late
+ * issue in a year the previous release notified first backfills its own
+ * employee-year — with the figures BEFORE the run is issued, so the issue is
+ * a detected correction. Call before the run's status changes, holding the
+ * employee lock in `tx`. The flag is left to the one-shot backfill.
+ */
+export async function backfillEmployeeYearIfNeeded(
+  tx: Tx,
+  employeeId: number,
+  year: number,
+  today: string,
+): Promise<boolean> {
+  if (await backfillDone(tx)) return false;
+  if (!(await backfillYear(tx, year, today))) return false;
+  return backfillOneInTx(tx, employeeId, year);
+}
+
+/**
+ * R9 (one-shot; at boot and on the daily tick, D4): years the previous
+ * release notified (notifiedYears) and not filed with SSA get one backfill
+ * row per non-blocked W-2 employee without a furnishing; then the flag is
+ * set and later calls do nothing. Safe: before this release no path changed
+ * a notified year's figures. D5: a failing employee-year is rolled back,
+ * logged by class and skipped. The flag is set only when none failed, so a
+ * later call retries the failures.
+ */
+export async function backfillW2Furnishings(
+  deps: Deps,
+  opts: { today?: string } = {},
+): Promise<{ inserted: number; skipped: boolean; failed: number }> {
+  const { db } = deps;
+  if (await backfillDone(db)) return { inserted: 0, skipped: true, failed: 0 };
   const today = opts.today ?? localDate(new Date(), deps.config.appTz);
   let inserted = 0;
+  let failed = 0;
   for (const year of await notifiedYears(db)) {
-    if (!isW2Available(year, today) || (await w2w3Filed(db, year))) continue;
+    if (!(await backfillYear(db, year, today))) continue;
     for (const f of await figuresOrNone(db, year)) {
-      if (await backfillOne(deps, f.employeeId, year)) inserted += 1;
+      try {
+        const wrote = await db.transaction(async (tx) => {
+          await lockEmployee(tx, f.employeeId);
+          return backfillOneInTx(tx, f.employeeId, year);
+        });
+        if (wrote) inserted += 1;
+      } catch (err) {
+        failed += 1;
+        logFailure("W-2 furnishing backfill", year, err);
+      }
     }
   }
-  await db
-    .insert(appSettings)
-    .values({ key: BACKFILLED_KEY, value: { at: today, inserted }, updatedAt: new Date() })
-    .onConflictDoNothing({ target: [appSettings.key] });
-  return { inserted, skipped: false };
+  if (failed === 0) {
+    await db
+      .insert(appSettings)
+      .values({ key: BACKFILLED_KEY, value: { at: today, inserted }, updatedAt: new Date() })
+      .onConflictDoNothing({ target: [appSettings.key] });
+  }
+  return { inserted, skipped: false, failed };
 }

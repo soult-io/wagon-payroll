@@ -50,6 +50,7 @@ import { lockEmployee } from "../payroll/locks.js";
 import { furnishCurrent } from "./w2-furnish-core.js";
 import {
   type Deps,
+  errorClass,
   FilingServiceError,
   type TaxFilingRow,
   toMoney,
@@ -928,25 +929,29 @@ export async function hasActiveW2Consent(
  * One recipient's year notice, in its own transaction under the employee
  * lock. PAY-206 (R2, 26 CFR 31.6051-1(j)(5)): a recipient with active
  * consent at send time is furnished the current figures (portal_notice);
- * without consent nothing is furnished (they cannot download).
+ * without consent nothing is furnished (they cannot download). Review round
+ * D6: a consented recipient whose latest portal_notice already carries the
+ * current figures (a rerun after a partial failure) is skipped — no row, no
+ * mail. Returns true when a mail was queued.
  */
 async function sendOneW2AvailableNotice(
   db: Db,
   recipient: { userId: string; employeeId: number },
   year: number,
   rendered: { subject: string; html: string },
-): Promise<void> {
-  await db.transaction(async (tx) => {
+): Promise<boolean> {
+  return db.transaction(async (tx) => {
     await lockEmployee(tx, recipient.employeeId);
     if (await hasActiveW2Consent(tx, recipient.employeeId)) {
       const boxes = readableBoxes(await employeeW2Figures(tx, recipient.employeeId, year));
-      await furnishCurrent(tx, {
+      const { inserted } = await furnishCurrent(tx, {
         employeeId: recipient.employeeId,
         taxYear: year,
         boxes,
         method: "portal_notice",
         actorId: null,
       });
+      if (!inserted) return false;
     }
     await tx.insert(emailOutbox).values({
       userId: recipient.userId,
@@ -954,7 +959,32 @@ async function sendOneW2AvailableNotice(
       subject: rendered.subject,
       bodyHtml: `${rendered.html}<!-- w2-available:${year} -->`,
     });
+    return true;
   });
+}
+
+/**
+ * The year notice to every recipient. PAY-206 review round D5/D6: one
+ * failing recipient is rolled back, logged by class and skipped; the caller
+ * then leaves the year un-notified so the next tick retries it (recipients
+ * already notified are skipped then).
+ */
+async function sendYearNotices(
+  db: Db,
+  year: number,
+  rendered: { subject: string; html: string },
+): Promise<{ sent: number; failed: number }> {
+  let sent = 0;
+  let failed = 0;
+  for (const recipient of await w2RecipientsForYear(db, year)) {
+    try {
+      if (await sendOneW2AvailableNotice(db, recipient, year, rendered)) sent += 1;
+    } catch (err) {
+      failed += 1;
+      console.error(`[filings] W-2 notices: one ${year} recipient failed (${errorClass(err)})`);
+    }
+  }
+  return { sent, failed };
 }
 
 /** PAY-162: every W-2 of the year computes and none is blocked. */
@@ -1035,10 +1065,9 @@ export async function sendW2AvailableNotices(
     // its figures cannot be computed); a later tick sends once resolved.
     if (!(await w2sIssuable(db, year))) continue;
     const rendered = tplW2Available(ctx, { taxYear: year });
-    for (const recipient of await w2RecipientsForYear(db, year)) {
-      await sendOneW2AvailableNotice(db, recipient, year, rendered);
-      sent += 1;
-    }
+    const out = await sendYearNotices(db, year, rendered);
+    sent += out.sent;
+    if (out.failed > 0) continue;
     notified.push(year);
     await db
       .insert(appSettings)

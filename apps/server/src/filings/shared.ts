@@ -42,6 +42,16 @@ export interface Deps {
 export const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 export const MONEY_RE = /^-?\d{1,10}(\.\d{1,2})?$/;
 
+/**
+ * PAY-206 review round D5: the class of a failure, for a log line — never
+ * its message. A drizzle query error's message carries the SQL and its
+ * params (a figures hash, a mail body).
+ */
+export function errorClass(err: unknown): string {
+  if (err instanceof Error) return err.constructor.name || err.name || "Error";
+  return typeof err;
+}
+
 export function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
 }

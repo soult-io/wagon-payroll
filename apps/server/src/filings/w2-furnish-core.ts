@@ -15,7 +15,7 @@
  * covers boxes 1-6 in integer cents; it never leaves the database.
  */
 
-import { and, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { w2Furnishings } from "@payroll/db";
 import type { Db } from "../db.js";
 import { worksheetHash } from "./shared.js";
@@ -44,6 +44,10 @@ const BOX_KEYS = [
 /**
  * R3: canonical SHA-256 of one employee-year's boxes 1-6 in integer cents.
  * Throws (fixed message, no value) on anything that is not a safe integer.
+ * Security review LOW-1 (deferred, PAY-206 review round): the hash is not
+ * keyed, so anyone holding a row could test guessed figures against it. It
+ * never leaves the database (no API body, no log); a keyed HMAC is a later
+ * change with its own hash_version.
  */
 export function w2BoxesHash(employeeId: number, taxYear: number, boxes: W2BoxesCents): string {
   for (const key of BOX_KEYS) {
@@ -68,41 +72,80 @@ export interface FurnishingRef {
   id: number;
   boxesHash: string;
   furnishedAt: Date;
+  method: string;
 }
 
 export interface FurnishingState<R extends FurnishingRef = FurnishingRef> {
   /** At least one furnishing exists. */
   furnished: boolean;
-  /** Some furnishing carried other figures: every render is CORRECTED. */
+  /** Some furnishing (any method) carried other figures: every render is CORRECTED. */
   corrected: boolean;
-  /** Corrected and the latest furnishing is not the current figures. */
+  /**
+   * Corrected and the latest DELIVERY of the employee's channel is not the
+   * current figures (review round D1): consented → portal_notice; otherwise
+   * → paper_handed. employee_download, admin_print and backfill never clear it.
+   */
   correctionToFurnish: boolean;
-  /** Latest furnishing: max furnishedAt, then max id. */
+  /** Latest furnishing of any method: the highest id (D3; furnishedAt never orders). */
   latest: R | null;
 }
 
-/** R4: the one owner of furnished / corrected / correctionToFurnish. */
+/** The method that delivers a W-2 on the employee's channel (D1). */
+export function deliveryMethod(consented: boolean): FurnishMethod {
+  return consented ? "portal_notice" : "paper_handed";
+}
+
+/** The row with the highest id, optionally of one method only (D3). */
+export function latestRow<R extends { id: number; method: string }>(
+  rows: readonly R[],
+  method?: string,
+): R | null {
+  let latest: R | null = null;
+  for (const r of rows) {
+    if (method !== undefined && r.method !== method) continue;
+    if (latest === null || r.id > latest.id) latest = r;
+  }
+  return latest;
+}
+
+/**
+ * R4 + review round D1/D3: the one owner of furnished / corrected /
+ * correctionToFurnish. `consented` = active electronic consent AND a login.
+ */
 export function furnishingState<R extends FurnishingRef>(
   rows: readonly R[],
   currentHash: string,
+  opts: { consented: boolean },
 ): FurnishingState<R> {
-  let latest: R | null = null;
-  for (const r of rows) {
-    if (
-      latest === null ||
-      r.furnishedAt.getTime() > latest.furnishedAt.getTime() ||
-      (r.furnishedAt.getTime() === latest.furnishedAt.getTime() && r.id > latest.id)
-    ) {
-      latest = r;
-    }
-  }
+  const latest = latestRow(rows);
   const corrected = rows.some((r) => r.boxesHash !== currentHash);
+  const delivered = latestRow(rows, deliveryMethod(opts.consented));
   return {
     furnished: latest !== null,
     corrected,
-    correctionToFurnish: corrected && latest !== null && latest.boxesHash !== currentHash,
+    correctionToFurnish: corrected && delivered?.boxesHash !== currentHash,
     latest,
   };
+}
+
+/** `corrected` alone: some furnishing (any method) carried other figures. */
+export function isCorrected(rows: readonly { boxesHash: string }[], currentHash: string): boolean {
+  return rows.some((r) => r.boxesHash !== currentHash);
+}
+
+/**
+ * Review round D9 (26 CFR 31.6051-1(j)(6)): the last day (ISO date) a year
+ * furnished electronically stays downloadable after consent is withdrawn —
+ * October 15 of taxYear+1, rolled to the next business day. Only a weekend
+ * can move it: October 15-17 is never a federal holiday (Columbus Day is the
+ * second Monday, October 8-14).
+ */
+export function electronicW2AccessThrough(taxYear: number): string {
+  const d = new Date(Date.UTC(taxYear + 1, 9, 15));
+  const dow = d.getUTCDay();
+  if (dow === 6) d.setUTCDate(d.getUTCDate() + 2);
+  if (dow === 0) d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
 }
 
 // ---------------------------------------------------------------------------
@@ -146,13 +189,14 @@ export async function furnishingRowsByEmployee(
 }
 
 /**
- * Insert one furnishing event; idempotent per (employee, year, hash, method)
- * — the first furnished_at is kept. Returns true when a row was written.
- * The caller holds the employee lock and read the figures in the same
- * transaction (R10).
+ * Insert one furnishing event. Review round D2: skipped only when the LATEST
+ * row (highest id) of the same method already carries this hash — figures
+ * that come back to an earlier hash are furnished again. Returns true when a
+ * row was written. The caller holds the employee lock and read the figures
+ * in the same transaction (R10), so the read-then-insert cannot race.
  */
 export async function recordFurnishing(
-  tx: Pick<Db, "insert">,
+  tx: Pick<Db, "select" | "insert">,
   row: {
     employeeId: number;
     taxYear: number;
@@ -162,19 +206,21 @@ export async function recordFurnishing(
     actorId: string | null;
   },
 ): Promise<boolean> {
-  const inserted = await tx
-    .insert(w2Furnishings)
-    .values({ ...row, hashVersion: W2_HASH_VERSION })
-    .onConflictDoNothing({
-      target: [
-        w2Furnishings.employeeId,
-        w2Furnishings.taxYear,
-        w2Furnishings.boxesHash,
-        w2Furnishings.method,
-      ],
-    })
-    .returning({ id: w2Furnishings.id });
-  return inserted.length > 0;
+  const last = await tx
+    .select({ boxesHash: w2Furnishings.boxesHash })
+    .from(w2Furnishings)
+    .where(
+      and(
+        eq(w2Furnishings.employeeId, row.employeeId),
+        eq(w2Furnishings.taxYear, row.taxYear),
+        eq(w2Furnishings.method, row.method),
+      ),
+    )
+    .orderBy(desc(w2Furnishings.id))
+    .limit(1);
+  if (last[0]?.boxesHash === row.boxesHash) return false;
+  await tx.insert(w2Furnishings).values({ ...row, hashVersion: W2_HASH_VERSION });
+  return true;
 }
 
 /**
@@ -195,14 +241,14 @@ export async function furnishCurrent(
   },
 ): Promise<{ corrected: boolean; inserted: boolean }> {
   const hash = w2BoxesHash(row.employeeId, row.taxYear, row.boxes);
-  const state = furnishingState(await furnishingRows(tx, row.employeeId, row.taxYear), hash);
+  const corrected = isCorrected(await furnishingRows(tx, row.employeeId, row.taxYear), hash);
   const inserted = await recordFurnishing(tx, {
     employeeId: row.employeeId,
     taxYear: row.taxYear,
     boxesHash: hash,
-    corrected: state.corrected,
+    corrected,
     method: row.method,
     actorId: row.actorId,
   });
-  return { corrected: state.corrected, inserted };
+  return { corrected, inserted };
 }

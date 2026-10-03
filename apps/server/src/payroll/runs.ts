@@ -61,7 +61,7 @@ import {
   lateIssueAllowed,
   stateReturnJurisdictions,
 } from "../filings/closing-filings.js";
-import { furnishCorrectionIfNeeded } from "../filings/w2-furnish.js";
+import { backfillEmployeeYearIfNeeded, furnishCorrectionIfNeeded } from "../filings/w2-furnish.js";
 import { refreshFilingsForPayDate } from "../filings/service.js";
 import { FILING_CLOSE_LOCK } from "../filings/shared.js";
 import { lockEmployee } from "./locks.js";
@@ -1133,6 +1133,10 @@ async function applyTransition(
   if (input.action === "approve") return { run: await writeTransition(tx, run, input, false) };
 
   const late = await assertLateIssueConfirmed(tx, run, today, input.latePayment);
+  // PAY-206 review round D4: before the status change, so a year the
+  // previous release notified is backfilled with the pre-issue figures when
+  // the one-shot backfill has not run yet (the issue is then a correction).
+  if (late) await backfillEmployeeYearIfNeeded(tx, run.employeeId, late.taxYear, today);
   const next = await writeTransition(tx, run, input, late !== null);
   const followUps = late
     ? await applyLateIssueEffects(tx, deps.config, next, late, today, input.actorId)
