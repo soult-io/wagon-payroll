@@ -1139,6 +1139,14 @@ export interface DepositDetail {
   paymentsUnavailable: boolean;
   /** Superseded rows only: the deposit(s) that replaced it. */
   replacedBy: { id: number; periodStart: string; periodKind: DepositPeriodKind }[];
+  /** PAY-193: the period's other live rows (same jurisdiction, period, kind), seq ascending. */
+  siblings: { id: number; seq: number; status: string; amount: string }[];
+  /** PAY-193: what the period's other deposited/overdue rows already cover. */
+  alreadyDeposited: string;
+  /** PAY-193: on a seq 0 row, its additional (seq > 0) deposit; else null. */
+  additionalDeposit: { id: number; amount: string } | null;
+  /** PAY-193: federal rows — the Form 941 due date of the row's quarter; null for state rows. */
+  form941DueDate: string | null;
 }
 
 export interface DepositBreakdownRow {

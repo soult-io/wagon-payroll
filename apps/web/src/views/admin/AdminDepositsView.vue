@@ -23,6 +23,7 @@ import EmptyState from "../../components/EmptyState.vue";
 import StatusChip from "../../components/StatusChip.vue";
 import { jurisdictionLabel as sharedJurisdictionLabel } from "@payroll/shared";
 import { adminDepositsApi, type DepositAttachment, type TaxDepositRow } from "../../lib/api";
+import { isAdditionalDeposit, withAdditionalPrefix } from "../../lib/deposit-labels";
 import { useDates } from "../../composables/useDates";
 import { useMoney } from "../../composables/useMoney";
 import { useNotify } from "../../composables/useNotify";
@@ -69,8 +70,20 @@ function periodLabel(periodStart: string, periodKind?: "month" | "quarter"): str
 
 /** PAY-193 D9.6: a shortfall row (seq > 0) reads "Additional deposit for {period}". */
 function rowPeriodLabel(row: Pick<TaxDepositRow, "periodStart" | "periodKind" | "seq">): string {
-  const label = periodLabel(row.periodStart, row.periodKind);
-  return row.seq > 0 ? `Additional deposit for ${label}` : label;
+  return withAdditionalPrefix(row, periodLabel(row.periodStart, row.periodKind));
+}
+
+/**
+ * PAY-193: newest period first; within a period, by jurisdiction, then seq,
+ * so an additional deposit sits right after the deposit it follows.
+ */
+function byPeriodJurisdictionSeq(a: TaxDepositRow, b: TaxDepositRow): number {
+  if (a.periodStart !== b.periodStart) return a.periodStart < b.periodStart ? 1 : -1;
+  // Federal first, then states by code.
+  const ja = a.jurisdiction === "federal" ? "" : a.jurisdiction;
+  const jb = b.jurisdiction === "federal" ? "" : b.jurisdiction;
+  if (ja !== jb) return ja < jb ? -1 : 1;
+  return a.seq - b.seq || b.id - a.id;
 }
 
 /** "California (CA)" / "Federal" — shared map (PAY-91 UX). */
@@ -127,7 +140,7 @@ async function load() {
     if (yearFilter.value) filter.year = yearFilter.value;
     if (jurisdictionFilter.value) filter.jurisdiction = jurisdictionFilter.value;
     const { deposits } = await adminDepositsApi.list(filter);
-    rows.value = deposits;
+    rows.value = [...deposits].sort(byPeriodJurisdictionSeq);
   } catch (err) {
     notify.error(err, "Could not load tax deposits");
   } finally {
@@ -392,7 +405,12 @@ onMounted(async () => {
           />
         </template>
         <Column field="periodStart" header="Period" style="width: 10rem" sortable>
-          <template #body="{ data }">{{ rowPeriodLabel(data) }}</template>
+          <template #body="{ data }">
+            {{ rowPeriodLabel(data) }}
+            <div v-if="isAdditionalDeposit(data)" class="muted small" data-testid="additional-line">
+              Extra payment — a payroll was added after this period was paid.
+            </div>
+          </template>
         </Column>
         <Column field="jurisdiction" header="Jurisdiction" style="width: 8rem" sortable sortField="jurisdiction">
   <template #body="{ data }">
