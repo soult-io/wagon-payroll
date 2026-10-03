@@ -867,7 +867,7 @@ describe("W-2 electronic-delivery consent", () => {
     expect(pdf.rawPayload.subarray(0, 5).toString()).toBe("%PDF-");
     expect(await pdfStructure(pdf.rawPayload)).toEqual({ pageCount: 6, fieldCount: 0 });
 
-    // Withdrawal re-gates immediately.
+    // Withdrawal: recorded at once (D4 consent); the download rule follows.
     const withdrawn = await t.app.inject({
       method: "DELETE",
       url: "/api/my/w2/consent",
@@ -875,13 +875,26 @@ describe("W-2 electronic-delivery consent", () => {
     });
     expect(withdrawn.statusCode, withdrawn.body).toBe(200);
     expect((withdrawn.json() as { consented: boolean }).consented).toBe(false);
-    const reGated = await t.app.inject({
+    // PAY-206 review round D9 (26 CFR 31.6051-1(j)(6)): a year furnished
+    // electronically (the download above) stays downloadable after withdrawal
+    // through October 15 of the following year (next business day:
+    // 2026-10-15, a Thursday); any year never furnished electronically is
+    // re-gated at once. "Today" is the app clock (ISSUE_CLOCK), company-local.
+    const reGatedOther = await t.app.inject({
+      method: "GET",
+      url: "/api/my/w2/2024/pdf",
+      headers: session,
+    });
+    expect(reGatedOther.statusCode).toBe(409);
+    expect(reGatedOther.json()).toMatchObject({ error: "consent_required" });
+    const today = ISSUE_CLOCK().toISOString().slice(0, 10);
+    expect(today <= "2026-10-15").toBe(true);
+    const stillPosted = await t.app.inject({
       method: "GET",
       url: "/api/my/w2/2025/pdf",
       headers: session,
     });
-    expect(reGated.statusCode).toBe(409);
-    expect(reGated.json()).toMatchObject({ error: "consent_required" });
+    expect(stillPosted.statusCode, stillPosted.body).toBe(200);
 
     // Audit trail: consent + withdraw events for this employee.
     const audit = await t.db

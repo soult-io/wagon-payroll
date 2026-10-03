@@ -1062,15 +1062,17 @@ describe("EF-3 a late draft made stale by an earlier issued run (D4)", () => {
 
 // PL amendments round 2 (federal SME: 26 CFR 31.6051-1(j)(1),(j)(5); iw2w3 2026
 // "Correcting Forms W-2 and W-3"). {company} = the company legal name;
-// {appUrl} = config.baseUrl.
+// {appUrl} = config.baseUrl. PAY-206 review round (UX item 2, PL D11
+// 2026-10-03): the bodies state no cause — the daily reconcile also sends
+// them when the figures moved for a reason that is not a payroll.
 const W2_PHRASE = "IMPORTANT TAX RETURN DOCUMENT AVAILABLE";
 const W2_SUBJECT_E = (year: number, co: string) =>
   `${W2_PHRASE}: Your corrected ${year} W-2 from ${co}`;
 const W2_BODY_E = (year: number, co: string, appUrl: string) =>
-  `${co} has corrected your ${year} Form W-2 because of a payroll processed after your original W-2 was issued. The corrected W-2 is marked CORRECTED and replaces the earlier one. Use the corrected W-2 for your tax return. To view and print it, sign in at ${appUrl}, open Payslips, and find "W-2 wage and tax statements". If you already filed your return using the earlier W-2, you may need to amend it.`;
+  `${co} has corrected your ${year} Form W-2. The corrected W-2 is marked CORRECTED and replaces the earlier one. Use the corrected W-2 for your tax return. To view and print it, sign in at ${appUrl}, open Payslips, and find "W-2 wage and tax statements". If you already filed your return using the earlier W-2, you may need to amend it.`;
 const W2_SUBJECT_P = (year: number, co: string) => `${co} — Your ${year} W-2 is being corrected`;
 const W2_BODY_P = (year: number, co: string) =>
-  `${co} processed a payroll that changes your ${year} Form W-2. Your employer will give you a corrected paper W-2, marked CORRECTED. Use the corrected paper copy for your tax return, not the earlier one. This email is a notice only and is not your W-2.`;
+  `${co} has corrected your ${year} Form W-2. ${co} will give you a corrected paper W-2, marked CORRECTED. Use the corrected paper copy for your tax return, not the earlier one. This email is a notice only and is not your W-2.`;
 
 /** HTML -> the text a reader sees: tags dropped, entities decoded, whitespace collapsed. */
 function plain(html: string): string {

@@ -9,18 +9,33 @@
  *    only. The spec's "a string input fails typecheck" cannot be enforced
  *    here (CI does not typecheck test files), so the auditor pins the
  *    runtime form: a non-safe-integer box throws.
- *  - furnishingState(rows: { id, boxesHash, furnishedAt: Date }[], H) ->
- *    { furnished, corrected, correctionToFurnish, latest }. corrected = any
- *    row hash != H; correctionToFurnish = corrected AND the latest row (max
- *    furnishedAt, then max id) has hash != H. Rows may arrive in any order.
+ *  - furnishingState(rows: { id, boxesHash, furnishedAt: Date, method }[],
+ *    H, { consented }) -> { furnished, corrected, correctionToFurnish,
+ *    latest }. Product Lead review round 2026-10-03 (overrides the spec):
+ *    D1 corrected = any row of ANY method with hash != H;
+ *    correctionToFurnish = corrected AND the latest DELIVERY row is not H —
+ *    consented (active consent + login): the latest portal_notice;
+ *    otherwise the latest paper_handed; no delivery row = not delivered.
+ *    employee_download, admin_print and backfill never clear it.
+ *    D3 "latest" = highest id only (furnishedAt never orders).
+ *    Rows may arrive in any order.
+ *  - D2: no unique key on w2_furnishings (w2_furnishings_event_uniq dropped
+ *    by editing the unreleased migration 0027 in place; no new migration).
+ *  - D9: electronicW2AccessThrough(taxYear) — ISO date, October 15 of
+ *    taxYear+1 rolled to the next business day (weekend / federal holiday).
+ *    26 CFR 31.6051-1(j)(6). Oracle: calendar weekday arithmetic below.
+ *    October 15 is never a federal holiday and the roll never reaches
+ *    Columbus Day (2nd Monday, Oct 8-14), so no holiday case exists.
  * Synthetic data only.
  */
 
+import { readdirSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { seedDatabase, type SeedDb } from "@payroll/db";
 import { createTestApp, type TestContext } from "./helpers.js";
 import { createEmployee } from "./pay-date-helpers.js";
-import { type Boxes, furnishModule } from "./annual-w2-corrected-harness.js";
+import { type Boxes, furnishModule, ROOT } from "./annual-w2-corrected-harness.js";
 
 // Jan-Dec 2025 at 6,000.00/month (harness oracle): 72,000.00 / 7,454.04 /
 // 72,000.00 / 4,464.00 / 72,000.00 / 1,044.00.
@@ -84,67 +99,159 @@ describe("T1 w2BoxesHash", () => {
   });
 });
 
-describe("T2 furnishingState truth table", () => {
+describe("T2 furnishingState truth table (review round D1, D3)", () => {
   const H1 = "1".repeat(64);
   const H2 = "2".repeat(64);
   const H3 = "3".repeat(64);
-  const at = (iso: string) => new Date(iso);
-  const r = (id: number, h: string, iso: string) => ({ id, boxesHash: h, furnishedAt: at(iso) });
+  type M = "portal_notice" | "employee_download" | "admin_print" | "paper_handed" | "backfill";
+  const PN: M = "portal_notice";
+  const DL: M = "employee_download";
+  const AP: M = "admin_print";
+  const PH: M = "paper_handed";
+  const BF: M = "backfill";
+  // Default: furnished_at rises with id; the D3 rows break that on purpose.
+  const r = (id: number, h: string, method: M, iso?: string) => ({
+    id,
+    boxesHash: h,
+    method,
+    furnishedAt: new Date(iso ?? `2026-01-${String(id + 4).padStart(2, "0")}T10:00:00Z`),
+  });
+  const C = true; // consented (active consent + login)
+  const P = false; // paper (no consent or no login)
 
   const cases: [
     string,
+    boolean,
     ReturnType<typeof r>[],
     string,
     [boolean, boolean, boolean, number | null],
   ][] = [
-    ["none", [], H1, [false, false, false, null]],
-    ["[H1] cur H1", [r(1, H1, "2026-01-05T10:00:00Z")], H1, [true, false, false, 1]],
-    ["[H1] cur H2", [r(1, H1, "2026-01-05T10:00:00Z")], H2, [true, true, true, 1]],
+    ["none", C, [], H1, [false, false, false, null]],
+    ["none (paper)", P, [], H1, [false, false, false, null]],
+    // Consented: only portal_notice delivers.
+    ["C [pn H1] cur H1", C, [r(1, H1, PN)], H1, [true, false, false, 1]],
+    ["C [pn H1] cur H2", C, [r(1, H1, PN)], H2, [true, true, true, 1]],
+    ["C [pn H1, pn H2] cur H2", C, [r(1, H1, PN), r(2, H2, PN)], H2, [true, true, false, 2]],
+    ["C [pn H1, pn H2] cur H3", C, [r(1, H1, PN), r(2, H2, PN)], H3, [true, true, true, 2]],
     [
-      "[H1,H2] cur H2",
-      [r(1, H1, "2026-01-05T10:00:00Z"), r(2, H2, "2026-01-12T10:00:00Z")],
+      "C [pn H1, dl H2] cur H2 (download never clears)",
+      C,
+      [r(1, H1, PN), r(2, H2, DL)],
+      H2,
+      [true, true, true, 2],
+    ],
+    [
+      "C [pn H1, ap H2] cur H2 (print never clears)",
+      C,
+      [r(1, H1, PN), r(2, H2, AP)],
+      H2,
+      [true, true, true, 2],
+    ],
+    [
+      "C [pn H1, ph H2] cur H2 (paper is not the consented channel)",
+      C,
+      [r(1, H1, PN), r(2, H2, PH)],
+      H2,
+      [true, true, true, 2],
+    ],
+    ["C [dl H1] cur H1", C, [r(1, H1, DL)], H1, [true, false, false, 1]],
+    ["C [dl H1] cur H2 (no portal_notice at all)", C, [r(1, H1, DL)], H2, [true, true, true, 1]],
+    ["C [dl H1, dl H2] cur H2", C, [r(1, H1, DL), r(2, H2, DL)], H2, [true, true, true, 2]],
+    ["C [bf H1] cur H2", C, [r(1, H1, BF)], H2, [true, true, true, 1]],
+    ["C [bf H1, pn H2] cur H2", C, [r(1, H1, BF), r(2, H2, PN)], H2, [true, true, false, 2]],
+    // D2: figures that come back to an earlier hash need a new delivery.
+    [
+      "C [pn H1, pn H2] cur H1 (came back)",
+      C,
+      [r(1, H1, PN), r(2, H2, PN)],
+      H1,
+      [true, true, true, 2],
+    ],
+    [
+      "C [pn H1, pn H2, pn H1] cur H1 (re-notified)",
+      C,
+      [r(1, H1, PN), r(2, H2, PN), r(3, H1, PN)],
+      H1,
+      [true, true, false, 3],
+    ],
+    // Paper: only paper_handed delivers.
+    ["P [ap H1] cur H1", P, [r(1, H1, AP)], H1, [true, false, false, 1]],
+    ["P [ap H1] cur H2", P, [r(1, H1, AP)], H2, [true, true, true, 1]],
+    [
+      "P [ap H1, ap H2] cur H2 (print never clears)",
+      P,
+      [r(1, H1, AP), r(2, H2, AP)],
+      H2,
+      [true, true, true, 2],
+    ],
+    ["P [ap H1, ph H2] cur H2", P, [r(1, H1, AP), r(2, H2, PH)], H2, [true, true, false, 2]],
+    [
+      "P [ap H1, ph H2, ap H2] cur H2",
+      P,
+      [r(1, H1, AP), r(2, H2, PH), r(3, H2, AP)],
+      H2,
+      [true, true, false, 3],
+    ],
+    [
+      "P [ph H1, ph H2] cur H1 (came back)",
+      P,
+      [r(1, H1, PH), r(2, H2, PH)],
+      H1,
+      [true, true, true, 2],
+    ],
+    [
+      "P [ph H1, ph H2, ph H1] cur H1 (handed again)",
+      P,
+      [r(1, H1, PH), r(2, H2, PH), r(3, H1, PH)],
+      H1,
+      [true, true, false, 3],
+    ],
+    [
+      "P [pn H1, pn H2] cur H2 (consent withdrawn: portal rows do not deliver paper)",
+      P,
+      [r(1, H1, PN), r(2, H2, PN)],
+      H2,
+      [true, true, true, 2],
+    ],
+    ["P [dl H1, dl H2] cur H2", P, [r(1, H1, DL), r(2, H2, DL)], H2, [true, true, true, 2]],
+    ["P [bf H1] cur H1", P, [r(1, H1, BF)], H1, [true, false, false, 1]],
+    ["P [bf H1] cur H2", P, [r(1, H1, BF)], H2, [true, true, true, 1]],
+    // D3: latest = highest id, even when its furnished_at is older.
+    [
+      "D3 P id beats furnished_at",
+      P,
+      [r(1, H1, PH, "2026-02-10T10:00:00Z"), r(2, H2, PH, "2026-01-10T10:00:00Z")],
       H2,
       [true, true, false, 2],
     ],
     [
-      "[H1,H2] cur H3",
-      [r(1, H1, "2026-01-05T10:00:00Z"), r(2, H2, "2026-01-12T10:00:00Z")],
-      H3,
+      "D3 P id beats furnished_at (other figures)",
+      P,
+      [r(1, H2, PH, "2026-02-10T10:00:00Z"), r(2, H1, PH, "2026-01-10T10:00:00Z")],
+      H2,
       [true, true, true, 2],
     ],
     [
-      "[H1,H2] cur H1",
-      [r(1, H1, "2026-01-05T10:00:00Z"), r(2, H2, "2026-01-12T10:00:00Z")],
-      H1,
-      [true, true, true, 2],
-    ],
-    // Latest by furnished_at, not by id: row 2 is older than row 1.
-    [
-      "furnished_at beats id",
-      [r(2, H2, "2026-01-05T10:00:00Z"), r(1, H1, "2026-01-12T10:00:00Z")],
-      H1,
-      [true, true, false, 1],
-    ],
-    // Same furnished_at: the higher id is the latest.
-    [
-      "tie -> max id",
-      [r(5, H2, "2026-01-12T10:00:00Z"), r(4, H1, "2026-01-12T10:00:00Z")],
+      "D3 C id beats furnished_at",
+      C,
+      [r(4, H1, PN, "2026-02-10T10:00:00Z"), r(5, H2, PN, "2026-01-10T10:00:00Z")],
       H2,
       [true, true, false, 5],
     ],
     [
-      "tie -> max id (other way)",
-      [r(4, H2, "2026-01-12T10:00:00Z"), r(5, H1, "2026-01-12T10:00:00Z")],
+      "D3 same furnished_at -> max id",
+      P,
+      [r(4, H1, PH, "2026-01-12T10:00:00Z"), r(5, H2, PH, "2026-01-12T10:00:00Z")],
       H2,
-      [true, true, true, 5],
+      [true, true, false, 5],
     ],
   ];
 
-  for (const [name, rows, cur, [furnished, corrected, toFurnish, latestId]] of cases) {
-    it(`${name} -> furnished ${furnished}, corrected ${corrected}, toFurnish ${toFurnish}`, async () => {
+  for (const [name, consented, rows, cur, [furnished, corrected, toFurnish, latestId]] of cases) {
+    it(`${name} -> furnished ${furnished}, corrected ${corrected}, toFurnish ${toFurnish}, latest ${latestId}`, async () => {
       const { furnishingState } = await furnishModule();
-      const forward = furnishingState(rows, cur);
-      const backward = furnishingState([...rows].reverse(), cur);
+      const forward = furnishingState(rows, cur, { consented });
+      const backward = furnishingState([...rows].reverse(), cur, { consented });
       const view = (s: typeof forward) => ({
         furnished: s.furnished,
         corrected: s.corrected,
@@ -158,6 +265,37 @@ describe("T2 furnishingState truth table", () => {
       });
     });
   }
+});
+
+// ---------------------------------------------------------------- D9 date (pure)
+
+/** Auditor oracle: Oct 15 of taxYear+1; Saturday -> +2, Sunday -> +1 (UTC calendar). */
+function oracleAccessThrough(taxYear: number): string {
+  const d = new Date(Date.UTC(taxYear + 1, 9, 15));
+  const dow = d.getUTCDay();
+  if (dow === 6) d.setUTCDate(d.getUTCDate() + 2);
+  if (dow === 0) d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+describe("D9 electronicW2AccessThrough: October 15 of the following year, next business day", () => {
+  it("oracle self-check: 2025 Thu, 2026 Fri, 2021 Sat -> Mon, 2022 Sun -> Mon, 2027 Sun -> Mon", () => {
+    expect([2025, 2026, 2021, 2022, 2027].map(oracleAccessThrough)).toEqual([
+      "2026-10-15",
+      "2027-10-15",
+      "2022-10-17",
+      "2023-10-16",
+      "2028-10-16",
+    ]);
+  });
+
+  it("matches the oracle for tax years 2020-2040 (weekday, Saturday and Sunday cases)", async () => {
+    const { electronicW2AccessThrough } = await furnishModule();
+    const years = Array.from({ length: 21 }, (_, i) => 2020 + i);
+    expect(years.map((y) => [y, electronicW2AccessThrough(y)])).toEqual(
+      years.map((y) => [y, oracleAccessThrough(y)]),
+    );
+  });
 });
 
 describe("T18 w2_furnishings is append-only and constrained (migration 0027)", () => {
@@ -247,31 +385,45 @@ describe("T18 w2_furnishings is append-only and constrained (migration 0027)", (
     });
   });
 
-  it("UNIQUE (employee_id, tax_year, boxes_hash, method): a duplicate event is refused; ON CONFLICT DO NOTHING keeps the first furnished_at", async () => {
+  it("D2: no unique key — w2_furnishings_event_uniq is gone, no unique index besides the primary key, and the same event inserts twice", async () => {
     await t.pglite.exec("TRUNCATE w2_furnishings RESTART IDENTITY");
-    await insert(HASH, "employee_download");
-    const first = await t.pglite.query<{ furnished_at: Date }>(
-      "SELECT furnished_at FROM w2_furnishings",
+    const cons = await t.pglite.query<{ conname: string; contype: string }>(
+      `SELECT conname, contype FROM pg_constraint
+        WHERE conrelid = 'w2_furnishings'::regclass AND contype IN ('u', 'x')`,
     );
+    const uniqueIdx = await t.pglite.query<{ relname: string }>(
+      `SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+        WHERE i.indrelid = 'w2_furnishings'::regclass AND i.indisunique AND NOT i.indisprimary`,
+    );
+    await insert(HASH, "portal_notice");
     const dup = await outcome(
       `INSERT INTO w2_furnishings (employee_id, tax_year, boxes_hash, corrected, method)
-       VALUES ($1, 2025, $2, false, 'employee_download')`,
+       VALUES ($1, 2025, $2, true, 'portal_notice')`,
       [employeeId, HASH],
     );
-    await t.pglite.query(
-      `INSERT INTO w2_furnishings (employee_id, tax_year, boxes_hash, corrected, method, furnished_at)
-       VALUES ($1, 2025, $2, false, 'employee_download', now() + interval '1 day')
-       ON CONFLICT ON CONSTRAINT w2_furnishings_event_uniq DO NOTHING`,
-      [employeeId, HASH],
-    );
-    const after = await t.pglite.query<{ furnished_at: Date }>(
-      "SELECT furnished_at FROM w2_furnishings",
-    );
+    const rows = await t.pglite.query<{ id: number }>("SELECT id FROM w2_furnishings ORDER BY id");
     expect({
-      dupRefused: dup !== "ok",
-      rows: after.rows.length,
-      keptFirst: after.rows[0]!.furnished_at.getTime() === first.rows[0]!.furnished_at.getTime(),
-    }).toEqual({ dupRefused: true, rows: 1, keptFirst: true });
+      constraints: cons.rows,
+      uniqueIndexes: uniqueIdx.rows,
+      dup,
+      ids: rows.rows.map((x) => x.id),
+    }).toEqual({ constraints: [], uniqueIndexes: [], dup: "ok", ids: [1, 2] });
+  });
+
+  it("D2: dropped by editing the unreleased 0027 in place — no migration names the event key; 0027, its snapshot and schema.ts carry none", () => {
+    const dir = resolve(ROOT, "packages/db/drizzle");
+    const naming = readdirSync(dir)
+      .filter((f) => f.endsWith(".sql"))
+      .filter((f) => readFileSync(resolve(dir, f), "utf8").includes("w2_furnishings_event_uniq"));
+    const m0027 = readFileSync(resolve(dir, "0027_w2_furnishings.sql"), "utf8");
+    const snap = readFileSync(resolve(dir, "meta/0027_snapshot.json"), "utf8");
+    const schema = readFileSync(resolve(ROOT, "packages/db/src/schema.ts"), "utf8");
+    expect({
+      naming,
+      m0027: m0027.includes("w2_furnishings_event_uniq") || /\bUNIQUE\s*\(/i.test(m0027),
+      snapshot: snap.includes("w2_furnishings_event_uniq"),
+      schema: schema.includes("w2_furnishings_event_uniq"),
+    }).toEqual({ naming: [], m0027: false, snapshot: false, schema: false });
   });
 
   it("FK: employee_id must reference employees", async () => {

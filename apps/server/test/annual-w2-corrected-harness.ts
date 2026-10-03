@@ -169,15 +169,31 @@ export function boxStrings(b: Boxes): string[] {
 /** The PAY-206 pure core. Loaded per test so a missing module fails each test on its own. */
 export interface FurnishModule {
   w2BoxesHash: (employeeId: number, taxYear: number, boxes: Boxes) => string;
+  /**
+   * Review round D1/D3: `corrected` = any row (any method) with another
+   * hash; `correctionToFurnish` = corrected AND the latest DELIVERY row of
+   * the employee's channel is not the current figures — consented (active
+   * consent + login): `portal_notice`; otherwise `paper_handed`. No such row
+   * counts as "not delivered". `latest` = the row with the highest id (any
+   * method); furnishedAt never orders.
+   */
   furnishingState: (
-    rows: readonly { id: number; boxesHash: string; furnishedAt: Date }[],
+    rows: readonly { id: number; boxesHash: string; furnishedAt: Date; method: string }[],
     currentHash: string,
+    opts: { consented: boolean },
   ) => {
     furnished: boolean;
     corrected: boolean;
     correctionToFurnish: boolean;
-    latest: { id: number; boxesHash: string; furnishedAt: Date } | null;
+    latest: { id: number; boxesHash: string; furnishedAt: Date; method: string } | null;
   };
+  /**
+   * Review round D9: the last day (ISO date) a year furnished electronically
+   * stays downloadable after consent is withdrawn — October 15 of taxYear+1,
+   * rolled to the next business day when it falls on a weekend or a federal
+   * holiday.
+   */
+  electronicW2AccessThrough: (taxYear: number) => string;
   reconcileW2Furnishings: (
     deps: { db: TestContext["db"]; config: TestContext["config"] },
     opts?: { today?: string },
@@ -270,17 +286,21 @@ export async function putFiledW2W3(t: TestContext, year: number): Promise<void> 
 let seq = 0;
 
 /**
- * Invite + onboard + log in one employee from its own client address: the
+ * Invite + onboard + log in one user from its own client address: the
  * auth and onboarding routes rate-limit per IP (10/min), and these suites
  * create many synthetic accounts.
  */
-async function onboardedSession(t: TestContext, n: number) {
+async function onboardedSession(
+  t: TestContext,
+  n: number,
+  role: "employee" | "admin" = "employee",
+) {
   const ip = `10.206.${Math.floor(n / 250) % 250}.${(n % 250) + 1}`;
   const headers = { ...ORIGIN, "x-forwarded-for": ip };
   const email = `pay206-${n}-${Date.now()}@test.dev`;
   const invite = await inviteUser(
     { auth: t.auth, db: t.db, config: t.config },
-    { name: `W2 Corrected ${n}`, email, role: "employee" },
+    { name: `W2 Corrected ${n}`, email, role },
     null,
   );
   const token = tokenFromLink(invite.setupLink);
@@ -353,22 +373,97 @@ export async function seedHistory2025(env: L4Env, emp: Emp, runs: readonly Oracl
   }
 }
 
+/** A fresh onboarded admin session (its own user, so a per-user limit starts at zero). */
+export async function freshAdmin(env: L4Env): Promise<Record<string, string>> {
+  seq += 1;
+  return (await onboardedSession(env.t, seq + Math.floor(Math.random() * 50_000), "admin")).session;
+}
+
 // ---------------------------------------------------------------- HTTP helpers
 
-export async function myPdf(env: L4Env, emp: W2Emp, year = Y) {
-  return env.t.app.inject({ method: "GET", url: `/api/my/w2/${year}/pdf`, headers: emp.session! });
+let ipSeq = 0;
+/**
+ * A new client address per PDF request (review round D10: the two PDF
+ * routes rate-limit at 20/min; these suites render many PDFs from one
+ * process, so ordinary tests must never share a limiter key). The rate-limit
+ * tests pass their own fixed address.
+ */
+function clientIp(): string {
+  ipSeq += 1;
+  return `10.207.${Math.floor(ipSeq / 250) % 250}.${(ipSeq % 250) + 1}`;
+}
+
+export interface PdfReq {
+  /** Extra request headers (e.g. sec-fetch-site). */
+  headers?: Record<string, string>;
+  /** Fixed client address (default: a new one per request). */
+  ip?: string;
+}
+
+function withIp(base: Record<string, string>, o: PdfReq) {
+  const ip = o.ip ?? clientIp();
+  return {
+    headers: { ...base, "x-forwarded-for": ip, ...(o.headers ?? {}) },
+    remoteAddress: ip,
+  };
+}
+
+export async function myPdf(env: L4Env, emp: W2Emp, year = Y, o: PdfReq = {}) {
+  return env.t.app.inject({
+    method: "GET",
+    url: `/api/my/w2/${year}/pdf`,
+    ...withIp(emp.session!, o),
+  });
 }
 
 export async function myList(env: L4Env, emp: W2Emp) {
   return env.t.app.inject({ method: "GET", url: "/api/my/w2", headers: emp.session! });
 }
 
-export async function printPacket(env: L4Env, employeeId: number, year = Y) {
+export async function printPacket(
+  env: L4Env,
+  employeeId: number,
+  year = Y,
+  o: PdfReq & { admin?: Record<string, string> } = {},
+) {
   return env.t.app.inject({
     method: "GET",
     url: `/api/admin/annual-forms/w2/${employeeId}/print-packet?year=${year}`,
-    headers: env.admin,
+    ...withIp(o.admin ?? env.admin, o),
   });
+}
+
+/** The employee withdraws electronic W-2 consent (DELETE /api/my/w2/consent). */
+export async function withdrawConsent(env: L4Env, emp: W2Emp): Promise<void> {
+  const res = await env.t.app.inject({
+    method: "DELETE",
+    url: "/api/my/w2/consent",
+    headers: emp.session!,
+  });
+  if (res.statusCode !== 200) throw new Error(`withdraw ${res.statusCode}: ${res.body}`);
+}
+
+/**
+ * One raw w2_furnishings row with an explicit furnished_at (the table is
+ * append-only; INSERT is allowed). Returns the new id.
+ */
+export async function rawFurnishing(
+  t: TestContext,
+  r: {
+    employeeId: number;
+    hash: string;
+    method: string;
+    corrected: boolean;
+    furnishedAt: string;
+    year?: number;
+  },
+): Promise<number> {
+  const res = await t.pglite.query<{ id: number }>(
+    `INSERT INTO w2_furnishings (employee_id, tax_year, boxes_hash, corrected, method, furnished_at)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+    [r.employeeId, r.year ?? Y, r.hash, r.corrected, r.method, r.furnishedAt],
+  );
+  return res.rows[0]!.id;
 }
 
 export async function copyD(env: L4Env, employeeId: number, year = Y) {

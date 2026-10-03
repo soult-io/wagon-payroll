@@ -267,6 +267,17 @@ describe("T11 never furnished -> no follow-up, no mark", () => {
     const n = await makeW2Emp(env, { grossCents: G, login: true, consent: false });
     await seedHistory2025(env, n, JAN_NOV);
     await setNotifiedYears(env.t, [Y]);
+    // Review round D4: the one-shot backfill already ran (flag set) and this
+    // employee has no row — so nothing was furnished. Without the flag a late
+    // issue backfills first (annual-w2-corrected-review D4).
+    await env.t.db
+      .insert(appSettings)
+      .values({
+        key: "w2_furnishings_backfilled",
+        value: { at: "2026-01-02", inserted: 0 },
+        updatedAt: new Date(),
+      })
+      .onConflictDoNothing({ target: [appSettings.key] });
     const d = await lateRun(n, "2025-12", "2025-12-31", JAN_10);
     const followUps = await issueLate(d.publicId);
     const rowsBefore = await furnishings(env.t, n.id);
