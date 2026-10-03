@@ -67,6 +67,8 @@ import {
   w3Totals,
 } from "./w2-boxes.js";
 
+type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
 // ---------------------------------------------------------------------------
 // Pure date math
 // ---------------------------------------------------------------------------
@@ -548,7 +550,7 @@ export async function computeW3Worksheet(db: Db, year: number): Promise<Workshee
  * true when the stored worksheet changed. Filed rows are frozen forever (the
  * caller checks status, same as the 941 path).
  */
-export async function refreshAnnualWorksheet(db: Db, filing: TaxFilingRow): Promise<boolean> {
+export async function refreshAnnualWorksheet(db: Db | Tx, filing: TaxFilingRow): Promise<boolean> {
   let worksheet: Worksheet940 | WorksheetW3;
   if (filing.formType === "940") {
     worksheet = await compute940Worksheet(db, filing.year);
@@ -833,7 +835,11 @@ export async function listMyW2Years(
 
 const W2_NOTIFIED_YEARS_KEY = "w2_available_notified_years";
 
-async function notifiedYears(db: Db): Promise<number[]> {
+/**
+ * The tax years whose w2_available notice already went out (PAY-193 L4
+ * reads it to decide the w2_changed notice).
+ */
+export async function notifiedYears(db: Pick<Db, "select">): Promise<number[]> {
   const rows = await db
     .select({ value: appSettings.value })
     .from(appSettings)

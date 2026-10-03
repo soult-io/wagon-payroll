@@ -24,9 +24,11 @@ import { FILED_DATE_IN_FUTURE, isFiledDateInFuture, validateW4Dates } from "../p
 import {
   generateDraftsForPeriod,
   getRunByPublicId,
+  lateIssueOf,
   PayrollServiceError,
-  transitionRun,
+  transitionRunDetailed,
   type RunAction,
+  type TransitionInput,
 } from "../payroll/runs.js";
 import { localDate } from "../payroll/run-dates.js";
 import { getYearEndStatus } from "../payroll/year-end.js";
@@ -51,12 +53,17 @@ function payrollErrorStatus(err: PayrollServiceError): number {
       return 404;
     case "invalid_transition":
     case "void_reason_required":
-    // Spec 26 (PAY-173) D4 / D6 / D9: fixed bodies, field names and dates only.
+    // Spec 26 (PAY-173) D4 / D6: fixed bodies, field names and dates only.
     case "stale_draft":
     case "ytd_order_conflict":
-    case "past_pay_date_other_year":
     // PAY-193 (D9.4): body carries payDate and form codes only.
     case "pay_period_filed":
+    // PAY-193 L4: payDate, jurisdiction codes and server-rendered text; never an amount.
+    case "late_payment_confirmation_required":
+    case "late_payment_incomplete":
+    case "state_return_filed":
+    case "late_payment_amount_mismatch":
+    case "late_issue_not_supported":
       return 409;
     case "no_compensation":
     case "no_tax_config":
@@ -81,6 +88,55 @@ const serviceError = (
   }
   throw err;
 };
+
+/**
+ * PAY-193 L4 (L4.3): the issue body. Strict at every level; a malformed body
+ * is a bare 400 invalid_body (no zod issues: they could echo the amount).
+ */
+const latePaymentSchema = z
+  .object({
+    attestationVersion: z.literal(1),
+    netPayCents: z.number().int().nonnegative().max(1e10),
+    stateReturns: z
+      .array(
+        z
+          .object({
+            jurisdiction: z.string().regex(/^[A-Z]{2}(-[A-Z0-9]{1,12})?$/),
+            withholdingReturnFiled: z.boolean(),
+            suiWageReportFiled: z.boolean(),
+            annualReconciliationFiled: z.boolean(),
+          })
+          .strict(),
+      )
+      .max(10),
+  })
+  .strict();
+const issueBody = z
+  .object({ reason: z.string().max(500).optional(), latePayment: latePaymentSchema.optional() })
+  .strict();
+const reasonBody = z.object({ reason: z.string().max(500).optional() });
+
+/** Issue has its own strict schema (PAY-193 L4); approve and void keep { reason }. Null = invalid. */
+function parseTransitionBody(action: RunAction, raw: unknown): z.infer<typeof issueBody> | null {
+  const parsed =
+    action === "issue" ? issueBody.safeParse(raw ?? {}) : reasonBody.safeParse(raw ?? {});
+  return parsed.success ? parsed.data : null;
+}
+
+function transitionInput(
+  publicId: string,
+  action: RunAction,
+  actorId: string,
+  body: z.infer<typeof issueBody>,
+): TransitionInput {
+  return {
+    publicId,
+    action,
+    actorId,
+    ...(body.reason !== undefined ? { reason: body.reason } : {}),
+    ...(body.latePayment ? { latePayment: body.latePayment } : {}),
+  };
+}
 
 export function registerAdminPayrollRoutes(app: FastifyInstance, deps: AdminPayrollDeps): void {
   const { db, config, guards } = deps;
@@ -147,7 +203,8 @@ export function registerAdminPayrollRoutes(app: FastifyInstance, deps: AdminPayr
     const { publicId } = req.params as { publicId: string };
     const run = await getRunByPublicId(db, publicId);
     if (!run) return reply.code(404).send({ error: "not_found" });
-    return { run };
+    // PAY-193 L4 (EF-11): who confirmed a late issue, from its audit row.
+    return { run, lateIssue: await lateIssueOf(db, publicId) };
   });
 
   app.post("/api/admin/payroll-runs/generate", { preHandler: admin }, async (req, reply) => {
@@ -188,19 +245,15 @@ export function registerAdminPayrollRoutes(app: FastifyInstance, deps: AdminPayr
       { preHandler: admin },
       async (req, reply) => {
         const { publicId } = req.params as { publicId: string };
-        const body = z.object({ reason: z.string().max(500).optional() }).safeParse(req.body ?? {});
-        if (!body.success) return reply.code(400).send({ error: "invalid_body" });
+        const body = parseTransitionBody(action, req.body);
+        if (!body) return reply.code(400).send({ error: "invalid_body" });
         try {
-          const run = await transitionRun(
+          const result = await transitionRunDetailed(
             { db, config, ...(deps.clock ? { clock: deps.clock } : {}) },
-            {
-              publicId,
-              action,
-              actorId: req.authUser!.id,
-              ...(body.data.reason !== undefined ? { reason: body.data.reason } : {}),
-            },
+            transitionInput(publicId, action, req.authUser!.id, body),
           );
-          return { run };
+          // PAY-193 L4: `lateIssue` only on a late issue.
+          return result.lateIssue ? result : { run: result.run };
         } catch (err) {
           return serviceError(err, reply);
         }

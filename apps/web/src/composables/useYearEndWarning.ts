@@ -3,8 +3,8 @@
  * view. Phase and year come only from the server (company-local date), never
  * from the browser clock.
  *
- * PAY-193 L4 (late issue) will let a past-year payroll be issued: the
- * after-year-end copy below says it can't be, so it MUST change when L4 ships.
+ * After PAY-193 L4 a past-year payroll can be issued through the late dialog,
+ * so the after-year-end copy tells the owner to issue it before filing.
  */
 
 import { computed, ref } from "vue";
@@ -12,7 +12,7 @@ import { adminPayrollApi, isOpenRun, type PayrollRunRow, type YearEndStatus } fr
 import { useDates } from "./useDates";
 
 export function useYearEndWarning() {
-  const { date } = useDates();
+  const { date, longDate } = useDates();
   const yearEnd = ref<YearEndStatus | null>(null);
 
   /** A reminder; the page works without it, so a failed read shows nothing. */
@@ -31,6 +31,12 @@ export function useYearEndWarning() {
       : "";
   });
 
+  /** ", and by {closesOn} at the latest" (copy 4.4: empty when closesOn is unknown). */
+  const byClosesOn = computed(() => {
+    const closesOn = yearEnd.value?.closesOn;
+    return closesOn ? `, and by ${longDate(closesOn)} at the latest` : "";
+  });
+
   /** Dashboard banner text, or null outside the window. */
   const dashboardText = computed(() => {
     const ye = yearEnd.value;
@@ -46,9 +52,10 @@ export function useYearEndWarning() {
         : `${base} ${n} payrolls are still waiting to be issued.`;
     }
     if (n === 0) return `All your ${y} payrolls are issued.${due}`;
+    const by = byClosesOn.value;
     return n === 1
-      ? `1 payroll with a ${y} pay date wasn't issued before the year ended, and Wagon Payroll can't add it to ${y} yet. Don't change its pay date. Keep your own record of the payment and make sure it's in your ${y} tax filings.${due}`
-      : `${n} payrolls with ${y} pay dates weren't issued before the year ended, and Wagon Payroll can't add them to ${y} yet. Don't change their pay dates. Keep your own record of these payments and make sure they're in your ${y} tax filings.${due}`;
+      ? `1 payroll with a ${y} pay date isn't issued yet. If you paid it on that date, issue it before you file any ${y} fourth-quarter or year-end tax return${by}. Keep the pay date as it is. If you didn't pay it in ${y}, void it and generate it again with the date you actually pay.`
+      : `${n} payrolls with ${y} pay dates aren't issued yet. If you paid them on those dates, issue them before you file any ${y} fourth-quarter or year-end tax return${by}. Keep their pay dates as they are. If you didn't pay one in ${y}, void it and generate it again with the date you actually pay.`;
   });
 
   /** Run-view notice for a run still to issue with a pay date in the warning's year, else null. */
@@ -61,7 +68,7 @@ export function useYearEndWarning() {
     if (ye.phase === "december") {
       return `This payroll's pay date is in ${y}. Issue it by ${date(`${y}-12-31`)} so it counts in ${y}.`;
     }
-    return `This payroll's pay date, ${date(r.payDate)}, is in ${y}, which has ended. Wagon Payroll can't add a payroll to ${y} yet, so this one can't be issued. If you paid it on that date, don't change the date. Keep your own record of the payment and make sure it's in your ${y} tax filings.${dueSentence.value}`;
+    return `This payroll's pay date, ${longDate(r.payDate)}, is in ${y}, which has ended. If you paid it on that date, issue it before you file any ${y} fourth-quarter or year-end tax return${byClosesOn.value}. You'll be asked to confirm the amount you paid. Keep the pay date as it is. If you didn't pay it on that date, void it and generate it again with the date you actually pay.`;
   }
 
   return { yearEnd, load, dueSentence, dashboardText, runNotice };

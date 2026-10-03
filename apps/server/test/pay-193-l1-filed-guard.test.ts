@@ -9,8 +9,13 @@
  *   (941 of the pay date's quarter, 940 and w2_w3 of its year) is `filed`.
  *   A missing tax_filings row counts as not filed. Body keys exactly
  *   `error, message, payDate, forms`; forms like "941:2026-Q1", "940:2026",
- *   "w2_w3:2026", in closingFilings order. The check runs before
- *   `past_pay_date_other_year`.
+ *   "w2_w3:2026", in closingFilings order. The check runs first: before
+ *   D6/D4 and before the PAY-193 L4 attestation
+ *   (`late_payment_confirmation_required`).
+ * - PAY-193 L4: a run whose pay-date quarter has ended is LATE and needs a
+ *   `latePayment` body. Fixtures that only need "a past pay date" use a Q2
+ *   pay date seen in Q2 (paid 2026-04-20, today 2026-05-02, no work state),
+ *   which is not late; G-2b covers a late one.
  * - markFiled takes FILING_CLOSE_LOCK (hashtext('w2_w3_filing_state_ids'))
  *   for every form type, re-reads the row under it (already filed ->
  *   409 invalid_transition), and accepts an optional body field
@@ -46,6 +51,7 @@ import { auditEvents, payrollRuns, seedDatabase, taxFilings, type SeedDb } from 
 import { createTestApp, type TestContext } from "./helpers.js";
 import { inviteAndOnboard, login, sessionHeader, TEST_PASSWORD } from "./flow-helpers.js";
 import { createEmployee, gen, monthPeriod, runRow } from "./pay-date-helpers.js";
+import { oracleRun2026 } from "./pay-193-oracle.js";
 
 // ---------------------------------------------------------------- harness
 
@@ -393,11 +399,11 @@ describe("G-1 past pay date, 941 of its quarter filed", () => {
 });
 
 describe("G-2 past pay date, closing filings not filed", () => {
-  it("941 2026-Q1 'ready' -> issued", async () => {
+  it("941 2026-Q2 'ready' -> issued (paid 2026-04-20, today 2026-05-02: not late)", async () => {
     await resetFilings();
     now = new Date(MAY_2);
-    const id = await draft("2026-03", "2026-03-20");
-    await putFiling("941", 2026, 1, "ready");
+    const id = await draft("2026-04", "2026-04-20");
+    await putFiling("941", 2026, 2, "ready");
     await approve(id);
     const res = await act(id, "issue");
     expect(res.statusCode, res.body).toBe(200);
@@ -407,25 +413,49 @@ describe("G-2 past pay date, closing filings not filed", () => {
   it("no tax_filings row at all -> issued (missing row = not filed)", async () => {
     await resetFilings();
     now = new Date(MAY_2);
-    const id = await draft("2026-03", "2026-03-20");
+    const id = await draft("2026-04", "2026-04-20");
     await approve(id);
     const res = await act(id, "issue");
     expect(res.statusCode, res.body).toBe(200);
     expect((await runState(id)).status).toBe("issued");
   });
 
-  it("a filed 941 of ANOTHER quarter (2026-Q2) does not close a Q1 pay date -> issued", async () => {
+  it("a filed 941 of ANOTHER quarter (2026-Q1) does not close a Q2 pay date -> issued", async () => {
     await resetFilings();
-    now = new Date("2026-08-02T10:00:00Z");
-    const id = await draft("2026-03", "2026-03-31");
-    await putFiling("941", 2026, 2, "filed");
+    now = new Date(MAY_2);
+    const id = await draft("2026-04", "2026-04-20");
+    await putFiling("941", 2026, 1, "filed");
     await approve(id);
     const res = await act(id, "issue");
     expect(res.statusCode, res.body).toBe(200);
   });
+
+  it("G-2b (L4): late run (paid 2026-03-20, today 2026-05-02), 941 2026-Q1 'ready' -> issued with a complete latePayment", async () => {
+    await resetFilings();
+    now = new Date(MAY_2);
+    const id = await draft("2026-03", "2026-03-20");
+    await putFiling("941", 2026, 1, "ready");
+    await approve(id);
+    // No work state: no state step. Net pay from the auditor oracle (Pub 15-T
+    // 2026 Worksheet 1A, Pub 15 2026): 4,000.00 - 298.33 - 248.00 - 58.00.
+    const res = await t.app.inject({
+      method: "POST",
+      url: `/api/admin/payroll-runs/${id}/issue`,
+      headers: ADMIN,
+      payload: {
+        latePayment: {
+          attestationVersion: 1,
+          netPayCents: oracleRun2026(400_000, 0, "none").netCents,
+          stateReturns: [],
+        },
+      },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    expect((await runState(id)).status).toBe("issued");
+  });
 });
 
-describe("G-3 pay_period_filed comes before past_pay_date_other_year", () => {
+describe("G-3 pay_period_filed comes before the attestation (late_payment_confirmation_required)", () => {
   it("paid 2026-12-31, today 2027-01-10, 940 2026 filed -> 409 pay_period_filed [940:2026]", async () => {
     await resetFilings();
     now = new Date(JAN_10_2027);
@@ -484,7 +514,7 @@ describe("G-5 lock order (recording spy)", () => {
   it("issue, past pay date: employee lock -> FILING_CLOSE_LOCK -> tax_filings read, one transaction", async () => {
     await resetFilings();
     now = new Date(MAY_2);
-    const id = await draft("2026-03", "2026-03-20");
+    const id = await draft("2026-04", "2026-04-20");
     await approve(id);
     const { value: res, stmts } = await record(() => act(id, "issue"));
     expect(res.statusCode, res.body).toBe(200);
@@ -575,7 +605,7 @@ describe("G-6 order A: the issue commits, then markFiled with the old hash", () 
   it("markFiled(expectedWorksheetHash = displayed hash) -> 409 worksheet_changed; with the new hash it files", async () => {
     await resetFilings();
     now = new Date(MAY_2);
-    const fid = await putFiling("941", 2026, 1, "ready");
+    const fid = await putFiling("941", 2026, 2, "ready");
     // The admin opens the filing: the detail read computes and shows the hash.
     const opened = await t.app.inject({
       method: "GET",
@@ -586,8 +616,9 @@ describe("G-6 order A: the issue commits, then markFiled with the old hash", () 
     const oldHash = (opened.json() as { filing: { worksheetHash: string } }).filing.worksheetHash;
     expect(oldHash).toMatch(/^[0-9a-f]{64}$/);
 
-    // A March run is issued meanwhile (Q1 not yet filed -> allowed).
-    const id = await draft("2026-03", "2026-03-20");
+    // An April run is issued meanwhile (Q2 not filed -> allowed; not late,
+    // so the issue itself does not refresh the worksheet).
+    const id = await draft("2026-04", "2026-04-20");
     await approve(id);
     const issued = await act(id, "issue");
     expect(issued.statusCode, issued.body).toBe(200);
@@ -704,12 +735,13 @@ describe("G-9 markFiled without expectedWorksheetHash = expected the stored hash
   it("941: a past-dated run issued after the last read -> 409 worksheet_changed, refreshed worksheet committed; the retry files", async () => {
     await resetFilings();
     now = new Date(MAY_2);
-    const fid = await putFiling("941", 2026, 1, "ready");
+    const fid = await putFiling("941", 2026, 2, "ready");
     const readHash = await openFiling(fid);
 
-    // A March run is issued after the read (Q1 not filed -> allowed). Issue
-    // does not refresh the worksheet, so the stored hash is now stale.
-    const id = await draft("2026-03", "2026-03-20");
+    // An April run is issued after the read (Q2 not filed -> allowed). A
+    // not-late issue does not refresh the worksheet (L4 refreshes only on a
+    // late issue), so the stored hash is now stale.
+    const id = await draft("2026-04", "2026-04-20");
     await approve(id);
     const issued = await act(id, "issue");
     expect(issued.statusCode, issued.body).toBe(200);

@@ -19,6 +19,23 @@ export function useDates() {
     }).format(d);
   }
 
+  /**
+   * Long US date for owner-facing copy (PAY-193 L4): "2026-12-31" →
+   * "December 31, 2026"; a TIMESTAMPTZ is read in the display timezone.
+   */
+  function longDate(iso: string | null | undefined): string {
+    if (!iso) return "—";
+    const dateOnly = iso.length === 10;
+    const d = new Date(dateOnly ? `${iso}T00:00:00Z` : iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    return new Intl.DateTimeFormat("en-US", {
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+      timeZone: dateOnly ? "UTC" : APP_TIMEZONE,
+    }).format(d);
+  }
+
   /** TIMESTAMPTZ → "15 Jun 2025, 10:24" in the display timezone. */
   function dateTime(iso: string | null | undefined): string {
     if (!iso) return "—";
@@ -50,5 +67,5 @@ export function useDates() {
     return Number.isNaN(d.getTime()) ? null : d;
   }
 
-  return { date, dateTime, toIso, fromIso };
+  return { date, longDate, dateTime, toIso, fromIso };
 }

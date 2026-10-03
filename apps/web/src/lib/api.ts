@@ -236,6 +236,46 @@ export interface PayrollRunRow {
   voidReason?: string | null;
 }
 
+/** PAY-193 L4: one state's late-issue questions, rendered by the server (shown verbatim). */
+export interface LateStateQuestions {
+  jurisdiction: string;
+  withholdingReturn: string;
+  suiWageReport: string;
+  annualReconciliation: string;
+}
+
+/** PAY-193 L4: `attestation` of a 409 late_payment_confirmation_required. `text` keeps "{netPay}". */
+export interface LateAttestationBody {
+  version: 1;
+  text: string;
+  stateQuestions: LateStateQuestions[];
+}
+
+export interface LateStateReturn {
+  jurisdiction: string;
+  withholdingReturnFiled: boolean;
+  suiWageReportFiled: boolean;
+  annualReconciliationFiled: boolean;
+}
+
+export interface LatePayment {
+  attestationVersion: 1;
+  netPayCents: number;
+  stateReturns: LateStateReturn[];
+}
+
+/** POST …/approve|issue|void response; `lateIssue` only on a late issue (codes, no amounts). */
+export interface IssueResponse {
+  run: PayrollRunRow;
+  lateIssue?: { taxYear: number; followUps: string[] };
+}
+
+/** GET …/payroll-runs/:publicId — `lateIssue` is set when the run was issued late. */
+export interface RunDetailResponse {
+  run: PayrollRunRow;
+  lateIssue: { confirmedBy: string; confirmedAt: string } | null;
+}
+
 export interface PaySchedule {
   id: number;
   employeeId: number | null;
@@ -642,18 +682,18 @@ export const myApi = {
 export const adminPayrollApi = {
   runs: (filter: { status?: RunStatus; employeeId?: number; year?: number } = {}) =>
     get<{ runs: PayrollRunRow[] }>(`/api/admin/payroll-runs${qs(filter)}`),
-  run: (publicId: string) => get<{ run: PayrollRunRow }>(`/api/admin/payroll-runs/${publicId}`),
+  run: (publicId: string) => get<RunDetailResponse>(`/api/admin/payroll-runs/${publicId}`),
   yearEnd: () => get<YearEndStatus>("/api/admin/payroll-runs/year-end"),
   generate: (input: { year: number; month: number; employeeId?: number }) =>
     post<{ generated: PayrollRunRow[]; skipped: { employeeId: number; reason: string }[] }>(
       "/api/admin/payroll-runs/generate",
       input,
     ),
-  act: (publicId: string, action: "approve" | "issue" | "void", reason?: string) =>
-    post<{ run: PayrollRunRow }>(
-      `/api/admin/payroll-runs/${publicId}/${action}`,
-      reason ? { reason } : {},
-    ),
+  act: (
+    publicId: string,
+    action: "approve" | "issue" | "void",
+    body: { reason?: string; latePayment?: LatePayment } = {},
+  ) => post<IssueResponse>(`/api/admin/payroll-runs/${publicId}/${action}`, body),
   schedules: () => get<{ schedules: PaySchedule[] }>("/api/admin/pay-schedules"),
   putSchedule: (input: {
     draftDayOfMonth: number;

@@ -41,6 +41,12 @@ export const EVENT_TYPE = {
   taxFilingDue: "tax_filing_due",
   /** PAY-11 — an employee's W-2 for a tax year is available for download. */
   w2Available: "w2_available",
+  /**
+   * PAY-193 L4 — a late-issued payroll changed an employee's already-released
+   * W-2. Always on (not in WORKFLOW_EVENTS): a corrected W-2 notice is not
+   * opt-out-able.
+   */
+  w2Changed: "w2_changed",
 } as const;
 
 export type EventType = (typeof EVENT_TYPE)[keyof typeof EVENT_TYPE];
@@ -578,5 +584,50 @@ export function w2Available(ctx: TemplateContext, data: { taxYear: number }): Re
     `your ${data.taxYear} W-2 is available`,
     body,
     `Your W-2 for ${data.taxYear} is available. Log in to view and download it: ${ctx.appUrl}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PAY-193 L4 — W-2 changed notice (employee)
+// ---------------------------------------------------------------------------
+
+/**
+ * Employee: a payroll issued late changed their W-2 for a tax year after the
+ * w2_available notice went out. Two variants by electronic W-2 consent
+ * (federal-payroll-tax-sme ruling: 26 CFR 31.6051-1(j)(1),(j)(5); iw2w3 2026
+ * "Correcting Forms W-2 and W-3"):
+ * - consented: the subject starts with the required IMPORTANT phrase (no
+ *   company prefix in front of it) and the body says where to get the copy;
+ * - not consented (paper): a courtesy notice only — no IMPORTANT phrase, no
+ *   link, never "available"; the employer hands over a corrected paper W-2.
+ * Never amounts, never the SSN.
+ */
+export function w2Changed(
+  ctx: TemplateContext,
+  data: { taxYear: number; consented: boolean },
+): RenderedEmail {
+  const year = data.taxYear;
+  if (data.consented) {
+    const lead = (co: string) =>
+      `${co} has corrected your ${year} Form W-2 because of a payroll processed after your original W-2 was issued. The corrected W-2 is marked CORRECTED and replaces the earlier one. Use the corrected W-2 for your tax return.`;
+    const tail =
+      "If you already filed your return using the earlier W-2, you may need to amend it.";
+    const where = (signIn: string) =>
+      `To view and print it, sign in at ${signIn}, open Payslips, and find "W-2 wage and tax statements".`;
+    const appUrl = escapeHtml(ctx.appUrl);
+    const body = `<p>${lead(escapeHtml(ctx.companyName))}</p><p>${where(`<a href="${appUrl}">${appUrl}</a>`)}</p><p>${tail}</p>`;
+    return {
+      subject: `IMPORTANT TAX RETURN DOCUMENT AVAILABLE: Your corrected ${year} W-2 from ${ctx.companyName}`,
+      html: page(ctx, body),
+      text: `${lead(ctx.companyName)} ${where(ctx.appUrl)} ${tail}\n\n${footer(ctx.companyName, ctx.brandName)}`,
+    };
+  }
+  const notice = (co: string) =>
+    `${co} processed a payroll that changes your ${year} Form W-2. Your employer will give you a corrected paper W-2, marked CORRECTED. Use the corrected paper copy for your tax return, not the earlier one. This email is a notice only and is not your W-2.`;
+  return email(
+    ctx,
+    `Your ${year} W-2 is being corrected`,
+    `<p>${notice(escapeHtml(ctx.companyName))}</p>`,
+    notice(ctx.companyName),
   );
 }

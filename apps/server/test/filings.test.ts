@@ -47,8 +47,14 @@ let t: TestContext;
 let ADMIN: Record<string, string>;
 let adminUserId: string;
 
+// Runs are issued on their pay date (issueOn): a run whose pay-date quarter
+// has ended is late and needs the PAY-193 L4 confirmation. Outside an issue
+// the clock is the real one.
+let issueOn: string | null = null;
+const ISSUE_CLOCK = () => (issueOn ? new Date(`${issueOn}T12:00:00Z`) : new Date());
+
 beforeAll(async () => {
-  t = await createTestApp();
+  t = await createTestApp({}, { clock: ISSUE_CLOCK });
   await seedDatabase(t.db as unknown as SeedDb);
   const admin = await inviteAndOnboard(t, { email: "filings-admin@test.dev", role: "admin" });
   adminUserId = admin.userId;
@@ -99,6 +105,7 @@ async function issueRun(employeeId: number, year: number, month: number) {
   });
   expect(gen.statusCode, gen.body).toBe(201);
   const run = (gen.json() as { generated: (typeof payrollRuns.$inferSelect)[] }).generated[0]!;
+  issueOn = run.payDate;
   for (const action of ["approve", "issue"] as const) {
     const res = await t.app.inject({
       method: "POST",
@@ -108,6 +115,7 @@ async function issueRun(employeeId: number, year: number, month: number) {
     });
     expect(res.statusCode, res.body).toBe(200);
   }
+  issueOn = null;
   const rows = await t.db.select().from(payrollRuns).where(eq(payrollRuns.id, run.id));
   expect(rows[0]!.status).toBe("issued");
   return rows[0]!;
