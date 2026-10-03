@@ -681,7 +681,8 @@ describe("W28 no state ID in exports or figures", () => {
     for (const body of bodies) {
       expect(body).not.toContain("00000001");
       expect(body).not.toContain("123456789012");
-      expect(body).not.toContain("state_id");
+      // The column name; the Spec 24 issue code missing_state_id is not a leak.
+      expect(body).not.toMatch(/(?<![a-z_])state_id/);
     }
   });
 });

@@ -17,9 +17,8 @@
 
 import type { FastifyInstance } from "fastify";
 import { and, asc, eq, gte, sql } from "drizzle-orm";
-import { company, companyStateIds, employees, payrollEntries, payrollRuns } from "@payroll/db";
+import { company, companyStateIds, payrollRuns } from "@payroll/db";
 import {
-  EIN_DEFAULT_STATES,
   normalizeStateId,
   STATE_ID_MIN_YEAR,
   stateIdDeleteParams,
@@ -31,22 +30,19 @@ import type { Db } from "../db.js";
 import type { Guards } from "../plugins/guards.js";
 import {
   deleteStateId,
+  einDefaults,
   maskEinDefault,
   maskStateId,
-  stateIdSourceFor,
+  neededStates,
   writeStateId,
 } from "../company/state-ids.js";
+import { w2StateLinesForYear } from "../filings/annual.js";
 import { actorOf, NOT_FOUND, safeIssues } from "./params.js";
 
 interface Deps {
   db: Db;
   config: AppConfig;
   guards: Guards;
-}
-
-/** Code-point order (localeCompare is banned in this repo). */
-function byCode(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 export function registerAdminStateIdRoutes(app: FastifyInstance, deps: Deps): void {
@@ -60,43 +56,32 @@ export function registerAdminStateIdRoutes(app: FastifyInstance, deps: Deps): vo
   }
 
   /**
-   * States on a 2026+ W-2 without a box 15 ID: issued runs of W-2 employees,
-   * grouped by the frozen work state and pay-date year, dropping a state
-   * whose runs are all `kind = 'none'`. Runs without a work state are not
-   * attributable here (Spec 24 R7).
+   * States on a 2026+ W-2 line without a box 15 ID, from the planner (the
+   * same lines the W-2 prints; brief A3). A year whose lines cannot be
+   * planned is skipped with a fixed-message log; the GET never fails on it.
    */
-  async function statesWithWages() {
-    const workState = sql<string>`${payrollRuns.runSnapshot} #>> '{inputs,state,workState}'`;
-    const taxYear = sql<number>`extract(year FROM ${payrollRuns.payDate})::int`;
-    return db
-      .select({
-        stateCode: workState,
-        taxYear,
-        withheld: sql<boolean>`coalesce(sum(${payrollEntries.amount}), 0) > 0`,
-      })
+  async function neededFromPlanner() {
+    const years = await db
+      .selectDistinct({ year: sql<number>`extract(year from ${payrollRuns.payDate})::int` })
       .from(payrollRuns)
-      .innerJoin(
-        employees,
-        and(eq(employees.id, payrollRuns.employeeId), eq(employees.employmentType, "w2")),
-      )
-      .leftJoin(
-        payrollEntries,
-        and(
-          eq(payrollEntries.runId, payrollRuns.id),
-          eq(payrollEntries.category, "state_withholding"),
-        ),
-      )
       .where(
         and(
           eq(payrollRuns.status, "issued"),
           gte(payrollRuns.payDate, `${STATE_ID_MIN_YEAR}-01-01`),
-          sql`${workState} IS NOT NULL`,
         ),
-      )
-      .groupBy(workState, taxYear)
-      .having(
-        sql`NOT bool_and(coalesce(${payrollRuns.runSnapshot} #>> '{inputs,state,kind}', '') = 'none')`,
       );
+    const yearLines: Parameters<typeof neededStates>[0][number][] = [];
+    for (const { year } of years) {
+      const taxYear = Number(year);
+      try {
+        for (const lines of await w2StateLinesForYear(db, taxYear)) {
+          yearLines.push({ taxYear, lines });
+        }
+      } catch {
+        app.log.warn("[state-ids] needed: one year's W-2 state lines could not be planned");
+      }
+    }
+    return neededStates(yearLines);
   }
 
   app.get("/api/admin/company/state-ids", { preHandler: admin }, async (_req, reply) => {
@@ -122,34 +107,16 @@ export function registerAdminStateIdRoutes(app: FastifyInstance, deps: Deps): vo
     }));
 
     // Listed while some year from 2026 on still uses the EIN (no row from 2026).
-    const defaults = ein
-      ? EIN_DEFAULT_STATES.filter(
-          (s) =>
-            stateIdSourceFor(s, STATE_ID_MIN_YEAR, yearsByState.get(s) ?? [], true) ===
-            "ein_default",
-        ).map((stateCode) => ({
-          stateCode,
-          idMasked: maskEinDefault(ein, key),
-          source: "ein_default" as const,
-        }))
-      : [];
+    const defaults =
+      ein === null
+        ? []
+        : einDefaults(STATE_ID_MIN_YEAR, yearsByState, true).map((stateCode) => ({
+            stateCode,
+            idMasked: maskEinDefault(ein, key),
+            source: "ein_default" as const,
+          }));
 
-    const needed = (await statesWithWages())
-      .filter(
-        (w) =>
-          stateIdSourceFor(
-            w.stateCode,
-            w.taxYear,
-            yearsByState.get(w.stateCode) ?? [],
-            ein !== null,
-          ) === null,
-      )
-      .map((w) => ({
-        stateCode: w.stateCode,
-        taxYear: Number(w.taxYear),
-        reason: w.withheld ? ("tax_withheld" as const) : ("wages_only" as const),
-      }))
-      .sort((a, b) => byCode(a.stateCode, b.stateCode) || a.taxYear - b.taxYear);
+    const needed = await neededFromPlanner();
 
     return { stateIds, defaults, needed };
   });
