@@ -43,6 +43,7 @@ import {
   w3InputFor,
 } from "../filings/annual.js";
 import { w2ConsentFlags } from "../filings/w2-consent.js";
+import { PDF_RATE_LIMIT, refuseCrossSite } from "../plugins/fetch-site.js";
 import { FilingServiceError } from "../filings/shared.js";
 import {
   type FurnishingView,
@@ -195,7 +196,8 @@ export function registerAdminAnnualFormRoutes(app: FastifyInstance, deps: Deps):
    */
   app.get(
     "/api/admin/annual-forms/w2/:employeeId/print-packet",
-    { preHandler: admin },
+    // PAY-206 review round D10: refused cross-site / same-site; 20/min per client.
+    { preHandler: [refuseCrossSite, admin], config: { rateLimit: PDF_RATE_LIMIT } },
     async (req, reply) => {
       const target = employeeYear(req, reply);
       if (!target) return reply;
