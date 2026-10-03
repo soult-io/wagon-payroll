@@ -22,6 +22,26 @@
  *  - w2_changed employee mail only when the year's W-2 is available, the
  *    year is in the w2_available notified years, and the employee has a login.
  *
+ * Review round (Product Lead decisions 2026-10-03, copy file "Product Lead
+ * amendments" + "round 2", round 2 overriding amendment 7):
+ *  - lateIssueAllowed() false FAILS CLOSED: 409 late_issue_not_supported
+ *    {error,message,payDate}; nothing written (LI-16). Seam: the test mocks
+ *    `lateIssueAllowed` exported by src/filings/closing-filings.ts; runs.ts
+ *    must call it through that module export (any arguments are ignored by
+ *    the mock; a sync boolean or a Promise<boolean> both work if awaited).
+ *  - The no-income-tax variant comes from the run SNAPSHOT's
+ *    inputs.state.kind, not the live state config (LI-17).
+ *  - stateAttestationText lines are `${question} Answer: ${answer}` (LI-2).
+ *  - late_payment_incomplete with no state questions: the "out of date"
+ *    message (LI-18).
+ *  - LI-7: a wrong amount first (409 mismatch), then the right one; no
+ *    netPayCents key or value in the log.
+ *  - w2_changed is split by W-2 electronic-delivery consent
+ *    (w2_delivery_consents row, withdrawn_at null): consented -> IMPORTANT
+ *    subject first + follow-up w2_changed_notice_sent; not consented ->
+ *    paper courtesy notice + follow-up w2_paper_correction_needed. Not
+ *    opt-out-able. Template seam: w2Changed(ctx, { taxYear, consented }).
+ *
  * Amounts: the auditor's oracle (test/pay-193-oracle.ts, Pub 15-T 2026
  * Worksheet 1A, Pub 15 2026, IL-700-T 2026), never the engine. Main case:
  * IL single, 1 IL-W-4 allowance, 4,000.00/month: FIT 298.33, SS 248.00,
@@ -36,10 +56,19 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { eq } from "drizzle-orm";
-import { appSettings, emailOutbox, taxFilings } from "@payroll/db";
+import { and, eq } from "drizzle-orm";
+import {
+  appSettings,
+  company,
+  emailOutbox,
+  notificationSettings,
+  stateTaxConfigs,
+  taxFilings,
+  w2DeliveryConsents,
+} from "@payroll/db";
 import * as notifications from "@payroll/notifications";
 import { renderPayslipPdf, type PayslipSnapshot } from "@payroll/documents";
+import { drainOutbox } from "../src/notify/outbox.js";
 import { cents, monthPeriod, gen, runRow, snap } from "./pay-date-helpers.js";
 import { oracleRun2026, oracleYear } from "./pay-193-oracle.js";
 import {
@@ -61,6 +90,16 @@ import {
   runStatus,
 } from "./pay-193-l4-harness.js";
 
+/**
+ * LI-16 seam: the PAY-119 depositor-schedule hook. Default true (as shipped);
+ * LI-16 flips it to false. Every other export of the module is the original.
+ */
+const lateGate = vi.hoisted(() => ({ allowed: true }));
+vi.mock("../src/filings/closing-filings.js", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("../src/filings/closing-filings.js")>();
+  return { ...mod, lateIssueAllowed: (..._args: unknown[]) => lateGate.allowed };
+});
+
 let env: L4Env;
 
 beforeAll(async () => {
@@ -72,6 +111,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  lateGate.allowed = true;
   await resetL4(env.t);
 });
 
@@ -304,12 +344,13 @@ describe("LI-2 late issue with a complete, correct latePayment", () => {
       stateReturns: [notFiled("IL")],
       followUps: [],
     });
-    const stateText = String(after.stateAttestationText ?? "");
+    // PL review round: each answered question is one line `${question} Answer: ${answer}`.
+    const stateLines = String(after.stateAttestationText ?? "").split("\n");
     const q = questions("IL", "2026-12-31");
     expect({
-      withholding: stateText.includes(q.withholdingReturn),
-      sui: stateText.includes(q.suiWageReport),
-      annual: stateText.includes(q.annualReconciliation),
+      withholding: stateLines.includes(`${q.withholdingReturn} Answer: No, not filed`),
+      sui: stateLines.includes(`${q.suiWageReport} Answer: No, not filed`),
+      annual: stateLines.includes(`${q.annualReconciliation} Answer: No, not filed`),
     }).toEqual({ withholding: true, sui: true, annual: true });
 
     const payslipMails = (await outboxOf("payslip_issued")).filter(
@@ -507,23 +548,32 @@ describe("LI-6 malformed bodies -> 400 { error: 'invalid_body' } only", () => {
 });
 
 describe("LI-7 the typed amount never reaches the log", () => {
-  it("issue with latePayment at trace level: no 'netPayCents' and no value in the log stream", async () => {
+  it("approved late run at trace level: a wrong amount first (409 late_payment_amount_mismatch), then the correct one (200); no 'netPayCents' key and no typed value in the log stream", async () => {
     const d = await ilDraft();
     env.setNow(JAN_10_2027);
     const from = env.logs.length;
-    const res = await issue(env, d.publicId, latePayment(NET_IL, [notFiled("IL")]));
     const wrong = await issue(env, d.publicId, latePayment(NET_IL + 3, [notFiled("IL")]));
+    const statusAfterWrong = await runStatus(env.t, d.publicId);
+    const res = await issue(env, d.publicId, latePayment(NET_IL, [notFiled("IL")]));
     const log = env.logs.slice(from).join("\n");
     expect({
+      wrong: wrong.status,
+      wrongError: wrong.body.error,
+      statusAfterWrong,
       issued: res.status,
-      secondIsRefusedOrInvalid: wrong.status >= 400,
       logged: log.includes(`/api/admin/payroll-runs/${d.publicId}/issue`),
       key: log.includes("netPayCents"),
       value: /\b320974\b/.test(log) || /\b320977\b/.test(log),
-      dollars: log.includes("3209.74") || log.includes("3,209.74"),
+      dollars:
+        log.includes("3209.74") ||
+        log.includes("3,209.74") ||
+        log.includes("3209.77") ||
+        log.includes("3,209.77"),
     }).toEqual({
+      wrong: 409,
+      wrongError: "late_payment_amount_mismatch",
+      statusAfterWrong: "approved",
       issued: 200,
-      secondIsRefusedOrInvalid: true,
       logged: true,
       key: false,
       value: false,
@@ -753,6 +803,156 @@ describe("LI-15 past_pay_date_other_year is gone", () => {
   });
 });
 
+// ---------------------------------------------------------------- LI-16 … LI-18 (PL review round)
+
+const NOT_SUPPORTED =
+  "Wagon Payroll can't record a late payroll for your business's deposit schedule yet. Nothing was issued.";
+
+describe("LI-16 lateIssueAllowed() false fails closed", () => {
+  it("late run, hook false: without and with a complete latePayment -> 409 late_issue_not_supported {error,message,payDate}; run approved; no deposit, worksheet, outbox or issue rows", async () => {
+    const d = await ilDraft();
+    await setNotifiedYears([2026]);
+    env.setNow(JAN_10_2027);
+    lateGate.allowed = false;
+    const counts = async () => ({
+      deposits: Number(
+        (await env.t.pglite.query<{ n: number }>("SELECT count(*)::int AS n FROM tax_deposits"))
+          .rows[0]!.n,
+      ),
+      filings: Number(
+        (await env.t.pglite.query<{ n: number }>("SELECT count(*)::int AS n FROM tax_filings"))
+          .rows[0]!.n,
+      ),
+      outbox: await outboxCount(),
+    });
+    const before = await counts();
+    const bare = await issue(env, d.publicId);
+    const full = await issue(env, d.publicId, latePayment(NET_IL, [notFiled("IL")]));
+    for (const res of [bare, full]) {
+      expect({
+        status: res.status,
+        keys: keys(res.body),
+        error: res.body.error,
+        message: res.body.message,
+        payDate: res.body.payDate,
+        noAmount: !hasAmount(res.raw),
+      }).toEqual({
+        status: 409,
+        keys: ["error", "message", "payDate"],
+        error: "late_issue_not_supported",
+        message: NOT_SUPPORTED,
+        payDate: "2026-12-31",
+        noAmount: true,
+      });
+    }
+    expect({
+      status: await runStatus(env.t, d.publicId),
+      counts: await counts(),
+      issueAudits: (await audits(env.t, "run.issue", d.publicId)).length,
+      lateAudits: (await audits(env.t, "run.issued_late", d.publicId)).length,
+    }).toEqual({ status: "approved", counts: before, issueAudits: 0, lateAudits: 0 });
+  });
+
+  it("hook false does not touch a run that is not late (paid 2026-12-31, today 2026-12-31) -> issued", async () => {
+    const d = await ilDraft();
+    env.setNow("2026-12-31T10:00:00Z");
+    lateGate.allowed = false;
+    const res = await issue(env, d.publicId);
+    expect({ status: res.status, lateKey: "lateIssue" in res.body }).toEqual({
+      status: 200,
+      lateKey: false,
+    });
+  });
+});
+
+describe("LI-17 the no-income-tax variant follows the run snapshot, not the live state config", () => {
+  it("TX run whose snapshot kind is 'none' (TX:single row) while a live TX row of kind 'flat' sorts first -> 'none' variant", async () => {
+    // Live config made ambiguous without changing what the D4 recompute
+    // resolves: TX:married_joint (flat, never used for a single employee) is
+    // inserted before TX:single (none); the plain TX 2026 row is parked on
+    // 2099. The resolver ('TX:single' then 'TX') still finds kind 'none', so
+    // the draft stays current; any live read of "TX or TX:*" for 2026 can
+    // land on the flat row.
+    const tx2026 = and(eq(stateTaxConfigs.jurisdiction, "TX"), eq(stateTaxConfigs.taxYear, 2026));
+    await env.t.db.insert(stateTaxConfigs).values({
+      jurisdiction: "TX:married_joint",
+      taxYear: 2026,
+      kind: "flat",
+      flatRate: "0.05",
+      note: "pay-193-l4 LI-17 synthetic",
+    });
+    await env.t.db.insert(stateTaxConfigs).values({
+      jurisdiction: "TX:single",
+      taxYear: 2026,
+      kind: "none",
+      note: "pay-193-l4 LI-17 synthetic",
+    });
+    await env.t.db.update(stateTaxConfigs).set({ taxYear: 2099 }).where(tx2026);
+    try {
+      const emp = await makeEmployee(env.t, { grossCents: 400_000, state: "TX" });
+      const d = await draft(env.t, emp, "2026-12", "2026-12-31");
+      await approve(env, d.publicId);
+      const s = d.snapshot as { inputs: { state?: { kind?: string; jurisdiction?: string } } };
+      expect({ kind: s.inputs.state?.kind, jurisdiction: s.inputs.state?.jurisdiction }).toEqual({
+        kind: "none",
+        jurisdiction: "TX:single",
+      });
+      env.setNow(JAN_10_2027);
+      const res = await issue(env, d.publicId);
+      expect({
+        status: res.status,
+        error: res.body.error,
+        questions: (res.body.attestation as { stateQuestions?: unknown } | undefined)
+          ?.stateQuestions,
+      }).toEqual({
+        status: 409,
+        error: "late_payment_confirmation_required",
+        questions: [questions("TX", "2026-12-31", { none: true })],
+      });
+    } finally {
+      await env.t.db
+        .delete(stateTaxConfigs)
+        .where(
+          and(
+            eq(stateTaxConfigs.taxYear, 2026),
+            eq(stateTaxConfigs.note, "pay-193-l4 LI-17 synthetic"),
+          ),
+        );
+      await env.t.db
+        .update(stateTaxConfigs)
+        .set({ taxYear: 2026 })
+        .where(and(eq(stateTaxConfigs.jurisdiction, "TX"), eq(stateTaxConfigs.taxYear, 2099)));
+    }
+  });
+});
+
+describe("LI-18 late_payment_incomplete when the run has no state questions (state list changed)", () => {
+  it("no-state run answered with [IL] -> 409 late_payment_incomplete, the 'out of date' message, stateJurisdictions []", async () => {
+    const emp = await makeEmployee(env.t, { grossCents: 400_000, state: null });
+    const d = await draft(env.t, emp, "2026-12", "2026-12-31");
+    await approve(env, d.publicId);
+    env.setNow(JAN_10_2027);
+    const res = await issue(env, d.publicId, latePayment(NET_NONE, [notFiled("IL")]));
+    expect({
+      status: res.status,
+      keys: keys(res.body),
+      error: res.body.error,
+      message: res.body.message,
+      payDate: res.body.payDate,
+      stateJurisdictions: res.body.stateJurisdictions,
+    }).toEqual({
+      status: 409,
+      keys: ["error", "message", "payDate", "stateJurisdictions"],
+      error: "late_payment_incomplete",
+      message:
+        "The state questions on this screen are out of date. Nothing was issued. Close this window and select Issue payslip again.",
+      payDate: "2026-12-31",
+      stateJurisdictions: [],
+    });
+    expect(await runStatus(env.t, d.publicId)).toBe("approved");
+  });
+});
+
 // ---------------------------------------------------------------- EF-1, EF-2, EF-3 (YTD and draft checks still run)
 
 describe("EF-1 late December issued after January of the next year", () => {
@@ -843,36 +1043,82 @@ describe("EF-3 a late draft made stale by an earlier issued run (D4)", () => {
 
 // ---------------------------------------------------------------- EF-6 W-2 changed notice
 
-const W2_SUBJECT = "IMPORTANT TAX RETURN DOCUMENT AVAILABLE: Your corrected 2026 W-2";
-const W2_BODY = 'has been updated and a corrected copy, marked "CORRECTED", is now ready';
+// PL amendments round 2 (federal SME: 26 CFR 31.6051-1(j)(1),(j)(5); iw2w3 2026
+// "Correcting Forms W-2 and W-3"). {company} = the company legal name;
+// {appUrl} = config.baseUrl.
+const W2_PHRASE = "IMPORTANT TAX RETURN DOCUMENT AVAILABLE";
+const W2_SUBJECT_E = (year: number, co: string) =>
+  `${W2_PHRASE}: Your corrected ${year} W-2 from ${co}`;
+const W2_BODY_E = (year: number, co: string, appUrl: string) =>
+  `${co} has corrected your ${year} Form W-2 because of a payroll processed after your original W-2 was issued. The corrected W-2 is marked CORRECTED and replaces the earlier one. Use the corrected W-2 for your tax return. To view and print it, sign in at ${appUrl}, open Payslips, and find "W-2 wage and tax statements". If you already filed your return using the earlier W-2, you may need to amend it.`;
+const W2_SUBJECT_P = (year: number, co: string) => `${co} — Your ${year} W-2 is being corrected`;
+const W2_BODY_P = (year: number, co: string) =>
+  `${co} processed a payroll that changes your ${year} Form W-2. Your employer will give you a corrected paper W-2, marked CORRECTED. Use the corrected paper copy for your tax return, not the earlier one. This email is a notice only and is not your W-2.`;
 
-function decode(html: string): string {
-  return html.replaceAll("&quot;", '"').replaceAll("&#34;", '"').replaceAll("&#x22;", '"');
+/** HTML -> the text a reader sees: tags dropped, entities decoded, whitespace collapsed. */
+function plain(html: string): string {
+  return html
+    .replace(/<[^>]*>/g, " ")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&#34;", '"')
+    .replaceAll("&#x22;", '"')
+    .replaceAll("&#39;", "'")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&")
+    .replace(/\s+/g, " ")
+    .replace(/ ([.,])/g, "$1")
+    .trim();
+}
+
+async function companyLegalName(): Promise<string> {
+  return (await env.t.db.select({ n: company.legalName }).from(company).limit(1))[0]!.n;
+}
+
+async function consentElectronicW2(employeeId: number): Promise<void> {
+  await env.t.db
+    .insert(w2DeliveryConsents)
+    .values({ employeeId, disclosureVersion: "2025-01", withdrawnAt: null });
+}
+
+/** Paper notice content rules: no IMPORTANT phrase, no link, never "available". */
+function paperViolations(subject: string, html: string, text = ""): string[] {
+  const v: string[] = [];
+  const all = `${subject}\n${html}\n${text}`;
+  if (all.includes(W2_PHRASE)) v.push("important_phrase");
+  if (/<a\b/i.test(html) || /href=/i.test(html) || /https?:\/\//i.test(all)) v.push("link");
+  if (all.includes(env.t.config.baseUrl)) v.push("app_url");
+  if (/available/i.test(all)) v.push("available");
+  return v;
 }
 
 describe("EF-6 w2_changed notice", () => {
-  it("(a) today 2027-01-10, 2026 already notified -> one w2_changed row for the employee, corrected-W-2 copy, no amount; followUps has w2_changed_notice_sent", async () => {
+  it("(a) consented to electronic W-2; today 2027-01-10, 2026 already notified -> one w2_changed row, IMPORTANT subject first (no company prefix), round-2 body, no amount; followUps has w2_changed_notice_sent", async () => {
     const d = await ilDraft();
+    await consentElectronicW2(d.emp.id);
     await setNotifiedYears([2026]);
     env.setNow(JAN_10_2027);
     const res = await issue(env, d.publicId, latePayment(NET_IL, [notFiled("IL")]));
     expect(res.status, res.raw).toBe(200);
-    expect((res.body.lateIssue as { followUps: string[] }).followUps).toContain(
+    expect((res.body.lateIssue as { followUps: string[] }).followUps).toEqual([
       "w2_changed_notice_sent",
-    );
+    ]);
     const rows = await outboxOf("w2_changed");
     expect(rows.map((r) => r.userId)).toEqual([d.emp.userId]);
     const m = rows[0]!;
-    const body = decode(m.bodyHtml);
+    const co = await companyLegalName();
+    const body = plain(m.bodyHtml);
     expect({
-      subject: m.subject.includes(W2_SUBJECT),
-      body: body.includes(W2_BODY),
+      subject: m.subject,
+      startsWithPhrase: m.subject.startsWith(`${W2_PHRASE}: `),
+      body: body.includes(W2_BODY_E(2026, co, env.t.config.baseUrl)),
       noAmountSubject: !hasAmount(m.subject),
       noAmountBody: !hasAmount(body),
       noNet: !body.includes("3,209.74") && !body.includes("3209.74"),
       noSsnShape: !/\b\d{3}-\d{2}-\d{4}\b/.test(body),
     }).toEqual({
-      subject: true,
+      subject: W2_SUBJECT_E(2026, co),
+      startsWithPhrase: true,
       body: true,
       noAmountSubject: true,
       noAmountBody: true,
@@ -880,9 +1126,92 @@ describe("EF-6 w2_changed notice", () => {
       noSsnShape: true,
     });
     const late = await audits(env.t, "run.issued_late", d.publicId);
-    expect((late[0]?.after as { followUps?: string[] } | undefined)?.followUps).toContain(
+    expect((late[0]?.after as { followUps?: string[] } | undefined)?.followUps).toEqual([
       "w2_changed_notice_sent",
-    );
+    ]);
+  });
+
+  it("(a2) NOT consented (paper) -> one w2_changed row: '{company} — Your 2026 W-2 is being corrected', round-2 paper body; no IMPORTANT phrase, no link, no 'available', no amount; followUps [w2_paper_correction_needed]", async () => {
+    const d = await ilDraft();
+    await setNotifiedYears([2026]);
+    env.setNow(JAN_10_2027);
+    const res = await issue(env, d.publicId, latePayment(NET_IL, [notFiled("IL")]));
+    expect(res.status, res.raw).toBe(200);
+    const fu = (res.body.lateIssue as { followUps: string[] }).followUps;
+    const rows = await outboxOf("w2_changed");
+    expect(rows.map((r) => r.userId)).toEqual([d.emp.userId]);
+    const m = rows[0]!;
+    const co = await companyLegalName();
+    expect({
+      followUps: fu,
+      subject: m.subject,
+      body: plain(m.bodyHtml).includes(W2_BODY_P(2026, co)),
+      violations: paperViolations(m.subject, m.bodyHtml),
+      noAmount: !hasAmount(m.subject) && !hasAmount(plain(m.bodyHtml)),
+    }).toEqual({
+      followUps: ["w2_paper_correction_needed"],
+      subject: W2_SUBJECT_P(2026, co),
+      body: true,
+      violations: [],
+      noAmount: true,
+    });
+    const late = await audits(env.t, "run.issued_late", d.publicId);
+    expect((late[0]?.after as { followUps?: string[] } | undefined)?.followUps).toEqual([
+      "w2_paper_correction_needed",
+    ]);
+  });
+
+  it("(a3) consent withdrawn (withdrawn_at set) counts as NOT consented -> paper notice, w2_paper_correction_needed", async () => {
+    const d = await ilDraft();
+    await env.t.db.insert(w2DeliveryConsents).values({
+      employeeId: d.emp.id,
+      disclosureVersion: "2025-01",
+      withdrawnAt: new Date("2026-11-01T00:00:00Z"),
+    });
+    await setNotifiedYears([2026]);
+    env.setNow(JAN_10_2027);
+    const res = await issue(env, d.publicId, latePayment(NET_IL, [notFiled("IL")]));
+    expect(res.status, res.raw).toBe(200);
+    const co = await companyLegalName();
+    const rows = await outboxOf("w2_changed");
+    expect({
+      followUps: (res.body.lateIssue as { followUps: string[] }).followUps,
+      subjects: rows.map((r) => r.subject),
+    }).toEqual({
+      followUps: ["w2_paper_correction_needed"],
+      subjects: [W2_SUBJECT_P(2026, co)],
+    });
+  });
+
+  it("(a4) not opt-out-able: every workflow email disabled for the employee -> the w2_changed row is still sent by the drain (never 'suppressed'); no w2_changed toggle on the employee settings surface", async () => {
+    const d = await ilDraft();
+    await consentElectronicW2(d.emp.id);
+    const toggles = new Set<string>([...notifications.WORKFLOW_EVENTS, "w2_changed"]);
+    for (const eventType of toggles) {
+      await env.t.db
+        .insert(notificationSettings)
+        .values({ userId: d.emp.userId!, eventType, enabled: false })
+        .onConflictDoUpdate({
+          target: [notificationSettings.userId, notificationSettings.eventType],
+          set: { enabled: false },
+        });
+    }
+    await setNotifiedYears([2026]);
+    env.setNow(JAN_10_2027);
+    const res = await issue(env, d.publicId, latePayment(NET_IL, [notFiled("IL")]));
+    expect(res.status, res.raw).toBe(200);
+    await drainOutbox({
+      db: env.t.db,
+      config: { ...env.t.config, emailMode: "log" },
+      resolveRecipientEmail: async () => "worker@test.dev",
+    } as unknown as Parameters<typeof drainOutbox>[0]);
+    const rows = await outboxOf("w2_changed");
+    expect({
+      statuses: rows.map((r) => r.status),
+      employeeSurface: notifications
+        .workflowEventsFor({ isAdmin: false, employmentType: "w2" })
+        .includes("w2_changed" as never),
+    }).toEqual({ statuses: ["sent"], employeeSurface: false });
   });
 
   it("(b) 2026 not yet in the notified years -> no w2_changed row, no follow-up", async () => {
@@ -919,44 +1248,62 @@ describe("EF-6 w2_changed notice", () => {
 
   it("(e, auditor) late in-year (paid 2026-09-30, today 2026-10-05): the 2026 W-2 is not available yet -> no row even with 2026 marked notified", async () => {
     const d = await ilDraft("2026-09-30");
+    await consentElectronicW2(d.emp.id);
     await setNotifiedYears([2026]);
     env.setNow("2026-10-05T10:00:00Z");
     const res = await issue(env, d.publicId, latePayment(NET_IL, [notFiled("IL")]));
     expect(res.status, res.raw).toBe(200);
+    const fu = (res.body.lateIssue as { followUps: string[] }).followUps;
     expect({
       rows: (await outboxOf("w2_changed")).length,
-      w2Code: (res.body.lateIssue as { followUps: string[] }).followUps.includes(
-        "w2_changed_notice_sent",
-      ),
-    }).toEqual({ rows: 0, w2Code: false });
+      w2Codes: fu.filter((c) => c.startsWith("w2_")),
+    }).toEqual({ rows: 0, w2Codes: [] });
   });
 
-  it("(f, auditor) @payroll/notifications: EVENT_TYPE.w2Changed = 'w2_changed', a w2-audience workflow event; w2Changed(ctx, { taxYear }) renders the corrected-W-2 copy with no amount", () => {
+  it("(f, auditor) @payroll/notifications: EVENT_TYPE.w2Changed = 'w2_changed', NOT a toggleable workflow event; w2Changed(ctx, { taxYear, consented }) renders both round-2 variants with no amount", () => {
     const n = notifications as unknown as {
       EVENT_TYPE: Record<string, string>;
-      EVENT_AUDIENCE: Record<string, string>;
       WORKFLOW_EVENTS: readonly string[];
       w2Changed?: (
         ctx: { companyName: string; brandName: string; appUrl: string },
-        data: { taxYear: number },
+        data: { taxYear: number; consented: boolean },
       ) => { subject: string; html: string; text: string };
     };
     expect({
       type: n.EVENT_TYPE.w2Changed,
-      audience: n.EVENT_AUDIENCE.w2_changed,
       workflow: n.WORKFLOW_EVENTS.includes("w2_changed"),
       template: typeof n.w2Changed,
-    }).toEqual({ type: "w2_changed", audience: "w2", workflow: true, template: "function" });
-    const r = n.w2Changed!(
-      { companyName: "Example Corp", brandName: "Wagon Payroll", appUrl: "http://localhost" },
-      { taxYear: 2026 },
-    );
+    }).toEqual({ type: "w2_changed", workflow: false, template: "function" });
+    const ctx = {
+      companyName: "Example Corp",
+      brandName: "Wagon Payroll",
+      appUrl: "http://localhost",
+    };
+    const e = n.w2Changed!(ctx, { taxYear: 2026, consented: true });
+    const p = n.w2Changed!(ctx, { taxYear: 2026, consented: false });
     expect({
-      subject: r.subject.includes(W2_SUBJECT),
-      html: decode(r.html).includes(W2_BODY),
-      text: r.text.includes(W2_BODY),
-      noAmount: !hasAmount(r.subject) && !hasAmount(decode(r.html)) && !hasAmount(r.text),
-    }).toEqual({ subject: true, html: true, text: true, noAmount: true });
+      eSubject: e.subject,
+      eHtml: plain(e.html).includes(W2_BODY_E(2026, "Example Corp", "http://localhost")),
+      eText: e.text
+        .replace(/\s+/g, " ")
+        .includes(W2_BODY_E(2026, "Example Corp", "http://localhost")),
+      pSubject: p.subject,
+      pHtml: plain(p.html).includes(W2_BODY_P(2026, "Example Corp")),
+      pText: p.text.replace(/\s+/g, " ").includes(W2_BODY_P(2026, "Example Corp")),
+      pViolations: paperViolations(p.subject, p.html, p.text),
+      noAmount: [e.subject, e.text, plain(e.html), p.subject, p.text, plain(p.html)].every(
+        (x) => !hasAmount(x),
+      ),
+    }).toEqual({
+      eSubject: W2_SUBJECT_E(2026, "Example Corp"),
+      eHtml: true,
+      eText: true,
+      pSubject: W2_SUBJECT_P(2026, "Example Corp"),
+      pHtml: true,
+      pText: true,
+      pViolations: [],
+      noAmount: true,
+    });
   });
 });
 

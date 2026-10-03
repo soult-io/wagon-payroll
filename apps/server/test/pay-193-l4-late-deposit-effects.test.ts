@@ -512,6 +512,47 @@ describe("EF-8 no December federal row yet, issued after its due date", () => {
   });
 });
 
+describe("EF-8d (PL review round) federal seq 0 still PENDING after its due date", () => {
+  it("pending 500.83 due 2027-01-15, issued late 2027-01-16 before the nightly flip: seq 0 raised to 1,411.16 AND flipped 'overdue' in the issue tx; followUps [deposit_overdue:federal:2026-12-01]", async () => {
+    // Auditor oracle: B = 2,500.00 run -> 500.83 federal (EF-8c); the late
+    // 4,000.00 run adds 910.33 (298.33 + 2 x 248.00 + 2 x 58.00) = 1,411.16.
+    const b = await makeEmployee(env.t, { grossCents: 250_000, state: null });
+    await history(env.t, b, "2026-12", "2026-12-15", oracleRun2026(250_000, 0, "none"), null);
+    await syncDeposits(deps(), { today: "2027-01-10" });
+    expect(await live("federal")).toEqual([
+      { seq: 0, c: 50_083, due: "2027-01-15", status: "pending" },
+    ]);
+    const emp = await makeEmployee(env.t, { grossCents: 400_000, state: null });
+    const d = await draft(env.t, emp, "2026-12", "2026-12-31");
+    await approve(env, d.publicId);
+    env.setNow("2027-01-16T10:00:00Z");
+    const { value: res, stmts } = await record(() =>
+      issue(env, d.publicId, latePayment(NONE.netCents, [])),
+    );
+    expect(res.status, res.raw).toBe(200);
+    expect(fedDepositCents(NONE)).toBe(91_033);
+    expect({
+      followUps: followUps(res),
+      federal: await live("federal"),
+    }).toEqual({
+      followUps: ["deposit_overdue:federal:2026-12-01"],
+      federal: [{ seq: 0, c: 50_083 + 91_033, due: "2027-01-15", status: "overdue" }],
+    });
+    const issueTx = txOf(stmts, "run_update");
+    const depositWrites = stmts.filter(
+      (x) => x.tx !== null && /^\s*(update|insert\s+into)\s+"?tax_deposits"?/i.test(x.text),
+    );
+    expect({
+      wrote: depositWrites.length > 0,
+      allInIssueTx: depositWrites.every((x) => x.tx === issueTx),
+    }).toEqual({ wrote: true, allInIssueTx: true });
+    const late = await audits(env.t, "run.issued_late", d.publicId);
+    expect((late[0]?.after as { followUps?: string[] } | undefined)?.followUps).toEqual([
+      "deposit_overdue:federal:2026-12-01",
+    ]);
+  });
+});
+
 // ---------------------------------------------------------------- EF-9
 
 describe("EF-9 the IL unit cannot be planned", () => {
