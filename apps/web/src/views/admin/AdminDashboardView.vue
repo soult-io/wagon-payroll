@@ -78,12 +78,21 @@ const yearEndText = computed(() => {
   if (!ye?.phase || ye.year === null) return null;
   const n = ye.openRuns.length;
   const y = ye.year;
+  const dec31 = date(`${y}-12-31`);
+  const due = ye.closesOn
+    ? ` Your first ${y} year-end tax return is due by ${date(ye.closesOn)}.`
+    : "";
   if (ye.phase === "december") {
-    const base = `Payrolls you pay in ${y} must be issued here by December 31 so they count in ${y}.`;
-    return n > 0 ? `${base} ${n} still to issue.` : base;
+    const base = `Payrolls you pay in ${y} must be issued here by ${dec31} to count in ${y}.`;
+    if (n === 0) return base;
+    return n === 1
+      ? `${base} 1 payroll is still waiting to be issued.`
+      : `${base} ${n} payrolls are still waiting to be issued.`;
   }
-  if (n === 0) return null;
-  return `${n} payrolls with ${y} pay dates weren't issued. They can't be added to ${y} yet. Keep your own record of them for your ${y} filings.`;
+  if (n === 0) return `All your ${y} payrolls are issued.${due}`;
+  return n === 1
+    ? `1 payroll with a ${y} pay date wasn't issued before the year ended, and Wagon Payroll can't add it to ${y} yet. Don't change its pay date. Keep your own record of the payment and make sure it's in your ${y} tax filings.${due}`
+    : `${n} payrolls with ${y} pay dates weren't issued before the year ended, and Wagon Payroll can't add them to ${y} yet. Don't change their pay dates. Keep your own record of these payments and make sure they're in your ${y} tax filings.${due}`;
 });
 
 async function loadYearEnd() {
@@ -138,7 +147,7 @@ function employeeName(id: number): string {
       :closable="false"
     >
       {{ yearEndText }}
-      <RouterLink :to="{ name: 'admin-payroll', query: { year: yearEnd.year } }">See payroll runs</RouterLink>
+      <RouterLink :to="{ name: 'admin-payroll', query: { year: yearEnd.year } }">See {{ yearEnd.year }} payrolls</RouterLink>
     </Message>
 
     <Message v-if="localTax && localTaxTodo.length > 0" severity="info" :closable="false">

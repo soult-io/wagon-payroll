@@ -64,9 +64,15 @@ const yearEndNotice = computed(() => {
   if (!["draft", "awaiting_approval", "approved"].includes(r.status)) return null;
   if (Number(r.payDate.slice(0, 4)) !== ye.year) return null;
   const y = ye.year;
-  return ye.phase === "december"
-    ? `This payroll's pay date is in ${y}. Issue it by December 31 so it counts in ${y}.`
-    : `This payroll's pay date is in ${y}, which has ended. It can't be issued yet. Keep your own record of the payment for your ${y} filings.`;
+  if (ye.phase === "december") {
+    return `This payroll's pay date is in ${y}. Issue it by ${date(`${y}-12-31`)} so it counts in ${y}.`;
+  }
+  const due = ye.closesOn
+    ? ` Your first ${y} year-end tax return is due by ${date(ye.closesOn)}.`
+    : "";
+  // PAY-193 L4 (late issue) will let a past-year payroll be issued: this
+  // text says it can't be, so it MUST change when L4 ships.
+  return `This payroll's pay date, ${date(r.payDate)}, is in ${y}, which has ended. Wagon Payroll can't add a payroll to ${y} yet, so this one can't be issued. If you paid it on that date, don't change the date. Keep your own record of the payment and make sure it's in your ${y} tax filings.${due}`;
 });
 
 async function loadYearEnd() {
@@ -153,8 +159,6 @@ onMounted(() => {
 
 <template>
   <div class="page stack">
-    <Message v-if="yearEndNotice" severity="warn" :closable="false">{{ yearEndNotice }}</Message>
-
     <PageHeader title="Run review" :subtitle="run ? `${employeeName} · ${date(run.periodStart)} – ${date(run.periodEnd)}` : undefined">
       <BackButton to="admin-payroll" label="Back to runs" />
       <template v-if="run">
@@ -163,6 +167,8 @@ onMounted(() => {
         <Button v-if="canVoid" label="Void" icon="pi pi-ban" severity="danger" outlined :loading="busy" @click="voidRun" />
       </template>
     </PageHeader>
+
+    <Message v-if="yearEndNotice" severity="warn" :closable="false">{{ yearEndNotice }}</Message>
 
     <Skeleton v-if="loading" height="20rem" />
 
