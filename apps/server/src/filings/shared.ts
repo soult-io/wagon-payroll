@@ -102,3 +102,23 @@ export function worksheetHash(worksheet: unknown): string {
     .update(JSON.stringify(canonical(worksheet)))
     .digest("hex");
 }
+
+/**
+ * Filing due date for a quarter: Apr 30 / Jul 31 / Oct 31 / Jan 31 (Q4 rolls
+ * into the next year), rolled forward to the next business day on weekends
+ * (federal-holiday roll is out of scope, same as deposits).
+ */
+export function filingDueDate(year: number, quarter: number): string {
+  const dueMonth: Record<number, [number, number]> = {
+    1: [year, 4],
+    2: [year, 7],
+    3: [year, 10],
+    4: [year + 1, 1],
+  };
+  const [y, m] = dueMonth[quarter]!;
+  const last = new Date(Date.UTC(y, m, 0));
+  while (last.getUTCDay() === 0 || last.getUTCDay() === 6) {
+    last.setUTCDate(last.getUTCDate() + 1);
+  }
+  return last.toISOString().slice(0, 10);
+}

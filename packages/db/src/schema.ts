@@ -33,6 +33,7 @@ import {
   pgTable,
   primaryKey,
   serial,
+  smallint,
   text,
   timestamp,
   unique,
@@ -721,16 +722,21 @@ export const taxDeposits = pgTable(
     periodKind: text("period_kind").notNull().default("month"),
     /** Set iff status = 'superseded' (the row was replaced by a period transition). */
     supersededAt: timestamp("superseded_at", { withTimezone: true }),
+    /**
+     * PAY-193 L3 (D9.6): 0 for a period's first row; a shortfall row for the
+     * same period takes max(seq of its live rows) + 1. Rows before 0026 are 0.
+     */
+    seq: smallint("seq").notNull().default(0),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (t) => [
     /**
-     * Spec 23 D2: one LIVE row per (jurisdiction, period_start, period_kind);
-     * superseded rows are kept for audit and may share a key.
+     * Spec 23 D2 + PAY-193 D9.6: one LIVE row per (jurisdiction, period_start,
+     * period_kind, seq); superseded rows are kept for audit and may share a key.
      */
-    uniqueIndex("tax_deposits_live_period_uniq")
-      .on(t.jurisdiction, t.periodStart, t.periodKind)
+    uniqueIndex("tax_deposits_live_period_seq_uniq")
+      .on(t.jurisdiction, t.periodStart, t.periodKind, t.seq)
       .where(sql`${t.status} <> 'superseded'`),
     check(
       "tax_deposits_status_check",
@@ -750,6 +756,7 @@ export const taxDeposits = pgTable(
       sql`(${t.status} = 'superseded') = (${t.supersededAt} IS NOT NULL) AND (${t.status} <> 'superseded' OR ${t.depositedOn} IS NULL)`,
     ),
     check("tax_deposits_amount_nonneg_check", sql`${t.amount} >= 0`),
+    check("tax_deposits_seq_check", sql`${t.seq} >= 0`),
   ],
 );
 

@@ -30,6 +30,7 @@ function r(
     dueDate,
     status,
     depositedOn: status === "deposited" ? "2026-09-05" : null,
+    seq: 0,
   };
 }
 const q3 = (over: Partial<QuarterInput>): QuarterInput => ({
@@ -77,7 +78,7 @@ describe("planMonthly — duplicate open month row", () => {
 });
 
 describe("planQuarterly — quarter already paid, open month rows present", () => {
-  it("supersedes every open month and open quarter row, inserts nothing", () => {
+  it("supersedes every open month row; inserts a seq 1 quarter row for ΣL − ΣD (PAY-193 D9.6)", () => {
     const p = planStateQuarter(
       q3({
         live: [
@@ -89,7 +90,17 @@ describe("planQuarterly — quarter already paid, open month rows present", () =
     );
     expect(p.supersede.sort((a, b) => a - b)).toEqual([2, 3]);
     expect(p.updates).toEqual([]);
-    expect(p.inserts).toEqual([]);
+    // 37,690 − 24,690 = 13,000, due 2026-11-02, today 2026-10-01 -> pending.
+    expect(p.inserts).toEqual([
+      {
+        kind: "quarter",
+        periodStart: "2026-07-01",
+        seq: 1,
+        cents: 13000,
+        dueDate: "2026-11-02",
+        status: "pending",
+      },
+    ]);
     expect(p.liabilityCents).toBe(37690);
     expect(p.overpaidCents).toBe(0);
     expect(p.overpaidAnchorId).toBeNull();

@@ -30,7 +30,7 @@ function row(
   depositedOn: string | null = null,
 ): LiveDepositRow {
   nextId += 1;
-  return { id: nextId, kind, periodStart, cents, dueDate, status, depositedOn };
+  return { id: nextId, kind, periodStart, cents, dueDate, status, depositedOn, seq: 0 };
 }
 
 function q3(over: Partial<QuarterInput>): QuarterInput {
@@ -56,6 +56,7 @@ describe("planStateQuarter — Case A (merge)", () => {
       {
         kind: "quarter",
         periodStart: "2026-07-01",
+        seq: 0,
         cents: 24690,
         dueDate: "2026-11-02",
         status: "pending",

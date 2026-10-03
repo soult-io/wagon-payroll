@@ -39,6 +39,7 @@ function row(
     dueDate,
     depositedOn:
       status === "deposited" ? `2026-10-${String((id % 28) + 1).padStart(2, "0")}` : null,
+    seq: 0,
   };
 }
 

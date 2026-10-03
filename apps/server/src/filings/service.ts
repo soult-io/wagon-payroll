@@ -48,6 +48,7 @@ import {
 import {
   addDays,
   DATE_RE,
+  filingDueDate,
   type Deps,
   FILING_CLOSE_LOCK,
   FilingServiceError,
@@ -63,6 +64,7 @@ import {
 // Re-exported: existing tests + routes import these from service.js.
 export {
   DATE_RE,
+  filingDueDate,
   FilingServiceError,
   MONEY_RE,
   type TaxAdjustmentRow,
@@ -99,26 +101,6 @@ export function quarterMonths(year: number, quarter: number): [number, number][]
 export function quarterEnd(year: number, quarter: number): string {
   const d = new Date(Date.UTC(year, quarter * 3, 0)); // day 0 of the following month
   return d.toISOString().slice(0, 10);
-}
-
-/**
- * Filing due date for a quarter: Apr 30 / Jul 31 / Oct 31 / Jan 31 (Q4 rolls
- * into the next year), rolled forward to the next business day on weekends
- * (federal-holiday roll is out of scope, same as deposits).
- */
-export function filingDueDate(year: number, quarter: number): string {
-  const dueMonth: Record<number, [number, number]> = {
-    1: [year, 4],
-    2: [year, 7],
-    3: [year, 10],
-    4: [year + 1, 1],
-  };
-  const [y, m] = dueMonth[quarter]!;
-  const last = new Date(Date.UTC(y, m, 0));
-  while (last.getUTCDay() === 0 || last.getUTCDay() === 6) {
-    last.setUTCDate(last.getUTCDate() + 1);
-  }
-  return last.toISOString().slice(0, 10);
 }
 
 /** "Q1 2026" — display label for a filing period. */

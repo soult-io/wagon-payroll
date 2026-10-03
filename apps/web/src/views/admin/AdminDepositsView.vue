@@ -23,6 +23,7 @@ import EmptyState from "../../components/EmptyState.vue";
 import StatusChip from "../../components/StatusChip.vue";
 import { jurisdictionLabel as sharedJurisdictionLabel } from "@payroll/shared";
 import { adminDepositsApi, type DepositAttachment, type TaxDepositRow } from "../../lib/api";
+import { isAdditionalDeposit, withAdditionalPrefix } from "../../lib/deposit-labels";
 import { useDates } from "../../composables/useDates";
 import { useMoney } from "../../composables/useMoney";
 import { useNotify } from "../../composables/useNotify";
@@ -65,6 +66,24 @@ function periodLabel(periodStart: string, periodKind?: "month" | "quarter"): str
   }
   const month = Number(periodStart.slice(5, 7));
   return `${monthName(month)} ${periodStart.slice(0, 4)}`;
+}
+
+/** PAY-193 D9.6: a shortfall row (seq > 0) reads "Additional deposit for {period}". */
+function rowPeriodLabel(row: Pick<TaxDepositRow, "periodStart" | "periodKind" | "seq">): string {
+  return withAdditionalPrefix(row, periodLabel(row.periodStart, row.periodKind));
+}
+
+/**
+ * PAY-193: newest period first; within a period, by jurisdiction, then seq,
+ * so an additional deposit sits right after the deposit it follows.
+ */
+function byPeriodJurisdictionSeq(a: TaxDepositRow, b: TaxDepositRow): number {
+  if (a.periodStart !== b.periodStart) return a.periodStart < b.periodStart ? 1 : -1;
+  // Federal first, then states by code.
+  const ja = a.jurisdiction === "federal" ? "" : a.jurisdiction;
+  const jb = b.jurisdiction === "federal" ? "" : b.jurisdiction;
+  if (ja !== jb) return ja < jb ? -1 : 1;
+  return a.seq - b.seq || b.id - a.id;
 }
 
 /** "California (CA)" / "Federal" — shared map (PAY-91 UX). */
@@ -121,7 +140,7 @@ async function load() {
     if (yearFilter.value) filter.year = yearFilter.value;
     if (jurisdictionFilter.value) filter.jurisdiction = jurisdictionFilter.value;
     const { deposits } = await adminDepositsApi.list(filter);
-    rows.value = deposits;
+    rows.value = [...deposits].sort(byPeriodJurisdictionSeq);
   } catch (err) {
     notify.error(err, "Could not load tax deposits");
   } finally {
@@ -186,10 +205,7 @@ async function submitDeposit() {
       depositedOn: iso,
       eftpsConfirmation: eftpsConfirmation.value.trim(),
     });
-    notify.success(
-      "Deposit recorded",
-      `${periodLabel(target.periodStart, target.periodKind)} marked as deposited.`,
-    );
+    notify.success("Deposit recorded", `${rowPeriodLabel(target)} marked as deposited.`);
     depositDialog.value = false;
     await load();
   } catch (err) {
@@ -389,7 +405,12 @@ onMounted(async () => {
           />
         </template>
         <Column field="periodStart" header="Period" style="width: 10rem" sortable>
-          <template #body="{ data }">{{ periodLabel(data.periodStart, data.periodKind) }}</template>
+          <template #body="{ data }">
+            {{ rowPeriodLabel(data) }}
+            <div v-if="isAdditionalDeposit(data)" class="muted small" data-testid="additional-line">
+              Extra payment — a payroll was added after this period was paid.
+            </div>
+          </template>
         </Column>
         <Column field="jurisdiction" header="Jurisdiction" style="width: 8rem" sortable sortField="jurisdiction">
   <template #body="{ data }">
@@ -489,7 +510,7 @@ onMounted(async () => {
     >
       <div v-if="attachTarget" class="stack">
         <p class="muted small" style="margin: 0">
-          {{ periodLabel(attachTarget.periodStart, attachTarget.periodKind) }} — {{ money(attachTarget.amount) }}.
+          {{ rowPeriodLabel(attachTarget) }} — {{ money(attachTarget.amount) }}.
           Payment confirmations from eftps.gov (acknowledgment PDFs / receipts). Stored encrypted;
           every download is audit-logged.
         </p>
@@ -545,7 +566,7 @@ onMounted(async () => {
     >
       <div v-if="depositTarget" class="stack">
         <p class="muted small">
-          {{ periodLabel(depositTarget.periodStart, depositTarget.periodKind) }} — {{ money(depositTarget.amount) }},
+          {{ rowPeriodLabel(depositTarget) }} — {{ money(depositTarget.amount) }},
           due {{ date(depositTarget.dueDate) }}. Pay on eftps.gov first; this records the deposit.
         </p>
         <div class="field">
@@ -577,7 +598,7 @@ onMounted(async () => {
     >
       <div v-if="confirmationTarget" class="stack">
         <p class="muted small">
-          {{ periodLabel(confirmationTarget.periodStart, confirmationTarget.periodKind) }}
+          {{ rowPeriodLabel(confirmationTarget) }}
         </p>
         <div class="field">
           <label>Deposited on</label>
