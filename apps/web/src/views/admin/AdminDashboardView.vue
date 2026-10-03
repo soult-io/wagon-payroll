@@ -19,6 +19,7 @@ import {
   type ChangeRequest,
   type LocalTaxCheck,
   type OutboxHealth,
+  type YearEndStatus,
 } from "../../lib/api";
 import { localityName, stateName } from "@payroll/shared";
 import { requestTypeLabel } from "../../composables/useRequestTypes";
@@ -69,6 +70,30 @@ function placeName(code: string | null): string {
   return code.includes("-") ? localityName(code) : stateName(code);
 }
 
+// PAY-193 (D9.8): year-end warning. Phase and year come only from the
+// server (company-local date), never from the browser clock.
+const yearEnd = ref<YearEndStatus | null>(null);
+const yearEndText = computed(() => {
+  const ye = yearEnd.value;
+  if (!ye?.phase || ye.year === null) return null;
+  const n = ye.openRuns.length;
+  const y = ye.year;
+  if (ye.phase === "december") {
+    const base = `Payrolls you pay in ${y} must be issued here by December 31 so they count in ${y}.`;
+    return n > 0 ? `${base} ${n} still to issue.` : base;
+  }
+  if (n === 0) return null;
+  return `${n} payrolls with ${y} pay dates weren't issued. They can't be added to ${y} yet. Keep your own record of them for your ${y} filings.`;
+});
+
+async function loadYearEnd() {
+  try {
+    yearEnd.value = await adminPayrollApi.yearEnd();
+  } catch {
+    yearEnd.value = null; // a reminder; the dashboard works without it
+  }
+}
+
 async function loadLocalTax() {
   try {
     localTax.value = await adminPayrollApi.localTaxCheck();
@@ -79,6 +104,7 @@ async function loadLocalTax() {
 
 onMounted(async () => {
   void loadLocalTax();
+  void loadYearEnd();
   try {
     const [runs, requests, health, employees] = await Promise.all([
       adminPayrollApi.runs({ status: "awaiting_approval" }),
@@ -105,6 +131,15 @@ function employeeName(id: number): string {
 <template>
   <div class="page stack">
     <PageHeader title="Admin dashboard" subtitle="Everything waiting on your decision." />
+
+    <Message
+      v-if="yearEnd && yearEndText"
+      :severity="yearEnd.openRuns.length > 0 ? 'warn' : 'info'"
+      :closable="false"
+    >
+      {{ yearEndText }}
+      <RouterLink :to="{ name: 'admin-payroll', query: { year: yearEnd.year } }">See payroll runs</RouterLink>
+    </Message>
 
     <Message v-if="localTax && localTaxTodo.length > 0" severity="info" :closable="false">
       <strong>New: tell us where each employee lives and works.</strong>

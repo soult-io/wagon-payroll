@@ -204,6 +204,15 @@ export interface NotificationSetting {
   enabled: boolean;
 }
 
+/** PAY-193 (D9.8): year-end warning window; dates are company-local, from the server. */
+export interface YearEndStatus {
+  today: string;
+  year: number | null;
+  phase: "december" | "after_year_end" | null;
+  closesOn: string | null;
+  openRuns: { publicId: string; payDate: string; status: RunStatus }[];
+}
+
 export interface PayrollRunRow {
   publicId: string;
   employeeId: number;
@@ -629,6 +638,7 @@ export const adminPayrollApi = {
   runs: (filter: { status?: RunStatus; employeeId?: number; year?: number } = {}) =>
     get<{ runs: PayrollRunRow[] }>(`/api/admin/payroll-runs${qs(filter)}`),
   run: (publicId: string) => get<{ run: PayrollRunRow }>(`/api/admin/payroll-runs/${publicId}`),
+  yearEnd: () => get<YearEndStatus>("/api/admin/payroll-runs/year-end"),
   generate: (input: { year: number; month: number; employeeId?: number }) =>
     post<{ generated: PayrollRunRow[]; skipped: { employeeId: number; reason: string }[] }>(
       "/api/admin/payroll-runs/generate",

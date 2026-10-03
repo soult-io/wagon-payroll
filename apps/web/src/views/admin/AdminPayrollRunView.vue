@@ -11,12 +11,18 @@ import Skeleton from "primevue/skeleton";
 import Dialog from "primevue/dialog";
 import Textarea from "primevue/textarea";
 import InputText from "primevue/inputtext";
+import Message from "primevue/message";
 import { useConfirm } from "primevue/useconfirm";
 import PageHeader from "../../components/PageHeader.vue";
 import BackButton from "../../components/BackButton.vue";
 import EmptyState from "../../components/EmptyState.vue";
 import StatusChip from "../../components/StatusChip.vue";
-import { adminEmployeesApi, adminPayrollApi, type PayrollRunRow } from "../../lib/api";
+import {
+  adminEmployeesApi,
+  adminPayrollApi,
+  type PayrollRunRow,
+  type YearEndStatus,
+} from "../../lib/api";
 import { useMoney } from "../../composables/useMoney";
 import { useDates } from "../../composables/useDates";
 import { useNotify } from "../../composables/useNotify";
@@ -47,6 +53,29 @@ const canIssue = computed(() => run.value?.status === "approved");
 const canVoid = computed(
   () => run.value && ["draft", "awaiting_approval", "approved"].includes(run.value.status),
 );
+
+// PAY-193 (D9.8): year-end notice for a run still to issue with a pay date in
+// the warning's year. Phase and year come only from the server.
+const yearEnd = ref<YearEndStatus | null>(null);
+const yearEndNotice = computed(() => {
+  const ye = yearEnd.value;
+  const r = run.value;
+  if (!ye?.phase || ye.year === null || !r) return null;
+  if (!["draft", "awaiting_approval", "approved"].includes(r.status)) return null;
+  if (Number(r.payDate.slice(0, 4)) !== ye.year) return null;
+  const y = ye.year;
+  return ye.phase === "december"
+    ? `This payroll's pay date is in ${y}. Issue it by December 31 so it counts in ${y}.`
+    : `This payroll's pay date is in ${y}, which has ended. It can't be issued yet. Keep your own record of the payment for your ${y} filings.`;
+});
+
+async function loadYearEnd() {
+  try {
+    yearEnd.value = await adminPayrollApi.yearEnd();
+  } catch {
+    yearEnd.value = null; // a reminder; the run view works without it
+  }
+}
 
 async function load() {
   try {
@@ -116,11 +145,16 @@ async function confirmVoid() {
   await act("void", voidReason.value.trim());
 }
 
-onMounted(load);
+onMounted(() => {
+  void loadYearEnd();
+  void load();
+});
 </script>
 
 <template>
   <div class="page stack">
+    <Message v-if="yearEndNotice" severity="warn" :closable="false">{{ yearEndNotice }}</Message>
+
     <PageHeader title="Run review" :subtitle="run ? `${employeeName} · ${date(run.periodStart)} – ${date(run.periodEnd)}` : undefined">
       <BackButton to="admin-payroll" label="Back to runs" />
       <template v-if="run">
