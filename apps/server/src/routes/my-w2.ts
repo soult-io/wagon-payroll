@@ -100,13 +100,20 @@ export function registerMyW2Routes(app: FastifyInstance, deps: Deps): void {
     const userId = req.authUser!.id;
     const years = await listMyW2Years(db, userId);
     const employee = years.length > 0 ? await myEmployee(db, userId) : null;
+    const consented = employee ? (await w2ConsentStatus(db, employee.id)).consented : false;
     const w2s = [];
     for (const year of years) {
       // PAY-162 (D2): a bare ready flag — never why a W-2 is not ready.
       const ready = employee ? await isMyW2Ready(db, employee.id, year) : false;
       // PAY-206 (R7): a bare corrected flag — no reasons, no dates of change.
       const corrected = employee && ready ? await isMyW2Corrected(db, employee.id, year) : false;
-      w2s.push({ year, availableOn: w2AvailableOn(year), ready, corrected });
+      // PAY-206 (D9): the same gate as the PDF route — an active consent, or
+      // a year furnished electronically still inside its access window.
+      const downloadable =
+        employee !== null &&
+        ready &&
+        (consented || (await electronicAccessAfterWithdrawal(db, employee.id, year, today())));
+      w2s.push({ year, availableOn: w2AvailableOn(year), ready, corrected, downloadable });
     }
     return { w2s };
   });

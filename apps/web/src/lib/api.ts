@@ -1380,6 +1380,11 @@ export interface MyW2Year {
   ready: boolean;
   /** PAY-206 — this W-2 replaces one with other figures (bare flag). */
   corrected: boolean;
+  /**
+   * PAY-206 (D9) — the PDF can be downloaded now: ready, and an active
+   * consent or a year already furnished online inside its access window.
+   */
+  downloadable: boolean;
 }
 
 /** PAY-162 — a filing-level block issue on the tax-filings list. */
