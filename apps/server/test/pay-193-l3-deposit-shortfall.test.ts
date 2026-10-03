@@ -79,10 +79,12 @@ import {
   getDepositDetail,
   listDeposits,
   markDeposited,
+  sendDepositReminders,
   syncDeposits,
   type SyncResult,
 } from "../src/deposits/service.js";
-import { runMigrations } from "./helpers.js";
+import { monthCalendar } from "../src/calendar/service.js";
+import { createTestApp, runMigrations, type TestContext } from "./helpers.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 function workspaceRoot(from: string): string {
@@ -917,5 +919,545 @@ describe("S-D9 L3 migration on main-shaped rows", () => {
     } finally {
       await pg.close();
     }
+  });
+});
+
+// ===========================================================================
+// L3 review round (Product Lead decisions after code review + UX review).
+// Fail-first. Interfaces the code must meet:
+//
+//  R1 getDepositDetail (GET /api/admin/tax-deposits/:id returns it verbatim):
+//     siblings: { id: number; seq: number; status: string; amount: "0.00" }[]
+//       = the period's OTHER live rows (same jurisdiction, period_start,
+//         period_kind; superseded excluded; this row excluded), seq ascending.
+//     alreadyDeposited: "0.00" string = Σ siblings with status deposited or
+//       overdue (federal F of D9.6). On a seq > 0 row:
+//       liability − alreadyDeposited = deposit.amount.
+//     additionalDeposit: { id: number; amount: "0.00" } | null — on a seq 0
+//       row, its live seq > 0 sibling (null when there is none).
+//  R2 syncFederalDeposit's pending-row UPDATE is guarded by status = 'pending':
+//     a row deposited between the read and the UPDATE keeps its amount.
+//  R3 every seq > 0 insert (federal and state) enqueues one email_outbox row
+//     per active admin. Subject (after the "{company} — " prefix every
+//     template carries): "Additional {stateName(j)} tax deposit for
+//     {periodLabel(start, kind)}" — "Federal" / "Illinois"; "December 2026" /
+//     "Q4 2026". Body: the copy sentences, no amount; "It is already past its
+//     due date." only when inserted overdue. seq 0 inserts, growth of an open
+//     seq > 0 row, and a no-op sync send nothing.
+//  R4 calendar labels and the reminder subject of a seq > 0 row start with
+//     "Additional " (subject: after the "{company} — " prefix).
+//  R5 GET /api/export/tax-deposits rows carry `seq` (number).
+//
+// Cents below come from the oracle in the header (A/B/C, never the engine).
+// ===========================================================================
+
+interface Sibling {
+  id: number;
+  seq: number;
+  status: string;
+  amount: string;
+}
+interface ReviewDetail {
+  deposit: { id: number; amount: string; seq?: number };
+  liability: string;
+  siblings?: Sibling[];
+  alreadyDeposited?: string;
+  additionalDeposit?: { id: number; amount: string } | null;
+}
+
+async function detail(id: number): Promise<ReviewDetail> {
+  const d = await getDepositDetail(E.db, id);
+  if (!d) throw new Error(`no detail for ${id}`);
+  return d as unknown as ReviewDetail;
+}
+
+/** Federal: A deposited (seq 0), then B -> seq 1 pending. Returns [seq0 id, seq1 id]. */
+async function fedSeq1Pending(): Promise<[number, number]> {
+  await issue(A, "2026-12-15", null);
+  await sync("2027-01-08");
+  const r0 = await liveRow("federal", DEC, 0);
+  await deposit(r0.id, "2027-01-08", "EFTPS-SYN-L3-R1");
+  await issue(B, "2026-12-31", null);
+  await sync("2027-01-10");
+  return [r0.id, (await liveRow("federal", DEC, 1)).id];
+}
+
+describe("PAY-193 L3 review R1 — detail lists the period's other rows", () => {
+  it("federal seq 1: siblings = [seq 0 deposited 910.33]; alreadyDeposited 910.33; liability 1,411.16 − 910.33 = amount 500.83", async () => {
+    const [id0, id1] = await fedSeq1Pending();
+    const d = await detail(id1);
+    expect({
+      amount: d.deposit.amount,
+      liability: d.liability,
+      siblings: d.siblings,
+      alreadyDeposited: d.alreadyDeposited,
+    }).toEqual({
+      amount: money(FED_B),
+      liability: money(FED_A + FED_B),
+      siblings: [{ id: id0, seq: 0, status: "deposited", amount: money(FED_A) }],
+      alreadyDeposited: money(FED_A),
+    });
+    expect(cents(d.liability) - cents(d.alreadyDeposited ?? "missing")).toBe(
+      cents(d.deposit.amount),
+    );
+  });
+
+  it("federal seq 0 with a live seq 1: additionalDeposit = {seq 1 id, 500.83}; siblings = [seq 1 pending]; alreadyDeposited 0.00", async () => {
+    const [id0, id1] = await fedSeq1Pending();
+    const d = await detail(id0);
+    expect({
+      additionalDeposit: d.additionalDeposit,
+      siblings: d.siblings,
+      alreadyDeposited: d.alreadyDeposited,
+    }).toEqual({
+      additionalDeposit: { id: id1, amount: money(FED_B) },
+      siblings: [{ id: id1, seq: 1, status: "pending", amount: money(FED_B) }],
+      alreadyDeposited: "0.00",
+    });
+  });
+
+  it("federal seq 0 alone: additionalDeposit null, siblings [], alreadyDeposited 0.00", async () => {
+    await issue(A, "2026-12-15", null);
+    await sync("2027-01-08");
+    const d = await detail((await liveRow("federal", DEC, 0)).id);
+    expect({
+      additionalDeposit: d.additionalDeposit,
+      siblings: d.siblings,
+      alreadyDeposited: d.alreadyDeposited,
+    }).toEqual({ additionalDeposit: null, siblings: [], alreadyDeposited: "0.00" });
+  });
+
+  it("federal seq 2: siblings seq 0 + seq 1 deposited; alreadyDeposited 1,411.16; liability 1,732.39 − 1,411.16 = 321.23", async () => {
+    const [id0, id1] = await fedSeq1Pending();
+    await deposit(id1, "2027-01-12", "EFTPS-SYN-L3-R2");
+    await issue(C, "2026-12-31", null);
+    await sync("2027-01-13");
+    const id2 = (await liveRow("federal", DEC, 2)).id;
+    const d = await detail(id2);
+    expect({
+      amount: d.deposit.amount,
+      liability: d.liability,
+      siblings: d.siblings,
+      alreadyDeposited: d.alreadyDeposited,
+    }).toEqual({
+      amount: money(FED_C),
+      liability: money(FED_A + FED_B + FED_C),
+      siblings: [
+        { id: id0, seq: 0, status: "deposited", amount: money(FED_A) },
+        { id: id1, seq: 1, status: "deposited", amount: money(FED_B) },
+      ],
+      alreadyDeposited: money(FED_A + FED_B),
+    });
+  });
+
+  it("federal: an overdue sibling counts as already deposited (F of D9.6) — seq 2 overdue, alreadyDeposited = A + B", async () => {
+    const [id0, id1] = await fedSeq1Pending();
+    await sync("2027-01-20"); // seq 1 flips overdue
+    await issue(C, "2026-12-31", null);
+    await sync("2027-01-21");
+    const d = await detail((await liveRow("federal", DEC, 2)).id);
+    expect({ siblings: d.siblings, alreadyDeposited: d.alreadyDeposited }).toEqual({
+      siblings: [
+        { id: id0, seq: 0, status: "deposited", amount: money(FED_A) },
+        { id: id1, seq: 1, status: "overdue", amount: money(FED_B) },
+      ],
+      alreadyDeposited: money(FED_A + FED_B),
+    });
+    expect(cents(d.liability) - cents(d.alreadyDeposited ?? "missing")).toBe(FED_C);
+  });
+
+  it("IL monthly seq 1: siblings = [seq 0 deposited 185.93]; liability 297.61 − 185.93 = 111.68", async () => {
+    await issue(A, "2026-12-15");
+    await sync("2027-01-08");
+    const r0 = await liveRow("IL", DEC, 0);
+    await deposit(r0.id, "2027-01-08", "IL-SYN-L3-R1");
+    await issue(B, "2026-12-31");
+    await sync("2027-01-10");
+    const id1 = (await liveRow("IL", DEC, 1)).id;
+    const d = await detail(id1);
+    expect({
+      amount: d.deposit.amount,
+      liability: d.liability,
+      siblings: d.siblings,
+      alreadyDeposited: d.alreadyDeposited,
+    }).toEqual({
+      amount: money(IL_B),
+      liability: money(IL_A + IL_B),
+      siblings: [{ id: r0.id, seq: 0, status: "deposited", amount: money(IL_A) }],
+      alreadyDeposited: money(IL_A),
+    });
+    const d0 = await detail(r0.id);
+    expect(d0.additionalDeposit).toEqual({ id: id1, amount: money(IL_B) });
+  });
+
+  it("IL quarterly seq 1: liability 669.47 − alreadyDeposited 557.79 = 111.68; seq 0 quarter row links it", async () => {
+    await setSchedule("IL", 2026, "quarterly", null);
+    await issue(A, "2026-10-30");
+    await issue(A, "2026-11-30");
+    await issue(A, "2026-12-15");
+    await sync("2027-01-08");
+    const q0 = await liveRow("IL", Q4, 0);
+    await deposit(q0.id, "2027-01-08", "IL-SYN-Q4-R1");
+    await issue(B, "2026-12-31");
+    await sync("2027-01-10");
+    const q1 = await liveRow("IL", Q4, 1);
+    const d = await detail(q1.id);
+    expect({
+      amount: d.deposit.amount,
+      liability: d.liability,
+      siblings: d.siblings,
+      alreadyDeposited: d.alreadyDeposited,
+    }).toEqual({
+      amount: money(IL_B),
+      liability: money(3 * IL_A + IL_B),
+      siblings: [{ id: q0.id, seq: 0, status: "deposited", amount: money(3 * IL_A) }],
+      alreadyDeposited: money(3 * IL_A),
+    });
+    expect((await detail(q0.id)).additionalDeposit).toEqual({ id: q1.id, amount: money(IL_B) });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R2 — race guard on the federal pending-row UPDATE (recorder/hook pattern of
+// pay-193-l1-filed-guard.test.ts; PGlite is one connection, so the hook stands
+// in for a markDeposited that lands between the sync's read and its UPDATE).
+// ---------------------------------------------------------------------------
+
+type RawClient = { query: (text: string, params?: unknown[], opts?: unknown) => Promise<unknown> };
+
+async function withUpdateHook<T>(
+  match: (text: string, params: unknown[]) => boolean,
+  run: (client: RawClient) => Promise<void>,
+  fn: () => Promise<T>,
+): Promise<{ value: T; fired: boolean }> {
+  const pg = E.pg as unknown as {
+    transaction: (cb: (client: RawClient) => Promise<unknown>) => Promise<unknown>;
+  };
+  const orig = pg.transaction;
+  let fired = false;
+  pg.transaction = async (cb) =>
+    orig.call(E.pg, async (client: RawClient) => {
+      const wrapped = new Proxy(client as object, {
+        get(target, prop) {
+          if (prop === "query") {
+            return async (text: string, params?: unknown[], opts?: unknown) => {
+              if (!fired && match(text, params ?? [])) {
+                fired = true;
+                await run(target as RawClient);
+              }
+              return (target as RawClient).query(text, params, opts);
+            };
+          }
+          const v = Reflect.get(target, prop) as unknown;
+          return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+        },
+      });
+      return cb(wrapped as RawClient);
+    });
+  try {
+    return { value: await fn(), fired };
+  } finally {
+    pg.transaction = orig;
+  }
+}
+
+describe("PAY-193 L3 review R2 — sync never overwrites a row deposited after its read", () => {
+  it("seq 0 pending 910.33 is deposited just before the sync's UPDATE to 1,411.16 -> stays 910.33 deposited; next sync puts 500.83 on seq 1", async () => {
+    await issue(A, "2026-12-15", null);
+    await sync("2027-01-08");
+    const r0 = await liveRow("federal", DEC, 0);
+    expect([r0.c, r0.status]).toEqual([FED_A, "pending"]);
+    await issue(B, "2026-12-31", null);
+
+    const { fired } = await withUpdateHook(
+      (text, params) =>
+        /^\s*update\s+"?tax_deposits"?/i.test(text) && params.includes(money(FED_A + FED_B)),
+      async (client) => {
+        await client.query(
+          `UPDATE tax_deposits SET status = 'deposited', deposited_on = '2027-01-09',
+                  eftps_confirmation = 'EFTPS-SYN-L3-RACE' WHERE id = $1`,
+          [r0.id],
+        );
+      },
+      () => sync("2027-01-09"),
+    );
+    expect(fired, "hook reached the sync's pending-row UPDATE").toBe(true);
+    const after = await liveRow("federal", DEC, 0);
+    expect([after.id, after.c, after.status, after.on, after.conf]).toEqual([
+      r0.id,
+      FED_A,
+      "deposited",
+      "2027-01-09",
+      "EFTPS-SYN-L3-RACE",
+    ]);
+
+    await sync("2027-01-10");
+    expect(await live("federal")).toEqual([
+      `0 month ${DEC} ${FED_A} ${FED_DUE} deposited`,
+      `1 month ${DEC} ${FED_B} ${FED_DUE} pending`,
+    ]);
+    await invariants();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R3 — admin email on shortfall creation
+// ---------------------------------------------------------------------------
+
+const OVERDUE_LINE = "It is already past its due date.";
+
+async function ensureAdmins(): Promise<string[]> {
+  const put = (id: string, role: string, banned: boolean) =>
+    E.pg.query(
+      `INSERT INTO "user" (id, name, email, "emailVerified", role, banned)
+       VALUES ($1, $1, $1 || '@l3-review.test', true, $2, $3) ON CONFLICT (id) DO NOTHING`,
+      [id, role, banned],
+    );
+  await put("l3-admin-1", "admin", false);
+  await put("l3-admin-2", "admin", false);
+  await put("l3-admin-banned", "admin", true);
+  await put("l3-employee", "user", false);
+  const r = await E.pg.query<{ id: string }>(
+    `SELECT id FROM "user" WHERE role = 'admin' AND coalesce(banned, false) = false ORDER BY id`,
+  );
+  return r.rows.map((x) => x.id);
+}
+
+interface Mail {
+  userId: string;
+  subject: string;
+  body: string;
+}
+async function outbox(): Promise<Mail[]> {
+  const r = await E.pg.query<Mail>(
+    `SELECT user_id AS "userId", subject, body_html AS body FROM email_outbox ORDER BY id`,
+  );
+  return r.rows;
+}
+
+/** Subject without the "{company} — " prefix every template carries. */
+function bare(subject: string): string {
+  const i = subject.indexOf(" — ");
+  return i < 0 ? subject : subject.slice(i + 3);
+}
+
+function expectShortfallMail(
+  mails: Mail[],
+  admins: string[],
+  j: string,
+  period: string,
+  overdue: boolean,
+): void {
+  expect(mails.map((m) => m.userId).sort()).toEqual([...admins].sort());
+  for (const m of mails) {
+    expect(bare(m.subject)).toBe(`Additional ${j} tax deposit for ${period}`);
+    expect(m.body).toContain(
+      `A payroll for ${period} was issued after the ${j} deposit for that period was made.`,
+    );
+    expect(m.body).toContain("added an additional deposit for the difference.");
+    expect(m.body).toContain("Open Tax deposits to see the amount and due date.");
+    expect(m.body.includes(OVERDUE_LINE)).toBe(overdue);
+    expect(m.body, "no amount in the mail").not.toMatch(/\$/);
+    expect(m.body, "no amount in the mail").not.toMatch(/\d+\.\d{2}/);
+    expect(m.subject).not.toMatch(/\$|\d+\.\d{2}/);
+  }
+}
+
+describe("PAY-193 L3 review R3 — admin email when a shortfall row is created", () => {
+  it("federal seq 1 inserted pending: one mail per active admin, 'Additional Federal tax deposit for December 2026', no overdue line; seq 0 insert sent none", async () => {
+    const admins = await ensureAdmins();
+    expect(admins).toEqual(expect.arrayContaining(["l3-admin-1", "l3-admin-2"]));
+    await issue(A, "2026-12-15", null);
+    await sync("2027-01-08");
+    expect(await outbox(), "seq 0 insert sends no shortfall mail").toEqual([]);
+    await deposit((await liveRow("federal", DEC, 0)).id, "2027-01-08", "EFTPS-SYN-L3-M1");
+    await issue(B, "2026-12-31", null);
+    await sync("2027-01-10");
+    expectShortfallMail(await outbox(), admins, "Federal", "December 2026", false);
+  });
+
+  it("federal seq 1 inserted overdue: body carries 'It is already past its due date.'", async () => {
+    const admins = await ensureAdmins();
+    await issue(A, "2026-12-15", null);
+    await sync("2027-01-20"); // seq 0 overdue, frozen
+    await E.pg.exec(`TRUNCATE email_outbox`);
+    await issue(B, "2026-12-31", null);
+    await sync("2027-01-20");
+    expectShortfallMail(await outbox(), admins, "Federal", "December 2026", true);
+  });
+
+  it("idempotent: a second sync, and seq 1 growing with a further run, add no mail", async () => {
+    const admins = await ensureAdmins();
+    await fedSeq1Pending();
+    const n = (await outbox()).length;
+    expect(n).toBe(admins.length);
+    await sync("2027-01-10");
+    expect(await outbox()).toHaveLength(n);
+    await issue(C, "2026-12-31", null);
+    await sync("2027-01-11"); // seq 1 grows, no insert
+    expect(await outbox()).toHaveLength(n);
+  });
+
+  it("a second shortfall row (seq 2) sends its own mail", async () => {
+    const admins = await ensureAdmins();
+    const [, id1] = await fedSeq1Pending();
+    await deposit(id1, "2027-01-12", "EFTPS-SYN-L3-M2");
+    await E.pg.exec(`TRUNCATE email_outbox`);
+    await issue(C, "2026-12-31", null);
+    await sync("2027-01-13");
+    expectShortfallMail(await outbox(), admins, "Federal", "December 2026", false);
+  });
+
+  it("IL monthly seq 1: 'Additional Illinois tax deposit for December 2026'; overdue line only when inserted overdue", async () => {
+    const admins = await ensureAdmins();
+    await issue(A, "2026-12-15");
+    await sync("2027-01-08");
+    await deposit((await liveRow("IL", DEC, 0)).id, "2027-01-08", "IL-SYN-L3-M1");
+    await deposit((await liveRow("federal", DEC, 0)).id, "2027-01-08", "EFTPS-SYN-L3-M3");
+    await E.pg.exec(`TRUNCATE email_outbox`);
+    await issue(B, "2026-12-31");
+    await sync("2027-01-20"); // both seq 1 rows inserted overdue (due 2027-01-15)
+    const mails = await outbox();
+    expectShortfallMail(
+      mails.filter((m) => bare(m.subject).includes("Illinois")),
+      admins,
+      "Illinois",
+      "December 2026",
+      true,
+    );
+    expectShortfallMail(
+      mails.filter((m) => bare(m.subject).includes("Federal")),
+      admins,
+      "Federal",
+      "December 2026",
+      true,
+    );
+    expect(mails).toHaveLength(2 * admins.length);
+    await sync("2027-01-20");
+    expect(await outbox()).toHaveLength(2 * admins.length);
+  });
+
+  it("IL quarterly seq 1: 'Additional Illinois tax deposit for Q4 2026', pending (due 2027-02-01)", async () => {
+    const admins = await ensureAdmins();
+    await setSchedule("IL", 2026, "quarterly", null);
+    await issue(A, "2026-10-30", "IL");
+    await issue(A, "2026-11-30", "IL");
+    await issue(A, "2026-12-15", "IL");
+    await sync("2027-01-08");
+    await deposit((await liveRow("IL", Q4, 0)).id, "2027-01-08", "IL-SYN-Q4-M1");
+    await E.pg.exec(`TRUNCATE email_outbox`);
+    await issue(B, "2026-12-31");
+    await sync("2027-01-10");
+    // Federal December seq 0 is still pending (never deposited): it grows, no mail.
+    expectShortfallMail(await outbox(), admins, "Illinois", "Q4 2026", false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R4 — calendar labels and reminder subject
+// ---------------------------------------------------------------------------
+
+describe("PAY-193 L3 review R4 — 'Additional ' on calendar entries and reminders", () => {
+  it("calendar January 2027: seq 1 due -> 'Additional 941 deposit due — December 2026'; seq 0 keeps '941 deposit due — December 2026'", async () => {
+    const [, id1] = await fedSeq1Pending();
+    const events = await monthCalendar(E.db, 2027, 1);
+    const due = events
+      .filter((e) => e.kind === "deposit_due")
+      .map((e) => [(e.link?.params as { id?: number } | undefined)?.id, e.label]);
+    expect(due).toEqual(
+      expect.arrayContaining([[id1, "Additional 941 deposit due — December 2026"]]),
+    );
+    expect(due.filter(([id]) => id !== id1).map(([, l]) => l)).toEqual([
+      "941 deposit due — December 2026",
+    ]);
+  });
+
+  it("calendar: seq 1 made -> 'Additional 941 deposit made — December 2026'; IL seq 1 due -> 'Additional Illinois deposit due — December 2026'", async () => {
+    await issue(A, "2026-12-15");
+    await sync("2027-01-08");
+    await deposit((await liveRow("federal", DEC, 0)).id, "2027-01-08", "EFTPS-SYN-L3-C1");
+    await deposit((await liveRow("IL", DEC, 0)).id, "2027-01-08", "IL-SYN-L3-C1");
+    await issue(B, "2026-12-31");
+    await sync("2027-01-10");
+    const f1 = (await liveRow("federal", DEC, 1)).id;
+    const il1 = (await liveRow("IL", DEC, 1)).id;
+    await deposit(f1, "2027-01-12", "EFTPS-SYN-L3-C2");
+    const events = await monthCalendar(E.db, 2027, 1);
+    const label = (kind: string, id: number) =>
+      events
+        .filter(
+          (e) => e.kind === kind && (e.link?.params as { id?: number } | undefined)?.id === id,
+        )
+        .map((e) => e.label);
+    expect(label("deposit_made", f1)).toEqual(["Additional 941 deposit made — December 2026"]);
+    expect(label("deposit_due", il1)).toEqual(["Additional Illinois deposit due — December 2026"]);
+  });
+
+  it("reminder (offset 5, today 2027-01-10) for a seq 1 row: subject starts 'Additional '", async () => {
+    const admins = await ensureAdmins();
+    await fedSeq1Pending();
+    await E.pg.exec(`TRUNCATE email_outbox`);
+    const res = await sendDepositReminders({ db: E.db, config: E.config }, { today: "2027-01-10" });
+    expect(res.sent).toBe(1);
+    const mails = await outbox();
+    expect(mails).toHaveLength(admins.length);
+    for (const m of mails) expect(bare(m.subject)).toMatch(/^Additional /);
+  });
+
+  it("reminder for a seq 0 row does not say 'Additional'", async () => {
+    await ensureAdmins();
+    await issue(A, "2026-12-15", null);
+    await sync("2027-01-08");
+    await E.pg.exec(`TRUNCATE email_outbox`);
+    await sendDepositReminders({ db: E.db, config: E.config }, { today: "2027-01-10" });
+    const mails = await outbox();
+    expect(mails.length).toBeGreaterThan(0);
+    for (const m of mails) expect(m.subject).not.toMatch(/Additional/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R5 — export rows carry seq (own app + DB; synthetic rows)
+// ---------------------------------------------------------------------------
+
+describe("PAY-193 L3 review R5 — GET /api/export/tax-deposits includes seq", () => {
+  const TOKEN = "test-export-token-pay193-l3-0123456789";
+  let t: TestContext;
+
+  beforeAll(async () => {
+    t = await createTestApp({ exportToken: TOKEN });
+    await t.pglite.query(
+      `INSERT INTO tax_deposits (jurisdiction, period_start, period_kind, seq, amount, due_date, status, deposited_on, eftps_confirmation, created_by)
+       VALUES ('federal', '2026-12-01', 'month', 0, '910.33', '2027-01-15', 'deposited', '2027-01-08', 'EFTPS-SYN-L3-X1', 'scheduler'),
+              ('federal', '2026-12-01', 'month', 1, '500.83', '2027-01-15', 'pending', NULL, NULL, 'scheduler'),
+              ('IL', '2026-12-01', 'month', 0, '185.93', '2027-01-15', 'deposited', '2027-01-08', 'IL-SYN-L3-X1', 'scheduler'),
+              ('IL', '2026-12-01', 'month', 1, '111.68', '2027-01-15', 'overdue', NULL, NULL, 'scheduler')`,
+    );
+  }, 180_000);
+
+  afterAll(async () => {
+    await t?.close();
+  });
+
+  it("every row has seq; (jurisdiction, seq, amountCents) match the stored rows", async () => {
+    const res = await t.app.inject({
+      method: "GET",
+      url: "/api/export/tax-deposits?from=2026-12-01&to=2026-12-01",
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    const body = res.json() as {
+      deposits: { jurisdiction: string; seq?: number; amountCents: number }[];
+    };
+    expect(
+      body.deposits
+        .map((d) => [d.jurisdiction, d.seq, d.amountCents])
+        .sort((a, b) => (`${a[0]}${a[1]}` < `${b[0]}${b[1]}` ? -1 : 1)),
+    ).toEqual([
+      ["IL", 0, IL_A],
+      ["IL", 1, IL_B],
+      ["federal", 0, FED_A],
+      ["federal", 1, FED_B],
+    ]);
   });
 });
