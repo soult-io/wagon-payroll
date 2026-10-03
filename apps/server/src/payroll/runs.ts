@@ -15,7 +15,6 @@ import {
   payrollEntries,
   payrollRuns,
   paySchedules,
-  w2DeliveryConsents,
 } from "@payroll/db";
 import {
   calculatePayroll,
@@ -32,7 +31,6 @@ import {
   payrollDraftReady as tplPayrollDraftReady,
   payslipIssued as tplPayslipIssued,
   type TemplateContext,
-  w2Changed as tplW2Changed,
 } from "@payroll/notifications";
 import { parseCents } from "@payroll/shared";
 import type { Db } from "../db.js";
@@ -63,7 +61,7 @@ import {
   lateIssueAllowed,
   stateReturnJurisdictions,
 } from "../filings/closing-filings.js";
-import { isW2Available, notifiedYears } from "../filings/annual.js";
+import { furnishCorrectionIfNeeded } from "../filings/w2-furnish.js";
 import { refreshFilingsForPayDate } from "../filings/service.js";
 import { FILING_CLOSE_LOCK } from "../filings/shared.js";
 import { lockEmployee } from "./locks.js";
@@ -948,54 +946,6 @@ async function assertLateIssueConfirmed(
   return { trigger, taxYear, questions, latePayment };
 }
 
-/** True when the employee has an electronic W-2 delivery consent that is not withdrawn. */
-async function hasElectronicW2Consent(tx: DbLike, employeeId: number): Promise<boolean> {
-  const rows = await tx
-    .select({ id: w2DeliveryConsents.id })
-    .from(w2DeliveryConsents)
-    .where(
-      and(eq(w2DeliveryConsents.employeeId, employeeId), isNull(w2DeliveryConsents.withdrawnAt)),
-    )
-    .limit(1);
-  return rows.length > 0;
-}
-
-/**
- * L4.7 + PL round 2: the W-2 changed follow-up — only when the year's W-2 is
- * available and its w2_available notice already went out, for a W-2
- * employee. Consented to electronic delivery → the corrected-W-2 email and
- * `w2_changed_notice_sent`. Otherwise (no consent, consent withdrawn, or no
- * login — which can never have consented) → `w2_paper_correction_needed`,
- * plus a paper courtesy notice when the employee has a login. Returns the
- * follow-up code, or null.
- */
-async function notifyW2Changed(
-  tx: Tx,
-  config: AppConfig,
-  run: RunRow,
-  taxYear: number,
-  today: string,
-): Promise<"w2_changed_notice_sent" | "w2_paper_correction_needed" | null> {
-  if (!isW2Available(taxYear, today)) return null;
-  if (!(await notifiedYears(tx)).includes(taxYear)) return null;
-  const rows = await tx.select().from(employees).where(eq(employees.id, run.employeeId)).limit(1);
-  const employee = rows[0];
-  if (employee?.employmentType !== "w2") return null;
-  if (!employee.userId) return "w2_paper_correction_needed";
-  const consented = await hasElectronicW2Consent(tx as DbLike, employee.id);
-  const rendered = tplW2Changed(await templateContext(tx as DbLike, config), {
-    taxYear,
-    consented,
-  });
-  await tx.insert(emailOutbox).values({
-    userId: employee.userId,
-    eventType: EVENT_TYPE.w2Changed,
-    subject: rendered.subject,
-    bodyHtml: rendered.html,
-  });
-  return consented ? "w2_changed_notice_sent" : "w2_paper_correction_needed";
-}
-
 /**
  * L4.5 steps 6–9 for a late run, after the run.issue audit: refresh the
  * unfiled closing worksheets, sync the pay-date period's deposits under
@@ -1016,7 +966,10 @@ async function applyLateIssueEffects(
     today,
     actorId,
   });
-  const w2Code = await notifyW2Changed(tx, config, run, late.taxYear, today);
+  // PAY-206 (R6): the gate is the furnishing record, not the notified-years
+  // proxy — only an employee who could hold a copy with other figures gets
+  // a follow-up (the run's own employee lock is held).
+  const w2Code = await furnishCorrectionIfNeeded(tx, config, run.employeeId, late.taxYear, today);
   if (w2Code) followUps.push(w2Code);
   const { latePayment } = late;
   await tx.insert(auditEvents).values({

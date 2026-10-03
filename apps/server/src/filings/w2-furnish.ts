@@ -368,7 +368,7 @@ export async function reconcileW2Furnishings(
   deps: Deps,
   opts: { today?: string } = {},
 ): Promise<{ checked: number; followUps: number }> {
-  const today = opts.today ?? todayIso();
+  const today = opts.today ?? localDate(new Date(), deps.config.appTz);
   const pairs = await deps.db
     .selectDistinct({ employeeId: w2Furnishings.employeeId, taxYear: w2Furnishings.taxYear })
     .from(w2Furnishings)
@@ -434,7 +434,7 @@ export async function backfillW2Furnishings(
     .where(eq(appSettings.key, BACKFILLED_KEY))
     .limit(1);
   if (flag.length > 0) return { inserted: 0, skipped: true };
-  const today = opts.today ?? todayIso();
+  const today = opts.today ?? localDate(new Date(), deps.config.appTz);
   let inserted = 0;
   for (const year of await notifiedYears(db)) {
     if (!isW2Available(year, today) || (await w2w3Filed(db, year))) continue;
