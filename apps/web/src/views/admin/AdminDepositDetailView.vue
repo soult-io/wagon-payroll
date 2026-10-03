@@ -58,6 +58,8 @@ const overpaid = ref("0.00");
 const replacedBy = ref<DepositDetail["replacedBy"]>([]);
 const liability = ref("0.00");
 const alreadyDeposited = ref("0.00");
+const stillOwedEarlier = ref("0.00");
+const siblings = ref<DepositDetail["siblings"]>([]);
 const additionalDeposit = ref<DepositDetail["additionalDeposit"]>(null);
 const form941DueDate = ref<string | null>(null);
 const attachments = ref<{ id: number; filename: string; sizeBytes: number; uploadedAt: string }[]>(
@@ -170,6 +172,16 @@ const pageTitle = computed(() => {
 const showAdditionalNotice = computed(
   () => isAdditional.value && !isSuperseded.value && deposit.value?.status !== "deposited",
 );
+/** PAY-193 round 3: some earlier row of the period is deposited ("was made" wording). */
+const earlierDeposited = computed(() => centsOf(alreadyDeposited.value) > 0);
+/** PAY-193 round 3: the period's newest live row (no live sibling with a higher seq). */
+const isNewestRow = computed(
+  () => !!deposit.value && !siblings.value.some((r) => r.seq > (deposit.value?.seq ?? 0)),
+);
+/** PAY-193 round 3: the seq 0 notice shows only once this row is paid. */
+const showAdditionalLink = computed(
+  () => !isAdditional.value && deposit.value?.status === "deposited" && !!additionalDeposit.value,
+);
 const isState = computed(() => !!deposit.value && deposit.value.jurisdiction !== "federal");
 const subtitle = computed(() => {
   const d = deposit.value;
@@ -275,6 +287,8 @@ async function load() {
     replacedBy.value = detail.replacedBy;
     liability.value = detail.liability;
     alreadyDeposited.value = detail.alreadyDeposited;
+    stillOwedEarlier.value = detail.stillOwedEarlier;
+    siblings.value = detail.siblings;
     additionalDeposit.value = detail.additionalDeposit;
     form941DueDate.value = detail.form941DueDate;
     overpaidAnchor.value = detail.overpaidAnchor;
@@ -354,9 +368,24 @@ watch(depositId, load);
         :closable="false"
         data-testid="additional-notice"
       >
-        A payroll for {{ period }} was issued after your deposit for that period was made, so its
-        taxes weren't included. Pay {{ money(deposit.amount) }} as an additional deposit for
-        {{ period }}. The amount shown is only what's left to pay, not the full period.
+        <template v-if="earlierDeposited">
+          A payroll for {{ period }} was issued after your deposit for that period was made, so its
+          taxes weren't included.
+          <template v-if="!nothingToPay">
+            Pay {{ money(deposit.amount) }} as an additional deposit for {{ period }}.
+          </template>
+        </template>
+        <template v-else>
+          A payroll for {{ period }} was issued after your earlier deposit for that period was
+          already due, so its taxes weren't included in it.
+          <template v-if="!nothingToPay">
+            Pay {{ money(deposit.amount) }} as an additional deposit for {{ period }}, and pay the
+            earlier deposit too.
+          </template>
+        </template>
+        <template v-if="!nothingToPay">
+          The amount shown is only what's left to pay, not the full period.
+        </template>
         <template v-if="!isState">
           <template v-if="isOverdue">
             This deposit was due {{ date(deposit.dueDate) }}. The IRS can charge a late-deposit
@@ -384,7 +413,7 @@ watch(depositId, load);
       </Message>
 
       <Message
-        v-if="!isAdditional && additionalDeposit"
+        v-if="showAdditionalLink && additionalDeposit"
         severity="info"
         :closable="false"
         data-testid="additional-link"
@@ -519,8 +548,14 @@ watch(depositId, load);
       <section class="card stack">
         <h3>Breakdown</h3>
         <p v-if="isAdditional" class="bold" style="margin: 0" data-testid="additional-breakdown">
-          Total tax for {{ period }}: {{ money(liability) }} · Already deposited:
-          {{ money(alreadyDeposited) }} · Left to pay: {{ money(deposit.amount) }}
+          <template v-if="isNewestRow">
+            Total tax for {{ period }}: {{ money(liability) }} ·
+          </template>
+          Already deposited: {{ money(alreadyDeposited) }} ·
+          <template v-if="centsOf(stillOwedEarlier) > 0">
+            Still owed on an earlier deposit: {{ money(stillOwedEarlier) }} ·
+          </template>
+          Left to pay: {{ money(deposit.amount) }}
         </p>
         <template v-else>
         <DataTable :value="combinedBreakdown" data-key="category" striped-rows>

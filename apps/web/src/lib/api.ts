@@ -1141,9 +1141,14 @@ export interface DepositDetail {
   replacedBy: { id: number; periodStart: string; periodKind: DepositPeriodKind }[];
   /** PAY-193: the period's other live rows (same jurisdiction, period, kind), seq ascending. */
   siblings: { id: number; seq: number; status: string; amount: string }[];
-  /** PAY-193: what the period's other deposited/overdue rows already cover. */
+  /** PAY-193: what is already deposited toward this row's period (deposited rows/credits only). */
   alreadyDeposited: string;
-  /** PAY-193: on a seq 0 row, its additional (seq > 0) deposit; else null. */
+  /** PAY-193: Σ the period's open (pending/overdue) rows with a lower seq. */
+  stillOwedEarlier: string;
+  /**
+   * PAY-193: on a seq 0 row, the lowest-seq open additional deposit and the
+   * total still to pay on the period's additional deposits; else null.
+   */
   additionalDeposit: { id: number; amount: string } | null;
   /** PAY-193: federal rows — the Form 941 due date of the row's quarter; null for state rows. */
   form941DueDate: string | null;
