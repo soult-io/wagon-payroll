@@ -1023,7 +1023,6 @@ export const w2Furnishings = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    unique("w2_furnishings_event_uniq").on(t.employeeId, t.taxYear, t.boxesHash, t.method),
     index("w2_furnishings_employee_year_idx").on(t.employeeId, t.taxYear, t.furnishedAt),
     check("w2_furnishings_tax_year_check", sql`${t.taxYear} BETWEEN 2020 AND 2100`),
     check("w2_furnishings_boxes_hash_check", sql`${t.boxesHash} ~ '^[0-9a-f]{64}$'`),

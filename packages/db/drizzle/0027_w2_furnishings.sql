@@ -9,7 +9,6 @@ CREATE TABLE "w2_furnishings" (
 	"actor_id" text,
 	"furnished_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "w2_furnishings_event_uniq" UNIQUE("employee_id","tax_year","boxes_hash","method"),
 	CONSTRAINT "w2_furnishings_tax_year_check" CHECK ("w2_furnishings"."tax_year" BETWEEN 2020 AND 2100),
 	CONSTRAINT "w2_furnishings_boxes_hash_check" CHECK ("w2_furnishings"."boxes_hash" ~ '^[0-9a-f]{64}$'),
 	CONSTRAINT "w2_furnishings_method_check" CHECK ("w2_furnishings"."method" IN ('portal_notice','employee_download','admin_print','paper_handed','backfill'))

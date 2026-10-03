@@ -3791,18 +3791,7 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "w2_furnishings_event_uniq": {
-          "name": "w2_furnishings_event_uniq",
-          "nullsNotDistinct": false,
-          "columns": [
-            "employee_id",
-            "tax_year",
-            "boxes_hash",
-            "method"
-          ]
-        }
-      },
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
         "w2_furnishings_tax_year_check": {
