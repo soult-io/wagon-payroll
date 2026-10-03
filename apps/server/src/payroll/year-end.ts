@@ -3,11 +3,13 @@
  *
  * For tax year Y the window runs from Dec 1 of Y to `closesOn` = the earliest
  * of the federal Q4 941 due date, the W-2/W-3 due date and, for every state
- * an employee works in during Y, that state's Q4 close date (Jan 31 of Y+1,
- * no weekend roll, when the table has no entry). Dec 1–31 is "december";
+ * an employee works in during Y, that state's Q4 close date. With no entry
+ * for the state the fallback is Jan 31 of Y+1 when the table covers Y, and
+ * Jan 15 of Y+1 (the earliest TY2026 date) when the table has no entries for
+ * Y at all; no weekend roll either way. Dec 1–31 is "december";
  * Jan 1 of Y+1 through closesOn (inclusive) is "after_year_end".
  *
- * The date math is pure (`yearEndCloseDate`, `yearEndWindow`); the two DB
+ * The date math is pure (`yearEndCloseDate`, `yearEndCandidate`, `yearEndWindowOpen`); the two DB
  * reads (`yearEndStates`, `yearEndOpenRuns`) are separate. No names, no
  * amounts leave this module.
  */
@@ -17,7 +19,7 @@ import { employeeWorkStates, payrollRuns } from "@payroll/db";
 import type { Db } from "../db.js";
 import { annualDueDate } from "../filings/annual.js";
 import { filingDueDate } from "../filings/service.js";
-import { stateQ4CloseDate } from "../filings/state-q4-due.js";
+import { hasStateTableForYear, stateQ4CloseDate } from "../filings/state-q4-due.js";
 
 export type YearEndPhase = "december" | "after_year_end";
 
@@ -43,8 +45,10 @@ export function yearEndCloseDate(year: number, states: Iterable<string>): string
   let earliest = filingDueDate(year, 4);
   const annual = annualDueDate(year);
   if (annual < earliest) earliest = annual;
+  // No table for the year: assume the earliest TY2026 date (the safe side).
+  const fallback = hasStateTableForYear(year) ? `${year + 1}-01-31` : `${year + 1}-01-15`;
   for (const state of states) {
-    const due = stateQ4CloseDate(state, year) ?? `${year + 1}-01-31`;
+    const due = stateQ4CloseDate(state, year) ?? fallback;
     if (due < earliest) earliest = due;
   }
   return earliest;

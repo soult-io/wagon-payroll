@@ -238,9 +238,15 @@ const BY_TAX_YEAR: Readonly<Record<number, Readonly<Record<string, StateQ4Due>>>
   2026: TY2026,
 };
 
+/** True when the table has an entry set for `taxYear`. */
+export function hasStateTableForYear(taxYear: number): boolean {
+  return Object.hasOwn(BY_TAX_YEAR, taxYear);
+}
+
 /**
  * The safe Q4 close date for `state` (two-letter code) in `taxYear`, or null
- * when the table has no entry (the caller falls back to Jan 31 of Y+1).
+ * when the table has no entry (the caller falls back: Jan 31 of Y+1 when
+ * the year's table exists, Jan 15 of Y+1 when it does not).
  */
 export function stateQ4CloseDate(state: string, taxYear: number): string | null {
   const table = BY_TAX_YEAR[taxYear];
