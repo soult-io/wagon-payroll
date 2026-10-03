@@ -45,6 +45,7 @@ describe("(1) December under a monthly state schedule", () => {
       {
         kind: "month",
         periodStart: "2026-12-01",
+        seq: 0,
         cents: 4321,
         dueDate: "2027-01-15",
         status: "pending",

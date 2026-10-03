@@ -301,18 +301,49 @@ export interface SyncResult {
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
+/** PAY-193 D9.6: the audit row written for every shortfall insert (seq > 0). */
+async function auditShortfall(
+  db: Tx,
+  id: number,
+  row: {
+    jurisdiction: string;
+    periodStart: string;
+    periodKind: PeriodKind;
+    seq: number;
+    cents: number;
+  },
+): Promise<void> {
+  await db.insert(auditEvents).values({
+    actorId: "scheduler",
+    action: "tax_deposit.shortfall_created",
+    entity: "tax_deposit",
+    entityId: String(id),
+    after: {
+      jurisdiction: row.jurisdiction,
+      periodStart: row.periodStart,
+      periodKind: row.periodKind,
+      seq: row.seq,
+      cents: row.cents,
+    },
+  });
+}
+
 /**
- * Federal (PAY-9): one month row per pay month; the amount of a PENDING row
- * is recomputed when a late run issues. Deposited/overdue rows are never
- * rewritten (spec 23 D4 keeps federal unchanged).
+ * Federal (PAY-9, PAY-193 D9.6): one month row per pay month, plus shortfall
+ * rows. Deposited and overdue rows are frozen. L = the month's liability,
+ * F = Σ live deposited + overdue rows, R = L − F. The open pending row (at
+ * most one, the highest seq) takes max(0, R); with no pending row and R > 0 a
+ * shortfall row (seq = max + 1) is inserted on the ORIGINAL due date,
+ * overdue if that date has passed. R < 0 writes nothing (overpayment is out
+ * of scope). The first row of a month (seq 0) is inserted as before.
  */
-async function syncFederalDeposit(db: Tx, periodStart: string, result: SyncResult) {
+async function syncFederalDeposit(db: Tx, periodStart: string, today: string, result: SyncResult) {
   const year = Number(periodStart.slice(0, 4));
   const month = Number(periodStart.slice(5, 7));
   const amount = await computeDepositAmount(db, year, month);
   const dueDate = dueDateFor(year, month);
 
-  const existing = await db
+  const live = await db
     .select()
     .from(taxDeposits)
     .where(
@@ -323,10 +354,9 @@ async function syncFederalDeposit(db: Tx, periodStart: string, result: SyncResul
         liveDeposit,
       ),
     )
-    .limit(1);
-  const row = existing[0];
+    .orderBy(desc(taxDeposits.seq), desc(taxDeposits.id));
 
-  if (!row) {
+  if (live.length === 0) {
     await db.insert(taxDeposits).values({
       jurisdiction: "federal",
       periodStart,
@@ -338,12 +368,45 @@ async function syncFederalDeposit(db: Tx, periodStart: string, result: SyncResul
     result.created += 1;
     return;
   }
-  if (row.status === "pending" && row.amount !== amount) {
-    await db
-      .update(taxDeposits)
-      .set({ amount, updatedAt: new Date() })
-      .where(eq(taxDeposits.id, row.id));
-    result.recomputed += 1;
+
+  let frozen = 0;
+  for (const r of live) if (r.status !== "pending") frozen += parseCents(r.amount);
+  const remainder = parseCents(amount) - frozen;
+  const pending = live.find((r) => r.status === "pending");
+  if (pending) {
+    const target = formatCents(Math.max(0, remainder));
+    if (pending.amount !== target) {
+      await db
+        .update(taxDeposits)
+        .set({ amount: target, updatedAt: new Date() })
+        .where(eq(taxDeposits.id, pending.id));
+      result.recomputed += 1;
+    }
+    return;
+  }
+  if (remainder <= 0) return;
+  const seq = Math.max(...live.map((r) => r.seq)) + 1;
+  const inserted = await db
+    .insert(taxDeposits)
+    .values({
+      jurisdiction: "federal",
+      periodStart,
+      seq,
+      amount: formatCents(remainder),
+      dueDate,
+      status: dueDate < today ? "overdue" : "pending",
+      createdBy: "scheduler",
+    })
+    .returning({ id: taxDeposits.id });
+  result.created += 1;
+  for (const { id } of inserted) {
+    await auditShortfall(db, id, {
+      jurisdiction: "federal",
+      periodStart,
+      periodKind: "month",
+      seq,
+      cents: remainder,
+    });
   }
 }
 
@@ -369,6 +432,7 @@ function toLiveRow(row: TaxDepositRow): LiveDepositRow {
     status: row.status as LiveDepositRow["status"],
     dueDate: row.dueDate,
     depositedOn: row.depositedOn,
+    seq: row.seq,
   };
 }
 
@@ -495,6 +559,7 @@ async function applyPlan(
             jurisdiction: unit.state,
             periodStart: i.periodStart,
             periodKind: i.kind,
+            seq: i.seq,
             amount: formatCents(i.cents),
             dueDate: i.dueDate,
             status: i.status,
@@ -506,6 +571,17 @@ async function applyPlan(
   result.superseded += superseded.length;
   result.recomputed += plan.updates.length;
   result.created += inserted.length;
+  for (const [n, r] of inserted.entries()) {
+    const i = plan.inserts[n];
+    if (!i || i.seq === 0) continue;
+    await auditShortfall(tx, r.id, {
+      jurisdiction: unit.state,
+      periodStart: i.periodStart,
+      periodKind: i.kind,
+      seq: i.seq,
+      cents: i.cents,
+    });
+  }
 
   if (superseded.length > 0) {
     const beforeRows = unit.live.filter((r) => plan.supersede.includes(r.id));
@@ -569,7 +645,7 @@ export async function syncDeposits(deps: Deps, opts: { today?: string } = {}): P
       .where(eq(payrollRuns.status, "issued"))
       .orderBy(sql`1`);
     for (const { periodStart } of months) {
-      await syncFederalDeposit(tx, periodStart, result);
+      await syncFederalDeposit(tx, periodStart, today, result);
     }
 
     const schedules = await loadStateSchedules(tx);

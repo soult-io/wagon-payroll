@@ -980,7 +980,8 @@ describe("PAY-91 v1.24/v1.25 data and migration 0022", () => {
     try {
       await insertV124(env);
       const pre = await oldShape(env);
-      await migrate(env.pg, after0021);
+      // Through 0025: 0026 (PAY-193 L3) replaces this index with the seq one.
+      await migrate(env.pg, (tag) => after0021(tag) && tag.slice(0, 4) <= "0025");
       expect(await oldShape(env)).toEqual(pre);
       const all = await rows(env);
       expect(all).toHaveLength(7);

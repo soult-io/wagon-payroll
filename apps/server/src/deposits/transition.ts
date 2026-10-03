@@ -5,7 +5,8 @@
  * deposit rows to supersede, update and insert so the unit matches the
  * state's schedule for that year:
  *   - quarterly → one live non-deposited quarter row, amount = max(0, ΣL − ΣD)
- *     (Case A merge, Case B credit for deposited months);
+ *     (Case A merge, Case B credit for deposited months); once the quarter
+ *     row is deposited, a shortfall row (next seq) only when ΣL − ΣD > 0;
  *   - monthly / no schedule → month rows, each month's remainder after
  *     deposits are applied earliest-first (Case C).
  * Deposited rows are never touched. Superseded rows are never passed in.
@@ -29,6 +30,8 @@ export interface LiveDepositRow {
   status: LiveStatus;
   dueDate: string;
   depositedOn: string | null;
+  /** PAY-193 D9.6: 0 for a period's first row, N for its Nth shortfall row. Absent = 0. */
+  seq?: number;
 }
 
 export interface QuarterInput {
@@ -65,6 +68,8 @@ export interface RowUpdate {
 export interface RowInsert {
   kind: PeriodKind;
   periodStart: string;
+  /** 1 + max(seq of the period's live rows), or 0 when it has none (D9.6). */
+  seq: number;
   cents: number;
   dueDate: string;
   status: OpenStatus;
@@ -297,6 +302,15 @@ function setRow(ctx: Ctx, row: LiveDepositRow, cents: number, dueDate: string): 
   }
 }
 
+/** Next seq for a period: 1 + max(seq of its live rows), 0 when it has none (D9.6). */
+function nextSeq(ctx: Ctx, kind: PeriodKind, periodStart: string): number {
+  let next = 0;
+  for (const r of ctx.input.live) {
+    if (r.kind === kind && r.periodStart === periodStart) next = Math.max(next, (r.seq ?? 0) + 1);
+  }
+  return next;
+}
+
 function insertRow(
   ctx: Ctx,
   kind: PeriodKind,
@@ -305,7 +319,8 @@ function insertRow(
   dueDate: string,
 ) {
   const status = statusOf(dueDate, cents, ctx.input.today);
-  ctx.out.inserts.push({ kind, periodStart, cents, dueDate, status });
+  const seq = nextSeq(ctx, kind, periodStart);
+  ctx.out.inserts.push({ kind, periodStart, seq, cents, dueDate, status });
 }
 
 /** Quarterly schedule: one live non-deposited quarter row, no open month rows. */
@@ -313,25 +328,21 @@ function planQuarterly(ctx: Ctx, schedule: StateSchedule, liabilityCents: number
   const { dep, open, out, input } = ctx;
   for (const r of open) if (r.kind === "month") out.supersede.push(r.id);
   const [target, ...extra] = open.filter((r) => r.kind === "quarter").sort(byPeriod);
-  if (dep.some((r) => r.kind === "quarter")) {
-    // Quarter already paid: no second quarter row (top-up is out of scope, §10).
-    if (target) out.supersede.push(target.id);
-    for (const r of extra) out.supersede.push(r.id);
-    return;
-  }
-  if (liabilityCents === 0 && dep.length === 0 && open.length === 0) return;
-  for (const r of extra) out.supersede.push(r.id); // defensive: the index allows one
+  const quarterPaid = dep.some((r) => r.kind === "quarter");
+  if (!quarterPaid && liabilityCents === 0 && dep.length === 0 && open.length === 0) return;
+  for (const r of extra) out.supersede.push(r.id); // defensive: one open quarter row
   const depositedCents = dep.reduce((a, r) => a + r.cents, 0);
   const cents = Math.max(0, liabilityCents - depositedCents);
   const quarterStart = periodStartFor(input.year, ctx.firstMonth);
   const dueDate = stateDueDateFor(schedule, input.year, quarterStart);
   if (target) setRow(ctx, target, cents, dueDate);
-  else insertRow(ctx, "quarter", quarterStart, cents, dueDate);
+  // PAY-193 D9.6: a paid quarter gets a shortfall row only for an amount > 0.
+  else if (!quarterPaid || cents > 0) insertRow(ctx, "quarter", quarterStart, cents, dueDate);
 }
 
 /** Monthly schedule or no schedule: month rows carry each month's remainder. */
 function planMonthly(ctx: Ctx, rem: readonly number[]): void {
-  const { dep, open, out, input } = ctx;
+  const { open, out, input } = ctx;
   for (const r of open) if (r.kind === "quarter") out.supersede.push(r.id);
   for (let m = 0; m < 3; m += 1) {
     const start = periodStartFor(input.year, ctx.firstMonth + m);
@@ -341,9 +352,10 @@ function planMonthly(ctx: Ctx, rem: readonly number[]): void {
       .filter((r) => r.kind === "month" && r.periodStart === start)
       .sort(byPeriod);
     for (const r of extra) out.supersede.push(r.id);
-    const depositedMonth = dep.some((r) => r.kind === "month" && r.periodStart === start);
+    // PAY-193 D9.6: rem[m] already nets deposits, so a deposited month with
+    // more owed gets a shortfall row (seq = 1 + max live seq).
     if (row) setRow(ctx, row, cents, dueDate);
-    else if (cents > 0 && !depositedMonth) insertRow(ctx, "month", start, cents, dueDate);
+    else if (cents > 0) insertRow(ctx, "month", start, cents, dueDate);
   }
 }
 

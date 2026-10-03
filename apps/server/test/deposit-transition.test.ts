@@ -56,6 +56,7 @@ describe("planStateQuarter — Case A (merge)", () => {
       {
         kind: "quarter",
         periodStart: "2026-07-01",
+        seq: 0,
         cents: 24690,
         dueDate: "2026-11-02",
         status: "pending",
