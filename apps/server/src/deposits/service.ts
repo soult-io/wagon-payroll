@@ -331,6 +331,7 @@ type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 /** PAY-193 D9.6: the audit row written for every shortfall insert (seq > 0). */
 async function auditShortfall(
   db: Tx,
+  actorId: string,
   id: number,
   row: {
     jurisdiction: string;
@@ -341,7 +342,7 @@ async function auditShortfall(
   },
 ): Promise<void> {
   await db.insert(auditEvents).values({
-    actorId: "scheduler",
+    actorId,
     action: "tax_deposit.shortfall_created",
     entity: "tax_deposit",
     entityId: String(id),
@@ -408,7 +409,10 @@ async function mailShortfall(
  * most one, the highest seq) takes max(0, R); with no pending row and R > 0 a
  * shortfall row (seq = max + 1) is inserted on the ORIGINAL due date,
  * overdue if that date has passed. R < 0 writes nothing (overpayment is out
- * of scope). The first row of a month (seq 0) is inserted as before.
+ * of scope). The first row of a month (seq 0) is inserted as before —
+ * pending, or (PAY-193 L4, `overdueOnInsert`: the late-issue path) overdue
+ * when its due date has passed and it has something to pay. Returns the row
+ * it inserted, if any.
  */
 async function syncFederalDeposit(
   db: Tx,
@@ -416,7 +420,11 @@ async function syncFederalDeposit(
   periodStart: string,
   today: string,
   result: SyncResult,
-) {
+  opts: { actorId: string; overdueOnInsert: boolean } = {
+    actorId: "scheduler",
+    overdueOnInsert: false,
+  },
+): Promise<{ inserted: { seq: number; status: string } | null }> {
   const year = Number(periodStart.slice(0, 4));
   const month = Number(periodStart.slice(5, 7));
   const amount = await computeDepositAmount(db, year, month);
@@ -436,16 +444,18 @@ async function syncFederalDeposit(
     .orderBy(desc(taxDeposits.seq), desc(taxDeposits.id));
 
   if (live.length === 0) {
+    const status =
+      opts.overdueOnInsert && dueDate < today && parseCents(amount) > 0 ? "overdue" : "pending";
     await db.insert(taxDeposits).values({
       jurisdiction: "federal",
       periodStart,
       amount,
       dueDate,
-      status: "pending",
-      createdBy: "scheduler",
+      status,
+      createdBy: opts.actorId,
     });
     result.created += 1;
-    return;
+    return { inserted: { seq: 0, status } };
   }
 
   let frozen = 0;
@@ -463,9 +473,9 @@ async function syncFederalDeposit(
         .returning({ id: taxDeposits.id });
       result.recomputed += updated.length;
     }
-    return;
+    return { inserted: null };
   }
-  if (remainder <= 0) return;
+  if (remainder <= 0) return { inserted: null };
   const seq = nextSeq(live);
   const status = dueDate < today ? "overdue" : "pending";
   const inserted = await db
@@ -477,12 +487,12 @@ async function syncFederalDeposit(
       amount: formatCents(remainder),
       dueDate,
       status,
-      createdBy: "scheduler",
+      createdBy: opts.actorId,
     })
     .returning({ id: taxDeposits.id });
   result.created += 1;
   for (const { id } of inserted) {
-    await auditShortfall(db, id, {
+    await auditShortfall(db, opts.actorId, id, {
       jurisdiction: "federal",
       periodStart,
       periodKind: "month",
@@ -497,6 +507,7 @@ async function syncFederalDeposit(
       earlierDeposited: live.some((r) => r.status === "deposited"),
     });
   }
+  return { inserted: { seq, status } };
 }
 
 /** One (state, year, quarter) planning unit (spec 23 §6). */
@@ -617,13 +628,18 @@ function planUnit(
   });
 }
 
-/** Apply one unit's plan: supersede, then update, then insert (the index needs that order). */
+/**
+ * Apply one unit's plan: supersede, then update, then insert (the index needs
+ * that order). `actorId` = "scheduler" for the tick, the confirming admin on
+ * the late-issue path (PAY-193 L4).
+ */
 async function applyPlan(
   tx: Tx,
   config: AppConfig,
   unit: StateUnit,
   plan: QuarterPlan,
   result: SyncResult,
+  actorId = "scheduler",
 ): Promise<void> {
   const now = new Date();
   const open = ["pending", "overdue"];
@@ -653,7 +669,7 @@ async function applyPlan(
             amount: formatCents(i.cents),
             dueDate: i.dueDate,
             status: i.status,
-            createdBy: "scheduler",
+            createdBy: actorId,
           })),
         )
         .returning({
@@ -677,7 +693,7 @@ async function applyPlan(
     const id = insertedId(i);
     // Fail closed: the unit's savepoint rolls back and the unit is reported.
     if (id === undefined) throw new Error("applyPlan: inserted row not returned");
-    await auditShortfall(tx, id, {
+    await auditShortfall(tx, actorId, id, {
       jurisdiction: unit.state,
       periodStart: i.periodStart,
       periodKind: i.kind,
@@ -719,8 +735,12 @@ async function applyPlan(
   }
 }
 
-/** Serialises the deposit sync (daily tick, seed-qa, e2e serve) — spec 23 §6. */
-const SYNC_LOCK = sql`SELECT pg_advisory_xact_lock(hashtext('tax_deposits_state_sync'))`;
+/**
+ * Serialises the deposit sync (daily tick, seed-qa, e2e serve, and the
+ * PAY-193 L4 late issue) — spec 23 §6. Last in the global lock order:
+ * payroll_run_employee:{id} → FILING_CLOSE_LOCK → SYNC_LOCK.
+ */
+export const SYNC_LOCK = sql`SELECT pg_advisory_xact_lock(hashtext('tax_deposits_state_sync'))`;
 
 /**
  * Upsert the computed deposit schedule for every pay month with issued
@@ -813,6 +833,66 @@ export async function syncDeposits(deps: Deps, opts: { today?: string } = {}): P
 
   result.failedUnits = failed.length;
   return result;
+}
+
+/**
+ * PAY-193 L4 (L4.5 step 7): inside a late issue's transaction, under
+ * SYNC_LOCK (taken here), sync the pay-date period for federal and for each
+ * of `jurisdictions` (stateReturnJurisdictions of the run). Returns the
+ * follow-up codes (no amounts):
+ * - `deposit_shortfall:<jurisdiction>:<periodStart>` — a seq > 0 row was inserted;
+ * - `deposit_overdue:<jurisdiction>:<periodStart>` — a seq 0 row was inserted overdue;
+ * - `deposit_sync_deferred:<state>` — the state unit failed in its savepoint;
+ *   the issue still commits and the daily tick re-plans and reports it.
+ * Federal errors propagate (the issue rolls back).
+ */
+export async function syncDepositsForPayDate(
+  tx: Tx,
+  config: AppConfig,
+  input: { payDate: string; jurisdictions: readonly string[]; today: string; actorId: string },
+): Promise<string[]> {
+  const { payDate, today, actorId } = input;
+  const followUps: string[] = [];
+  const codeFor = (jurisdiction: string, periodStart: string, seq: number, status: string) => {
+    if (seq > 0) followUps.push(`deposit_shortfall:${jurisdiction}:${periodStart}`);
+    else if (status === "overdue") followUps.push(`deposit_overdue:${jurisdiction}:${periodStart}`);
+  };
+  await tx.execute(SYNC_LOCK);
+  const result: SyncResult = { ...EMPTY_RESULT };
+  const monthStart = `${payDate.slice(0, 7)}-01`;
+  const federal = await syncFederalDeposit(tx, config, monthStart, today, result, {
+    actorId,
+    overdueOnInsert: true,
+  });
+  if (federal.inserted) {
+    codeFor("federal", monthStart, federal.inserted.seq, federal.inserted.status);
+  }
+
+  const year = Number(payDate.slice(0, 4));
+  const quarter = quarterOfMonth(Number(payDate.slice(5, 7)));
+  const schedules = await loadStateSchedules(tx);
+  for (const state of input.jurisdictions) {
+    const codes: string[] = [];
+    try {
+      await tx.transaction(async (sp) => {
+        for (const unit of await loadStateUnits(sp, { state, year, quarter })) {
+          const plan = planUnit(unit, schedules, today);
+          await applyPlan(sp, config, unit, plan, { ...EMPTY_RESULT }, actorId);
+          for (const i of plan.inserts) {
+            if (i.seq > 0) codes.push(`deposit_shortfall:${state}:${i.periodStart}`);
+            else if (i.status === "overdue") codes.push(`deposit_overdue:${state}:${i.periodStart}`);
+          }
+        }
+      });
+    } catch (err) {
+      // Jurisdiction and failure code only: never amounts or row data.
+      console.warn(`[deposits] late-issue sync for ${state} deferred (${failureCode(err)})`);
+      followUps.push(`deposit_sync_deferred:${state}`);
+      continue;
+    }
+    followUps.push(...codes);
+  }
+  return followUps;
 }
 
 const EMPTY_RESULT: SyncResult = {
