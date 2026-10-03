@@ -17,15 +17,11 @@ import PageHeader from "../../components/PageHeader.vue";
 import BackButton from "../../components/BackButton.vue";
 import EmptyState from "../../components/EmptyState.vue";
 import StatusChip from "../../components/StatusChip.vue";
-import {
-  adminEmployeesApi,
-  adminPayrollApi,
-  type PayrollRunRow,
-  type YearEndStatus,
-} from "../../lib/api";
+import { adminEmployeesApi, adminPayrollApi, isOpenRun, type PayrollRunRow } from "../../lib/api";
 import { useMoney } from "../../composables/useMoney";
 import { useDates } from "../../composables/useDates";
 import { useNotify } from "../../composables/useNotify";
+import { useYearEndWarning } from "../../composables/useYearEndWarning";
 
 const route = useRoute();
 const confirm = useConfirm();
@@ -50,38 +46,12 @@ const canApprove = computed(
   () => run.value && ["draft", "awaiting_approval"].includes(run.value.status),
 );
 const canIssue = computed(() => run.value?.status === "approved");
-const canVoid = computed(
-  () => run.value && ["draft", "awaiting_approval", "approved"].includes(run.value.status),
-);
+const canVoid = computed(() => run.value && isOpenRun(run.value.status));
 
 // PAY-193 (D9.8): year-end notice for a run still to issue with a pay date in
-// the warning's year. Phase and year come only from the server.
-const yearEnd = ref<YearEndStatus | null>(null);
-const yearEndNotice = computed(() => {
-  const ye = yearEnd.value;
-  const r = run.value;
-  if (!ye?.phase || ye.year === null || !r) return null;
-  if (!["draft", "awaiting_approval", "approved"].includes(r.status)) return null;
-  if (Number(r.payDate.slice(0, 4)) !== ye.year) return null;
-  const y = ye.year;
-  if (ye.phase === "december") {
-    return `This payroll's pay date is in ${y}. Issue it by ${date(`${y}-12-31`)} so it counts in ${y}.`;
-  }
-  const due = ye.closesOn
-    ? ` Your first ${y} year-end tax return is due by ${date(ye.closesOn)}.`
-    : "";
-  // PAY-193 L4 (late issue) will let a past-year payroll be issued: this
-  // text says it can't be, so it MUST change when L4 ships.
-  return `This payroll's pay date, ${date(r.payDate)}, is in ${y}, which has ended. Wagon Payroll can't add a payroll to ${y} yet, so this one can't be issued. If you paid it on that date, don't change the date. Keep your own record of the payment and make sure it's in your ${y} tax filings.${due}`;
-});
-
-async function loadYearEnd() {
-  try {
-    yearEnd.value = await adminPayrollApi.yearEnd();
-  } catch {
-    yearEnd.value = null; // a reminder; the run view works without it
-  }
-}
+// the warning's year.
+const { load: loadYearEnd, runNotice } = useYearEndWarning();
+const yearEndNotice = computed(() => runNotice(run.value));
 
 async function load() {
   try {

@@ -84,6 +84,7 @@ const serviceError = (
 
 export function registerAdminPayrollRoutes(app: FastifyInstance, deps: AdminPayrollDeps): void {
   const { db, config, guards } = deps;
+  const now = deps.clock ?? (() => new Date());
   const admin = guards.requireRole("admin");
 
   async function audit(
@@ -138,7 +139,7 @@ export function registerAdminPayrollRoutes(app: FastifyInstance, deps: AdminPayr
 
   // PAY-193 (D9.8): year-end warning window. Registered before /:publicId.
   app.get("/api/admin/payroll-runs/year-end", { preHandler: admin }, async () => {
-    const today = localDate((deps.clock ?? (() => new Date()))(), config.appTz);
+    const today = localDate(now(), config.appTz);
     return getYearEndStatus(db, today);
   });
 
@@ -352,9 +353,7 @@ export function registerAdminPayrollRoutes(app: FastifyInstance, deps: AdminPayr
       .safeParse(req.body);
     if (!body.success)
       return reply.code(400).send({ error: "invalid_body", details: body.error.issues });
-    if (
-      isFiledDateInFuture(body.data.filedDate, (deps.clock ?? (() => new Date()))(), config.appTz)
-    ) {
+    if (isFiledDateInFuture(body.data.filedDate, now(), config.appTz)) {
       return reply.code(400).send(FILED_DATE_IN_FUTURE);
     }
     // Spec 26 (PAY-173) D3 step 4: effective date inside the lawful window.

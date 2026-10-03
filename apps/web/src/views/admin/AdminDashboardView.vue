@@ -19,12 +19,12 @@ import {
   type ChangeRequest,
   type LocalTaxCheck,
   type OutboxHealth,
-  type YearEndStatus,
 } from "../../lib/api";
 import { localityName, stateName } from "@payroll/shared";
 import { requestTypeLabel } from "../../composables/useRequestTypes";
 import { useDates } from "../../composables/useDates";
 import { useNotify } from "../../composables/useNotify";
+import { useYearEndWarning } from "../../composables/useYearEndWarning";
 
 const { date, dateTime } = useDates();
 const notify = useNotify();
@@ -70,38 +70,7 @@ function placeName(code: string | null): string {
   return code.includes("-") ? localityName(code) : stateName(code);
 }
 
-// PAY-193 (D9.8): year-end warning. Phase and year come only from the
-// server (company-local date), never from the browser clock.
-const yearEnd = ref<YearEndStatus | null>(null);
-const yearEndText = computed(() => {
-  const ye = yearEnd.value;
-  if (!ye?.phase || ye.year === null) return null;
-  const n = ye.openRuns.length;
-  const y = ye.year;
-  const dec31 = date(`${y}-12-31`);
-  const due = ye.closesOn
-    ? ` Your first ${y} year-end tax return is due by ${date(ye.closesOn)}.`
-    : "";
-  if (ye.phase === "december") {
-    const base = `Payrolls you pay in ${y} must be issued here by ${dec31} to count in ${y}.`;
-    if (n === 0) return base;
-    return n === 1
-      ? `${base} 1 payroll is still waiting to be issued.`
-      : `${base} ${n} payrolls are still waiting to be issued.`;
-  }
-  if (n === 0) return `All your ${y} payrolls are issued.${due}`;
-  return n === 1
-    ? `1 payroll with a ${y} pay date wasn't issued before the year ended, and Wagon Payroll can't add it to ${y} yet. Don't change its pay date. Keep your own record of the payment and make sure it's in your ${y} tax filings.${due}`
-    : `${n} payrolls with ${y} pay dates weren't issued before the year ended, and Wagon Payroll can't add them to ${y} yet. Don't change their pay dates. Keep your own record of these payments and make sure they're in your ${y} tax filings.${due}`;
-});
-
-async function loadYearEnd() {
-  try {
-    yearEnd.value = await adminPayrollApi.yearEnd();
-  } catch {
-    yearEnd.value = null; // a reminder; the dashboard works without it
-  }
-}
+const { yearEnd, load: loadYearEnd, dashboardText: yearEndText } = useYearEndWarning();
 
 async function loadLocalTax() {
   try {

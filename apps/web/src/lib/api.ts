@@ -21,6 +21,11 @@ export interface Address {
 }
 
 export type RunStatus = "draft" | "awaiting_approval" | "approved" | "issued" | "void";
+/** Statuses a run can still be issued (or voided) from. Server: OPEN_RUN_STATUSES in payroll/runs.ts. */
+export const OPEN_RUN_STATUSES: readonly RunStatus[] = ["draft", "awaiting_approval", "approved"];
+export function isOpenRun(status: RunStatus): boolean {
+  return OPEN_RUN_STATUSES.includes(status);
+}
 export type RequestStatus = "pending" | "approved" | "denied" | "withdrawn";
 export type ChangeRequestType =
   | "address"

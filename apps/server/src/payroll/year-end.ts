@@ -20,10 +20,11 @@ import type { Db } from "../db.js";
 import { annualDueDate } from "../filings/annual.js";
 import { filingDueDate } from "../filings/service.js";
 import { hasStateTableForYear, stateQ4CloseDate } from "../filings/state-q4-due.js";
+import { OPEN_RUN_STATUSES } from "./runs.js";
 
-export type YearEndPhase = "december" | "after_year_end";
+type YearEndPhase = "december" | "after_year_end";
 
-export interface YearEndOpenRun {
+interface YearEndOpenRun {
   publicId: string;
   payDate: string;
   status: string;
@@ -37,11 +38,8 @@ export interface YearEndStatus {
   openRuns: YearEndOpenRun[];
 }
 
-/** Statuses that can still be issued. */
-const OPEN_STATUSES = ["draft", "awaiting_approval", "approved"] as const;
-
 /** closesOn for tax year `year` given the states employees work in during it. */
-export function yearEndCloseDate(year: number, states: Iterable<string>): string {
+function yearEndCloseDate(year: number, states: Iterable<string>): string {
   let earliest = filingDueDate(year, 4);
   const annual = annualDueDate(year);
   if (annual < earliest) earliest = annual;
@@ -59,7 +57,7 @@ export function yearEndCloseDate(year: number, states: Iterable<string>): string
  * date) and in which phase, before closesOn is known: December -> that
  * year; any other month -> the previous year, after year end.
  */
-export function yearEndCandidate(today: string): { year: number; phase: YearEndPhase } {
+function yearEndCandidate(today: string): { year: number; phase: YearEndPhase } {
   const year = Number(today.slice(0, 4));
   return today.slice(5, 7) === "12"
     ? { year, phase: "december" }
@@ -67,7 +65,7 @@ export function yearEndCandidate(today: string): { year: number; phase: YearEndP
 }
 
 /** True while the window for the candidate is open on `today`. */
-export function yearEndWindowOpen(today: string, phase: YearEndPhase, closesOn: string): boolean {
+function yearEndWindowOpen(today: string, phase: YearEndPhase, closesOn: string): boolean {
   return phase === "december" || today <= closesOn;
 }
 
@@ -77,7 +75,7 @@ export function yearEndWindowOpen(today: string, phase: YearEndPhase, closesOn: 
  * every work-state row active on some day of the year (effective_to is
  * exclusive, as in resolve.ts).
  */
-export async function yearEndStates(db: Db, year: number): Promise<Set<string>> {
+async function yearEndStates(db: Db, year: number): Promise<Set<string>> {
   const first = `${year}-01-01`;
   const last = `${year}-12-31`;
   const workState = sql<string>`(${payrollRuns.runSnapshot}#>>'{inputs,state,workState}')`;
@@ -104,7 +102,7 @@ export async function yearEndStates(db: Db, year: number): Promise<Set<string>> 
 }
 
 /** Runs with a pay date in `year` that can still be issued. */
-export async function yearEndOpenRuns(db: Db, year: number): Promise<YearEndOpenRun[]> {
+async function yearEndOpenRuns(db: Db, year: number): Promise<YearEndOpenRun[]> {
   return db
     .select({
       publicId: payrollRuns.publicId,
@@ -116,7 +114,7 @@ export async function yearEndOpenRuns(db: Db, year: number): Promise<YearEndOpen
       and(
         gte(payrollRuns.payDate, `${year}-01-01`),
         lte(payrollRuns.payDate, `${year}-12-31`),
-        inArray(payrollRuns.status, [...OPEN_STATUSES]),
+        inArray(payrollRuns.status, [...OPEN_RUN_STATUSES]),
       ),
     )
     .orderBy(payrollRuns.payDate, payrollRuns.publicId);
