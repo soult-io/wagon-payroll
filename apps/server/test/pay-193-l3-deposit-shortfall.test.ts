@@ -930,11 +930,8 @@ describe("S-D9 L3 migration on main-shaped rows", () => {
 //     siblings: { id: number; seq: number; status: string; amount: "0.00" }[]
 //       = the period's OTHER live rows (same jurisdiction, period_start,
 //         period_kind; superseded excluded; this row excluded), seq ascending.
-//     alreadyDeposited: "0.00" string = Σ siblings with status deposited or
-//       overdue (federal F of D9.6). On a seq > 0 row:
-//       liability − alreadyDeposited = deposit.amount.
-//     additionalDeposit: { id: number; amount: "0.00" } | null — on a seq 0
-//       row, its live seq > 0 sibling (null when there is none).
+//     alreadyDeposited / stillOwedEarlier / additionalDeposit: as revised in
+//       round 3 (D1-D3, at the end of this file).
 //  R2 syncFederalDeposit's pending-row UPDATE is guarded by status = 'pending':
 //     a row deposited between the read and the UPDATE keeps its amount.
 //  R3 every seq > 0 insert (federal and state) enqueues one email_outbox row
@@ -962,7 +959,23 @@ interface ReviewDetail {
   liability: string;
   siblings?: Sibling[];
   alreadyDeposited?: string;
+  /** Round 3 D1: Σ lower-seq open (pending/overdue) siblings. */
+  stillOwedEarlier?: string;
   additionalDeposit?: { id: number; amount: string } | null;
+}
+
+/**
+ * Round 3 D1/D2: liability − alreadyDeposited − stillOwedEarlier = amount, and
+ * amount = the oracle cents.
+ */
+function expectLineReconciles(d: ReviewDetail, oracleCents: number): void {
+  expect(cents(d.deposit.amount), "amount = oracle").toBe(oracleCents);
+  expect(
+    cents(d.liability) -
+      cents(d.alreadyDeposited ?? "missing") -
+      cents(d.stillOwedEarlier ?? "missing"),
+    "liability − alreadyDeposited − stillOwedEarlier = amount",
+  ).toBe(oracleCents);
 }
 
 async function detail(id: number): Promise<ReviewDetail> {
@@ -983,7 +996,7 @@ async function fedSeq1Pending(): Promise<[number, number]> {
 }
 
 describe("PAY-193 L3 review R1 — detail lists the period's other rows", () => {
-  it("federal seq 1: siblings = [seq 0 deposited 910.33]; alreadyDeposited 910.33; liability 1,411.16 − 910.33 = amount 500.83", async () => {
+  it("federal seq 1: siblings = [seq 0 deposited 910.33]; alreadyDeposited 910.33, stillOwedEarlier 0.00; liability 1,411.16 − 910.33 − 0.00 = amount 500.83", async () => {
     const [id0, id1] = await fedSeq1Pending();
     const d = await detail(id1);
     expect({
@@ -991,32 +1004,34 @@ describe("PAY-193 L3 review R1 — detail lists the period's other rows", () => 
       liability: d.liability,
       siblings: d.siblings,
       alreadyDeposited: d.alreadyDeposited,
+      stillOwedEarlier: d.stillOwedEarlier,
     }).toEqual({
       amount: money(FED_B),
       liability: money(FED_A + FED_B),
       siblings: [{ id: id0, seq: 0, status: "deposited", amount: money(FED_A) }],
       alreadyDeposited: money(FED_A),
+      stillOwedEarlier: "0.00",
     });
-    expect(cents(d.liability) - cents(d.alreadyDeposited ?? "missing")).toBe(
-      cents(d.deposit.amount),
-    );
+    expectLineReconciles(d, FED_B);
   });
 
-  it("federal seq 0 with a live seq 1: additionalDeposit = {seq 1 id, 500.83}; siblings = [seq 1 pending]; alreadyDeposited 0.00", async () => {
+  it("federal seq 0 with a live seq 1: additionalDeposit = {seq 1 id, 500.83}; siblings = [seq 1 pending]; alreadyDeposited 0.00; stillOwedEarlier 0.00", async () => {
     const [id0, id1] = await fedSeq1Pending();
     const d = await detail(id0);
     expect({
       additionalDeposit: d.additionalDeposit,
       siblings: d.siblings,
       alreadyDeposited: d.alreadyDeposited,
+      stillOwedEarlier: d.stillOwedEarlier,
     }).toEqual({
       additionalDeposit: { id: id1, amount: money(FED_B) },
       siblings: [{ id: id1, seq: 1, status: "pending", amount: money(FED_B) }],
       alreadyDeposited: "0.00",
+      stillOwedEarlier: "0.00",
     });
   });
 
-  it("federal seq 0 alone: additionalDeposit null, siblings [], alreadyDeposited 0.00", async () => {
+  it("federal seq 0 alone: additionalDeposit null, siblings [], alreadyDeposited 0.00, stillOwedEarlier 0.00", async () => {
     await issue(A, "2026-12-15", null);
     await sync("2027-01-08");
     const d = await detail((await liveRow("federal", DEC, 0)).id);
@@ -1024,10 +1039,16 @@ describe("PAY-193 L3 review R1 — detail lists the period's other rows", () => 
       additionalDeposit: d.additionalDeposit,
       siblings: d.siblings,
       alreadyDeposited: d.alreadyDeposited,
-    }).toEqual({ additionalDeposit: null, siblings: [], alreadyDeposited: "0.00" });
+      stillOwedEarlier: d.stillOwedEarlier,
+    }).toEqual({
+      additionalDeposit: null,
+      siblings: [],
+      alreadyDeposited: "0.00",
+      stillOwedEarlier: "0.00",
+    });
   });
 
-  it("federal seq 2: siblings seq 0 + seq 1 deposited; alreadyDeposited 1,411.16; liability 1,732.39 − 1,411.16 = 321.23", async () => {
+  it("federal seq 2: siblings seq 0 + seq 1 deposited; alreadyDeposited 1,411.16, stillOwedEarlier 0.00; liability 1,732.39 − 1,411.16 = 321.23", async () => {
     const [id0, id1] = await fedSeq1Pending();
     await deposit(id1, "2027-01-12", "EFTPS-SYN-L3-R2");
     await issue(C, "2026-12-31", null);
@@ -1039,6 +1060,7 @@ describe("PAY-193 L3 review R1 — detail lists the period's other rows", () => 
       liability: d.liability,
       siblings: d.siblings,
       alreadyDeposited: d.alreadyDeposited,
+      stillOwedEarlier: d.stillOwedEarlier,
     }).toEqual({
       amount: money(FED_C),
       liability: money(FED_A + FED_B + FED_C),
@@ -1047,26 +1069,85 @@ describe("PAY-193 L3 review R1 — detail lists the period's other rows", () => 
         { id: id1, seq: 1, status: "deposited", amount: money(FED_B) },
       ],
       alreadyDeposited: money(FED_A + FED_B),
+      stillOwedEarlier: "0.00",
     });
+    expectLineReconciles(d, FED_C);
   });
 
-  it("federal: an overdue sibling counts as already deposited (F of D9.6) — seq 2 overdue, alreadyDeposited = A + B", async () => {
+  it("round 3 D1: an overdue earlier sibling is still owed, not deposited — seq 2 overdue: alreadyDeposited 910.33, stillOwedEarlier 500.83; 1,732.39 − 910.33 − 500.83 = 321.23", async () => {
     const [id0, id1] = await fedSeq1Pending();
     await sync("2027-01-20"); // seq 1 flips overdue
     await issue(C, "2026-12-31", null);
     await sync("2027-01-21");
-    const d = await detail((await liveRow("federal", DEC, 2)).id);
-    expect({ siblings: d.siblings, alreadyDeposited: d.alreadyDeposited }).toEqual({
+    const id2 = (await liveRow("federal", DEC, 2)).id;
+    const d = await detail(id2);
+    expect({
+      siblings: d.siblings,
+      alreadyDeposited: d.alreadyDeposited,
+      stillOwedEarlier: d.stillOwedEarlier,
+    }).toEqual({
       siblings: [
         { id: id0, seq: 0, status: "deposited", amount: money(FED_A) },
         { id: id1, seq: 1, status: "overdue", amount: money(FED_B) },
       ],
-      alreadyDeposited: money(FED_A + FED_B),
+      alreadyDeposited: money(FED_A),
+      stillOwedEarlier: money(FED_B),
     });
-    expect(cents(d.liability) - cents(d.alreadyDeposited ?? "missing")).toBe(FED_C);
+    expectLineReconciles(d, FED_C);
+
+    // seq 1 (overdue): its HIGHER open sibling (seq 2) never counts as owed earlier.
+    const d1 = await detail(id1);
+    expect({
+      siblings: d1.siblings,
+      alreadyDeposited: d1.alreadyDeposited,
+      stillOwedEarlier: d1.stillOwedEarlier,
+    }).toEqual({
+      siblings: [
+        { id: id0, seq: 0, status: "deposited", amount: money(FED_A) },
+        { id: id2, seq: 2, status: "overdue", amount: money(FED_C) },
+      ],
+      alreadyDeposited: money(FED_A),
+      stillOwedEarlier: "0.00",
+    });
   });
 
-  it("IL monthly seq 1: siblings = [seq 0 deposited 185.93]; liability 297.61 − 185.93 = 111.68", async () => {
+  it("round 3 D1 (S-D2 shape): seq 0 overdue 910.33, seq 1 overdue -> seq 1 alreadyDeposited 0.00, stillOwedEarlier 910.33; 1,411.16 − 0.00 − 910.33 = 500.83; seq 0 shows 0.00 / 0.00", async () => {
+    await issue(A, "2026-12-15", null);
+    await sync("2027-01-20");
+    await issue(B, "2026-12-31", null);
+    await sync("2027-01-20");
+    const r0 = await liveRow("federal", DEC, 0);
+    const r1 = await liveRow("federal", DEC, 1);
+    expect([r0.status, r1.status]).toEqual(["overdue", "overdue"]);
+    const d1 = await detail(r1.id);
+    expect({
+      amount: d1.deposit.amount,
+      liability: d1.liability,
+      siblings: d1.siblings,
+      alreadyDeposited: d1.alreadyDeposited,
+      stillOwedEarlier: d1.stillOwedEarlier,
+    }).toEqual({
+      amount: money(FED_B),
+      liability: money(FED_A + FED_B),
+      siblings: [{ id: r0.id, seq: 0, status: "overdue", amount: money(FED_A) }],
+      alreadyDeposited: "0.00",
+      stillOwedEarlier: money(FED_A),
+    });
+    expectLineReconciles(d1, FED_B);
+
+    const d0 = await detail(r0.id);
+    expect({
+      alreadyDeposited: d0.alreadyDeposited,
+      stillOwedEarlier: d0.stillOwedEarlier,
+      additionalDeposit: d0.additionalDeposit,
+    }).toEqual({
+      alreadyDeposited: "0.00",
+      stillOwedEarlier: "0.00", // the overdue seq 1 is HIGHER: never counted
+      additionalDeposit: { id: r1.id, amount: money(FED_B) },
+    });
+  });
+
+  it("IL monthly seq 1: siblings = [seq 0 deposited 185.93]; alreadyDeposited 185.93, stillOwedEarlier 0.00; liability 297.61 − 185.93 = 111.68", async () => {
     await issue(A, "2026-12-15");
     await sync("2027-01-08");
     const r0 = await liveRow("IL", DEC, 0);
@@ -1080,17 +1161,20 @@ describe("PAY-193 L3 review R1 — detail lists the period's other rows", () => 
       liability: d.liability,
       siblings: d.siblings,
       alreadyDeposited: d.alreadyDeposited,
+      stillOwedEarlier: d.stillOwedEarlier,
     }).toEqual({
       amount: money(IL_B),
       liability: money(IL_A + IL_B),
       siblings: [{ id: r0.id, seq: 0, status: "deposited", amount: money(IL_A) }],
       alreadyDeposited: money(IL_A),
+      stillOwedEarlier: "0.00",
     });
+    expectLineReconciles(d, IL_B);
     const d0 = await detail(r0.id);
     expect(d0.additionalDeposit).toEqual({ id: id1, amount: money(IL_B) });
   });
 
-  it("IL quarterly seq 1: liability 669.47 − alreadyDeposited 557.79 = 111.68; seq 0 quarter row links it", async () => {
+  it("IL quarterly seq 1: liability 669.47 − alreadyDeposited 557.79 − stillOwedEarlier 0.00 = 111.68; seq 0 quarter row links it", async () => {
     await setSchedule("IL", 2026, "quarterly", null);
     await issue(A, "2026-10-30");
     await issue(A, "2026-11-30");
@@ -1107,12 +1191,15 @@ describe("PAY-193 L3 review R1 — detail lists the period's other rows", () => 
       liability: d.liability,
       siblings: d.siblings,
       alreadyDeposited: d.alreadyDeposited,
+      stillOwedEarlier: d.stillOwedEarlier,
     }).toEqual({
       amount: money(IL_B),
       liability: money(3 * IL_A + IL_B),
       siblings: [{ id: q0.id, seq: 0, status: "deposited", amount: money(3 * IL_A) }],
       alreadyDeposited: money(3 * IL_A),
+      stillOwedEarlier: "0.00",
     });
+    expectLineReconciles(d, IL_B);
     expect((await detail(q0.id)).additionalDeposit).toEqual({ id: q1.id, amount: money(IL_B) });
   });
 });
@@ -1247,13 +1334,19 @@ function expectShortfallMail(
   j: string,
   period: string,
   overdue: boolean,
+  earlier: "made" | "due" = "made",
 ): void {
+  const made = `A payroll for ${period} was issued after the ${j} deposit for that period was made.`;
+  const due = `A payroll for ${period} was issued after the ${j} deposit for that period was already due, so its taxes weren't included in it.`;
   expect(mails.map((m) => m.userId).sort()).toEqual([...admins].sort());
   for (const m of mails) {
     expect(bare(m.subject)).toBe(`Additional ${j} tax deposit for ${period}`);
-    expect(m.body).toContain(
-      `A payroll for ${period} was issued after the ${j} deposit for that period was made.`,
-    );
+    const body = m.body
+      .replaceAll("&#39;", "'")
+      .replaceAll("&#x27;", "'")
+      .replaceAll("&apos;", "'");
+    expect(body).toContain(earlier === "made" ? made : due);
+    expect(body).not.toContain(earlier === "made" ? due : made);
     expect(m.body).toContain("added an additional deposit for the difference.");
     expect(m.body).toContain("Open Tax deposits to see the amount and due date.");
     expect(m.body.includes(OVERDUE_LINE)).toBe(overdue);
@@ -1283,7 +1376,8 @@ describe("PAY-193 L3 review R3 — admin email when a shortfall row is created",
     await E.pg.exec(`TRUNCATE email_outbox`);
     await issue(B, "2026-12-31", null);
     await sync("2027-01-20");
-    expectShortfallMail(await outbox(), admins, "Federal", "December 2026", true);
+    // Round 3 D4: seq 0 is unpaid (overdue), so the "already due" sentence.
+    expectShortfallMail(await outbox(), admins, "Federal", "December 2026", true, "due");
   });
 
   it("idempotent: a second sync, and seq 1 growing with a further run, add no mail", async () => {
@@ -1459,5 +1553,258 @@ describe("PAY-193 L3 review R5 — GET /api/export/tax-deposits includes seq", (
       ["federal", 0, FED_A],
       ["federal", 1, FED_B],
     ]);
+  });
+});
+
+// ===========================================================================
+// L3 review round 3 (Product Lead decisions after code review round 2).
+// Fail-first. Interfaces the code must meet:
+//
+//  D1 getDepositDetail:
+//     alreadyDeposited: "0.00" = Σ siblings with status 'deposited' ONLY.
+//     stillOwedEarlier: "0.00" = Σ OTHER open siblings ('pending'/'overdue')
+//       with a LOWER seq than this row; a higher-seq sibling never counts.
+//     Federal seq > 0 row: liability − alreadyDeposited − stillOwedEarlier
+//       = deposit.amount (asserted on the period's newest row).
+//  D2 State rows: alreadyDeposited comes from the state planner's credits, so
+//     the same line reconciles when a credit is a row of the OTHER period kind
+//     (a deposited July month row counted toward the Q3 quarter).
+//  D3 additionalDeposit on a seq 0 row = { id: the lowest-seq OPEN seq > 0
+//     sibling, else the highest seq > 0; amount: Σ amounts of the seq > 0
+//     siblings that are not deposited } — null when there is no seq > 0
+//     sibling or that sum is 0.00.
+//  D4 Shortfall mail, first sentence: some lower-seq sibling 'deposited' ->
+//     "A payroll for {period} was issued after the {J} deposit for that period
+//     was made."; else -> "A payroll for {period} was issued after the {J}
+//     deposit for that period was already due, so its taxes weren't included
+//     in it."
+//  D5 A failure while writing the shortfall mail never loses the shortfall row
+//     (or its audit row) and never fails the sync; no partial mail rows.
+//  D6 (state RETURNING matched by key, not position): not testable here —
+//     PGlite returns multi-row INSERT ... RETURNING in VALUES order.
+//
+// Oracle (Python decimal, scratch script; never the engine) — header A/B/C:
+//   S-D2 shape: L 1,411.16 − 0.00 − 910.33 = 500.83
+//   seq 2 with seq 1 overdue: L 1,732.39 − 910.33 − 500.83 = 321.23
+//   D3 seq 1 + seq 2 overdue: 500.83 + 321.23 = 822.06
+//   D2 IL Q3 2026: L = Jul 185.93 + Aug 185.93 + Sep (185.93 + 111.68) = 669.47;
+//     July month row 185.93 deposited (due 2026-08-15 Sat -> 2026-08-17);
+//     quarterly switch: quarter seq 0 = 669.47 − 111.68 − 185.93 = 371.86
+//     (before the late run: 557.79 − 185.93), due 2026-10-31 Sat -> 2026-11-02;
+//     late run B -> quarter seq 1 = 669.47 − (185.93 + 371.86) = 111.68;
+//     alreadyDeposited 557.79, stillOwedEarlier 0.00.
+// ===========================================================================
+
+describe("PAY-193 L3 round 3 D3 — additionalDeposit = what is still extra to pay", () => {
+  it("seq 0 deposited, seq 1 overdue 500.83, seq 2 overdue 321.23 -> {seq 1 id (lowest open), 822.06}", async () => {
+    const [id0, id1] = await fedSeq1Pending();
+    await sync("2027-01-20"); // seq 1 flips overdue
+    await issue(C, "2026-12-31", null);
+    await sync("2027-01-21"); // seq 2 inserted overdue
+    expect(await live("federal")).toEqual([
+      `0 month ${DEC} ${FED_A} ${FED_DUE} deposited`,
+      `1 month ${DEC} ${FED_B} ${FED_DUE} overdue`,
+      `2 month ${DEC} ${FED_C} ${FED_DUE} overdue`,
+    ]);
+    expect((await detail(id0)).additionalDeposit).toEqual({
+      id: id1,
+      amount: money(FED_B + FED_C),
+    });
+  });
+
+  it("seq 0 + seq 1 deposited, seq 2 pending 321.23 -> {seq 2 id, 321.23} (deposited seq 1 not counted)", async () => {
+    const [id0, id1] = await fedSeq1Pending();
+    await deposit(id1, "2027-01-12", "EFTPS-SYN-L3-D3a");
+    await issue(C, "2026-12-31", null);
+    await sync("2027-01-13");
+    const id2 = (await liveRow("federal", DEC, 2)).id;
+    expect((await detail(id0)).additionalDeposit).toEqual({ id: id2, amount: money(FED_C) });
+  });
+
+  it("seq 0 + seq 1 both deposited, nothing open -> null (nothing extra to pay)", async () => {
+    const [id0, id1] = await fedSeq1Pending();
+    await deposit(id1, "2027-01-12", "EFTPS-SYN-L3-D3b");
+    expect((await detail(id0)).additionalDeposit).toBeNull();
+  });
+
+  it("open seq 1 shrunk to 0.00 by a void -> null", async () => {
+    await issue(A, "2026-12-15", null);
+    await sync("2027-01-08");
+    const id0 = (await liveRow("federal", DEC, 0)).id;
+    await deposit(id0, "2027-01-08", "EFTPS-SYN-L3-D3c");
+    const rB = await issue(B, "2026-12-31", null);
+    await sync("2027-01-10");
+    await voidRun(rB);
+    await sync("2027-01-11");
+    expect((await liveRow("federal", DEC, 1)).c).toBe(0);
+    expect((await detail(id0)).additionalDeposit).toBeNull();
+  });
+
+  it("seq > 0 row: additionalDeposit null", async () => {
+    const [, id1] = await fedSeq1Pending();
+    expect((await detail(id1)).additionalDeposit).toBeNull();
+  });
+});
+
+describe("PAY-193 L3 round 3 D2 — state alreadyDeposited from planner credits across period kinds", () => {
+  it("IL July month deposited, schedule -> quarterly, Q3 seq 0 deposited, late Q3 run -> Q3 seq 1 111.68; 669.47 − 557.79 − 0.00 = 111.68", async () => {
+    const JUL = "2026-07-01";
+    const JUL_DUE = "2026-08-17"; // 2026-08-15 is a Saturday
+    const Q3_DUE = "2026-11-02"; // last day of October 2026 (Sat) -> Monday
+    const ilRow = async (kind: string, seq: number) => {
+      const r = (await rows("IL")).find(
+        (x) => x.status !== "superseded" && x.start === JUL && x.kind === kind && x.seq === seq,
+      );
+      if (!r) throw new Error(`no live IL ${kind} row at ${JUL} seq ${seq}`);
+      return r;
+    };
+
+    await issue(A, "2026-07-15");
+    await sync("2026-08-05");
+    const jul = await ilRow("month", 0);
+    expect([jul.c, jul.due, jul.status]).toEqual([IL_A, JUL_DUE, "pending"]);
+    await deposit(jul.id, "2026-08-05", "IL-SYN-L3-JUL");
+
+    await issue(A, "2026-08-14");
+    await issue(A, "2026-09-15");
+    await setSchedule("IL", 2026, "quarterly", null);
+    await sync("2026-10-05");
+    expect(await live("IL")).toEqual([
+      `0 month ${JUL} ${IL_A} ${JUL_DUE} deposited`,
+      `0 quarter ${JUL} ${2 * IL_A} ${Q3_DUE} pending`,
+    ]);
+    const q0 = await ilRow("quarter", 0);
+    await deposit(q0.id, "2026-10-05", "IL-SYN-L3-Q3");
+
+    await issue(B, "2026-09-30"); // late Q3 run
+    await sync("2026-10-10");
+    expect(await live("IL")).toEqual([
+      `0 month ${JUL} ${IL_A} ${JUL_DUE} deposited`,
+      `0 quarter ${JUL} ${2 * IL_A} ${Q3_DUE} deposited`,
+      `1 quarter ${JUL} ${IL_B} ${Q3_DUE} pending`,
+    ]);
+    const q1 = await ilRow("quarter", 1);
+    const d = await detail(q1.id);
+    expect({
+      amount: d.deposit.amount,
+      liability: d.liability,
+      siblings: d.siblings,
+      alreadyDeposited: d.alreadyDeposited,
+      stillOwedEarlier: d.stillOwedEarlier,
+    }).toEqual({
+      amount: money(IL_B),
+      liability: money(3 * IL_A + IL_B),
+      // Siblings stay same-kind: the July month row is a credit, not a sibling.
+      siblings: [{ id: q0.id, seq: 0, status: "deposited", amount: money(2 * IL_A) }],
+      alreadyDeposited: money(IL_A + 2 * IL_A),
+      stillOwedEarlier: "0.00",
+    });
+    expectLineReconciles(d, IL_B);
+  });
+});
+
+describe("PAY-193 L3 round 3 D4 — shortfall mail says 'was made' or 'already due'", () => {
+  it("S-D2 shape (seq 0 overdue, unpaid) -> 'already due' sentence, not 'was made'", async () => {
+    const admins = await ensureAdmins();
+    await issue(A, "2026-12-15", null);
+    await sync("2027-01-20");
+    await issue(B, "2026-12-31", null);
+    await sync("2027-01-20");
+    expectShortfallMail(await outbox(), admins, "Federal", "December 2026", true, "due");
+  });
+
+  it("S-D3 shape (seq 0 deposited) -> 'was made' sentence", async () => {
+    const admins = await ensureAdmins();
+    await fedSeq1Pending();
+    expectShortfallMail(await outbox(), admins, "Federal", "December 2026", false, "made");
+  });
+
+  it("seq 2 with seq 0 deposited and seq 1 overdue -> 'was made' (some lower-seq row is deposited)", async () => {
+    const admins = await ensureAdmins();
+    await fedSeq1Pending();
+    await sync("2027-01-20"); // seq 1 overdue
+    await E.pg.exec(`TRUNCATE email_outbox`);
+    await issue(C, "2026-12-31", null);
+    await sync("2027-01-21");
+    expectShortfallMail(await outbox(), admins, "Federal", "December 2026", true, "made");
+  });
+});
+
+// D5: a trigger stands in for the mail write failing. The FIRST shortfall mail
+// row inserts, the next one raises, so a non-isolated write would leave either
+// a partial set of mail rows or roll back the deposit row.
+async function withFailingShortfallMail<T>(fn: () => Promise<T>): Promise<T> {
+  await E.pg.exec(`
+    CREATE OR REPLACE FUNCTION l3_fail_shortfall_mail() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NEW.event_type = 'tax_deposit_shortfall'
+         AND EXISTS (SELECT 1 FROM email_outbox WHERE event_type = 'tax_deposit_shortfall') THEN
+        RAISE EXCEPTION 'synthetic outbox failure (PAY-193 L3 D5)';
+      END IF;
+      RETURN NEW;
+    END $$;
+    DROP TRIGGER IF EXISTS l3_fail_shortfall_mail ON email_outbox;
+    CREATE TRIGGER l3_fail_shortfall_mail BEFORE INSERT ON email_outbox
+      FOR EACH ROW EXECUTE FUNCTION l3_fail_shortfall_mail();
+  `);
+  try {
+    return await fn();
+  } finally {
+    await E.pg.exec(`DROP TRIGGER IF EXISTS l3_fail_shortfall_mail ON email_outbox;
+                     DROP FUNCTION IF EXISTS l3_fail_shortfall_mail();`);
+  }
+}
+
+async function shortfallMailCount(): Promise<number> {
+  const r = await E.pg.query<{ n: number }>(
+    `SELECT count(*)::int AS n FROM email_outbox WHERE event_type = 'tax_deposit_shortfall'`,
+  );
+  return r.rows[0]?.n ?? -1;
+}
+
+describe("PAY-193 L3 round 3 D5 — a failing shortfall mail never loses the deposit row", () => {
+  it("federal: mail write throws -> sync resolves; seq 1 500.83 pending and its audit row kept; no shortfall mail rows", async () => {
+    const admins = await ensureAdmins();
+    expect(admins.length).toBeGreaterThanOrEqual(2);
+    await issue(A, "2026-12-15", null);
+    await sync("2027-01-08");
+    await deposit((await liveRow("federal", DEC, 0)).id, "2027-01-08", "EFTPS-SYN-L3-D5");
+    await issue(B, "2026-12-31", null);
+
+    await withFailingShortfallMail(async () => {
+      await expect(sync("2027-01-10")).resolves.toBeDefined();
+    });
+    expect(await live("federal")).toEqual([
+      `0 month ${DEC} ${FED_A} ${FED_DUE} deposited`,
+      `1 month ${DEC} ${FED_B} ${FED_DUE} pending`,
+    ]);
+    expect((await shortfallAudits()).map((a) => a.after)).toEqual([
+      { jurisdiction: "federal", periodStart: DEC, periodKind: "month", seq: 1, cents: FED_B },
+    ]);
+    expect(await shortfallMailCount(), "no partial shortfall mail rows").toBe(0);
+    await invariants();
+  });
+
+  it("IL monthly: mail write throws -> sync resolves; IL seq 1 111.68 pending and its audit row kept; no shortfall mail rows", async () => {
+    const admins = await ensureAdmins();
+    expect(admins.length).toBeGreaterThanOrEqual(2);
+    await issue(A, "2026-12-15");
+    await sync("2027-01-08");
+    await deposit((await liveRow("IL", DEC, 0)).id, "2027-01-08", "IL-SYN-L3-D5");
+    // Federal seq 0 stays pending: it grows, no federal shortfall row or mail.
+    await issue(B, "2026-12-31");
+
+    await withFailingShortfallMail(async () => {
+      await expect(sync("2027-01-10")).resolves.toBeDefined();
+    });
+    expect(await live("IL")).toEqual([
+      `0 month ${DEC} ${IL_A} ${IL_M_DUE} deposited`,
+      `1 month ${DEC} ${IL_B} ${IL_M_DUE} pending`,
+    ]);
+    expect(
+      (await shortfallAudits()).filter((a) => a.after?.jurisdiction === "IL").map((a) => a.after),
+    ).toEqual([{ jurisdiction: "IL", periodStart: DEC, periodKind: "month", seq: 1, cents: IL_B }]);
+    expect(await shortfallMailCount(), "no partial shortfall mail rows").toBe(0);
+    await invariants();
   });
 });
