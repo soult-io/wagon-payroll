@@ -255,14 +255,16 @@ async function contractorEvents(db: Db, year: number, month: number): Promise<Ca
  * built from the stored period_kind.
  */
 function depositLabel(
-  deposit: { jurisdiction: string; periodStart: string; periodKind: string },
+  deposit: { jurisdiction: string; periodStart: string; periodKind: string; seq: number },
   what: "due" | "made",
 ): string {
+  // PAY-193: an additional (seq > 0) deposit for an already-paid period.
+  const prefix = deposit.seq > 0 ? "Additional " : "";
   if (deposit.jurisdiction === "federal") {
-    return `941 deposit ${what} — ${periodLabel(deposit.periodStart)}`;
+    return `${prefix}941 deposit ${what} — ${periodLabel(deposit.periodStart)}`;
   }
   const kind = deposit.periodKind === "quarter" ? "quarter" : "month";
-  return `${stateName(deposit.jurisdiction)} deposit ${what} — ${depositPeriodLabel(deposit.periodStart, kind)}`;
+  return `${prefix}${stateName(deposit.jurisdiction)} deposit ${what} — ${depositPeriodLabel(deposit.periodStart, kind)}`;
 }
 
 /** Deposit obligations (due_date) and actuals (deposited_on) in the month. */

@@ -335,6 +335,7 @@ async function fetchDeposits(db: Db, q: DepositQuery) {
       jurisdiction: taxDeposits.jurisdiction,
       periodKind: taxDeposits.periodKind,
       periodStart: taxDeposits.periodStart,
+      seq: taxDeposits.seq,
       amount: taxDeposits.amount,
       dueDate: taxDeposits.dueDate,
       status: taxDeposits.status,
@@ -350,6 +351,7 @@ async function fetchDeposits(db: Db, q: DepositQuery) {
       cmp(a.periodStart, b.periodStart) ||
       cmp(a.jurisdiction, b.jurisdiction) ||
       cmp(a.periodKind, b.periodKind) ||
+      cmp(a.seq, b.seq) ||
       cmp(a.id, b.id),
   );
 
@@ -361,6 +363,8 @@ async function fetchDeposits(db: Db, q: DepositQuery) {
     periodKind: r.periodKind,
     periodStart: r.periodStart,
     periodEnd: periodEndOf(r.periodStart, r.periodKind),
+    // PAY-193 D9.6: 0 = the period's first row, N = its Nth additional deposit.
+    seq: r.seq,
     amountCents: parseCents(r.amount),
     dueDate: r.dueDate,
     status: r.status,

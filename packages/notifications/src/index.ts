@@ -35,6 +35,8 @@ export const EVENT_TYPE = {
   taxDepositDue: "tax_deposit_due",
   /** PAY-91 — a state deposit period could not be worked out (data error; admin, always on). */
   taxDepositSyncFailed: "tax_deposit_sync_failed",
+  /** PAY-193 — an additional (shortfall) deposit row was created for a paid period (admin, always on). */
+  taxDepositShortfall: "tax_deposit_shortfall",
   /** PAY-10 — quarterly filing (Form 941) due-date reminder (admin). */
   taxFilingDue: "tax_filing_due",
   /** PAY-11 — an employee's W-2 for a tax year is available for download. */
@@ -461,13 +463,20 @@ export function contractorRecurringPaymentDue(
  */
 export function taxDepositDue(
   ctx: TemplateContext,
-  data: { jurisdiction: string; periodLabel: string; amountLabel: string; dueDate: string },
+  data: {
+    jurisdiction: string;
+    periodLabel: string;
+    amountLabel: string;
+    dueDate: string;
+    /** PAY-193: an additional (seq > 0) deposit for an already-paid period. */
+    additional?: boolean;
+  },
 ): RenderedEmail {
   const jurisdiction = data.jurisdiction === "federal" ? "Federal" : data.jurisdiction;
   const body = `<p>The <strong>${escapeHtml(jurisdiction)}</strong> payroll tax deposit for <strong>${escapeHtml(data.periodLabel)}</strong> — ${escapeHtml(data.amountLabel)} — is due on <strong>${data.dueDate}</strong>.</p><p>Make the payment on eftps.gov, then <a href="${ctx.appUrl}">log in to record the deposit and EFTPS confirmation number</a>.</p>`;
   return email(
     ctx,
-    `tax deposit due ${data.dueDate}`,
+    `${data.additional ? "Additional tax" : "tax"} deposit due ${data.dueDate}`,
     body,
     `The ${jurisdiction} payroll tax deposit for ${data.periodLabel} (${data.amountLabel}) is due on ${data.dueDate}. Make the payment on eftps.gov, then log in to record it: ${ctx.appUrl}`,
   );
@@ -491,6 +500,33 @@ export function taxDepositSyncFailed(
     `${data.jurisdictionLabel} tax deposits for ${data.periodLabel} need checking`,
     body,
     `We couldn't work out the ${data.jurisdictionLabel} tax deposits for ${data.periodLabel}. Until this is fixed, the ${data.jurisdictionLabel} amount for ${data.periodLabel} may not be right. Check it before you pay. The payroll data for that period needs checking; every other deposit was updated as usual. Open your tax deposits, and contact support about this period: ${depositsUrl}`,
+  );
+}
+
+/**
+ * Admin (PAY-193): a payroll was issued for a period whose deposit was
+ * already made, so an additional deposit row was created for the
+ * difference. One mail per new row. No amounts — the app shows them.
+ */
+export function taxDepositShortfall(
+  ctx: TemplateContext,
+  data: { jurisdictionLabel: string; periodLabel: string; overdue: boolean },
+): RenderedEmail {
+  const j = data.jurisdictionLabel;
+  const period = data.periodLabel;
+  const depositsUrl = `${ctx.appUrl}/admin/deposits`;
+  const sentences = [
+    `A payroll for ${period} was issued after the ${j} deposit for that period was made.`,
+    `${ctx.brandName} added an additional deposit for the difference.`,
+    "Open Tax deposits to see the amount and due date.",
+    ...(data.overdue ? ["It is already past its due date."] : []),
+  ].join(" ");
+  const body = `<p>${escapeHtml(sentences)}</p><p><a href="${depositsUrl}">${escapeHtml(depositsUrl)}</a></p>`;
+  return email(
+    ctx,
+    `Additional ${j} tax deposit for ${period}`,
+    body,
+    `${sentences} ${depositsUrl}`,
   );
 }
 
