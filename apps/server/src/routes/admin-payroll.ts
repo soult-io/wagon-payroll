@@ -63,6 +63,7 @@ function payrollErrorStatus(err: PayrollServiceError): number {
     case "late_payment_incomplete":
     case "state_return_filed":
     case "late_payment_amount_mismatch":
+    case "late_issue_not_supported":
       return 409;
     case "no_compensation":
     case "no_tax_config":

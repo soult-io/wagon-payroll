@@ -170,7 +170,11 @@ export interface StateReturnAnswer {
 
 const answer = (filed: boolean): string => (filed ? "Yes, filed" : "No, not filed");
 
-/** The state questions with the admin's answers, for the run.issued_late audit row. */
+/**
+ * The state questions with the admin's answers, for the run.issued_late audit
+ * row: per state a name line, then one `${question} Answer: ${answer}` line
+ * per question.
+ */
 export function stateAttestationText(
   questions: readonly StateQuestions[],
   answers: readonly StateReturnAnswer[],
@@ -180,9 +184,9 @@ export function stateAttestationText(
       const a = answers.find((x) => x.jurisdiction === q.jurisdiction);
       return [
         stateName(q.jurisdiction),
-        `${q.withholdingReturn} ${answer(a?.withholdingReturnFiled ?? false)}`,
-        `${q.suiWageReport} ${answer(a?.suiWageReportFiled ?? false)}`,
-        `${q.annualReconciliation} ${answer(a?.annualReconciliationFiled ?? false)}`,
+        `${q.withholdingReturn} Answer: ${answer(a?.withholdingReturnFiled ?? false)}`,
+        `${q.suiWageReport} Answer: ${answer(a?.suiWageReportFiled ?? false)}`,
+        `${q.annualReconciliation} Answer: ${answer(a?.annualReconciliationFiled ?? false)}`,
       ].join("\n");
     })
     .join("\n\n");
@@ -195,8 +199,12 @@ export function confirmationRequiredMessage(payDate: string): string {
 export function incompleteMessage(jurisdictions: readonly string[]): string {
   return jurisdictions.length > 0
     ? `Answer every question for each state on this payroll (${stateList(jurisdictions)}). Nothing was issued.`
-    : "This payroll has no state questions to answer. Nothing was issued.";
+    : "The state questions on this screen are out of date. Nothing was issued. Close this window and select Issue payslip again.";
 }
+
+/** LI-16: lateIssueAllowed() is false (PAY-119 depositor-schedule hook). */
+export const LATE_ISSUE_NOT_SUPPORTED_MESSAGE =
+  "Wagon Payroll can't record a late payroll for your business's deposit schedule yet. Nothing was issued.";
 
 export function stateReturnFiledMessage(jurisdictions: readonly string[]): string {
   return `Nothing was issued. You said a return or report for ${stateList(jurisdictions)} that covers this pay date is already filed. Adding this payroll means correcting that filing with a state correction form, which Wagon Payroll doesn't prepare. Keep the pay date as it is. Keep your own record of this payment, and make the correction outside Wagon Payroll or with your tax preparer.`;

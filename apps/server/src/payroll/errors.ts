@@ -40,7 +40,8 @@ export class PayrollServiceError extends Error {
       | "late_payment_confirmation_required"
       | "late_payment_incomplete"
       | "state_return_filed"
-      | "late_payment_amount_mismatch",
+      | "late_payment_amount_mismatch"
+      | "late_issue_not_supported",
     message: string,
     /**
      * Extra body fields (PAY-193 D9.3), spread into the error body before

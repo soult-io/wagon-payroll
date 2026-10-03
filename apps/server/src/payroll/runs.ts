@@ -15,7 +15,7 @@ import {
   payrollEntries,
   payrollRuns,
   paySchedules,
-  stateTaxConfigs,
+  w2DeliveryConsents,
 } from "@payroll/db";
 import {
   calculatePayroll,
@@ -73,6 +73,7 @@ import {
   attestationText,
   confirmationRequiredMessage,
   incompleteMessage,
+  LATE_ISSUE_NOT_SUPPORTED_MESSAGE,
   type LateTrigger,
   lateTrigger,
   type StateQuestions,
@@ -862,32 +863,6 @@ async function assertRunCurrent(
   if (fields.length > 0) throw new StaleDraftError(fields, run.publicId);
 }
 
-/** PL amendment 3: the no-income-tax variant comes from the state config row's kind. */
-async function noIncomeTaxStates(
-  tx: DbLike,
-  jurisdictions: readonly string[],
-  taxYear: number,
-): Promise<Set<string>> {
-  const none = new Set<string>();
-  for (const code of jurisdictions) {
-    const rows = await tx
-      .select({ kind: stateTaxConfigs.kind })
-      .from(stateTaxConfigs)
-      .where(
-        and(
-          eq(stateTaxConfigs.taxYear, taxYear),
-          or(
-            eq(stateTaxConfigs.jurisdiction, code),
-            sql`${stateTaxConfigs.jurisdiction} LIKE ${`${code}:%`}`,
-          ),
-        ),
-      )
-      .limit(1);
-    if (rows[0]?.kind === "none") none.add(code);
-  }
-  return none;
-}
-
 /** The run's stored net_pay entry in cents (NUMERIC string, exact; no floats). */
 async function storedNetPayCents(tx: DbLike, runId: number): Promise<number | null> {
   const rows = await tx
@@ -911,12 +886,20 @@ async function assertLateIssueConfirmed(
 ): Promise<LateIssueContext | null> {
   const snapshot = run.runSnapshot as RunSnapshot;
   const trigger = lateTrigger(run.payDate, today, snapshot.inputs.state?.workState ?? null);
-  if (trigger === null || !lateIssueAllowed()) return null;
+  if (trigger === null) return null;
   const payDate = run.payDate;
+  // LI-16: fail closed before any write when the depositor schedule is not supported.
+  if (!lateIssueAllowed()) {
+    throw new PayrollServiceError("late_issue_not_supported", LATE_ISSUE_NOT_SUPPORTED_MESSAGE, {
+      payDate,
+    });
+  }
   const taxYear = snapshot.inputs.resolution?.taxYear ?? Number(payDate.slice(0, 4));
   const jurisdictions = stateReturnJurisdictions(snapshot);
-  const none = await noIncomeTaxStates(tx, jurisdictions, taxYear);
-  const questions = jurisdictions.map((j) => stateQuestions(j, payDate, none.has(j)));
+  // PL amendment 3 / LI-17: the no-income-tax variant follows the state
+  // config the run was computed with (snapshot kind), never the live table.
+  const noIncomeTax = snapshot.inputs.state?.kind === "none";
+  const questions = jurisdictions.map((j) => stateQuestions(j, payDate, noIncomeTax));
 
   if (!latePayment) {
     throw new PayrollServiceError(
@@ -975,10 +958,26 @@ async function assertLateIssueConfirmed(
   return { trigger, taxYear, questions, latePayment };
 }
 
+/** True when the employee has an electronic W-2 delivery consent that is not withdrawn. */
+async function hasElectronicW2Consent(tx: DbLike, employeeId: number): Promise<boolean> {
+  const rows = await tx
+    .select({ id: w2DeliveryConsents.id })
+    .from(w2DeliveryConsents)
+    .where(
+      and(eq(w2DeliveryConsents.employeeId, employeeId), isNull(w2DeliveryConsents.withdrawnAt)),
+    )
+    .limit(1);
+  return rows.length > 0;
+}
+
 /**
- * L4.7: the w2_changed notice — only when the year's W-2 is available, its
- * w2_available notice already went out, and the employee is a W-2 employee
- * with a login. Returns true when the outbox row was written.
+ * L4.7 + PL round 2: the W-2 changed follow-up — only when the year's W-2 is
+ * available and its w2_available notice already went out, for a W-2
+ * employee. Consented to electronic delivery → the corrected-W-2 email and
+ * `w2_changed_notice_sent`. Otherwise (no consent, consent withdrawn, or no
+ * login — which can never have consented) → `w2_paper_correction_needed`,
+ * plus a paper courtesy notice when the employee has a login. Returns the
+ * follow-up code, or null.
  */
 async function notifyW2Changed(
   tx: Tx,
@@ -986,20 +985,25 @@ async function notifyW2Changed(
   run: RunRow,
   taxYear: number,
   today: string,
-): Promise<boolean> {
-  if (!isW2Available(taxYear, today)) return false;
-  if (!(await notifiedYears(tx)).includes(taxYear)) return false;
+): Promise<"w2_changed_notice_sent" | "w2_paper_correction_needed" | null> {
+  if (!isW2Available(taxYear, today)) return null;
+  if (!(await notifiedYears(tx)).includes(taxYear)) return null;
   const rows = await tx.select().from(employees).where(eq(employees.id, run.employeeId)).limit(1);
   const employee = rows[0];
-  if (!employee?.userId || employee.employmentType !== "w2") return false;
-  const rendered = tplW2Changed(await templateContext(tx as DbLike, config), { taxYear });
+  if (employee?.employmentType !== "w2") return null;
+  if (!employee.userId) return "w2_paper_correction_needed";
+  const consented = await hasElectronicW2Consent(tx as DbLike, employee.id);
+  const rendered = tplW2Changed(await templateContext(tx as DbLike, config), {
+    taxYear,
+    consented,
+  });
   await tx.insert(emailOutbox).values({
     userId: employee.userId,
     eventType: EVENT_TYPE.w2Changed,
     subject: rendered.subject,
     bodyHtml: rendered.html,
   });
-  return true;
+  return consented ? "w2_changed_notice_sent" : "w2_paper_correction_needed";
 }
 
 /**
@@ -1022,9 +1026,8 @@ async function applyLateIssueEffects(
     today,
     actorId,
   });
-  if (await notifyW2Changed(tx, config, run, late.taxYear, today)) {
-    followUps.push("w2_changed_notice_sent");
-  }
+  const w2Code = await notifyW2Changed(tx, config, run, late.taxYear, today);
+  if (w2Code) followUps.push(w2Code);
   const { latePayment } = late;
   await tx.insert(auditEvents).values({
     actorId,
