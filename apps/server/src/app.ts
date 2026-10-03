@@ -92,7 +92,7 @@ export async function buildApp(deps: BuildAppDeps = {}) {
     ...(deps.clock ? { clock: deps.clock } : {}),
   });
   registerPayslipRoutes(app, { db, guards });
-  registerMyW2Routes(app, { db, config, guards });
+  registerMyW2Routes(app, { db, config, guards, ...(deps.clock ? { clock: deps.clock } : {}) });
   registerChangeRequestRoutes(app, {
     db,
     config,

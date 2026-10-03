@@ -230,15 +230,37 @@ describe("D2 employee W-2 list carries ready per year, no reason codes", () => {
     expect(res.statusCode, res.body).toBe(200);
     expect(res.json()).toEqual({
       w2s: [
-        { year: 2025, availableOn: "2026-01-01", ready: true },
-        { year: 2024, availableOn: "2025-01-01", ready: false },
+        {
+          year: 2025,
+          availableOn: "2026-01-01",
+          ready: true,
+          corrected: false,
+          downloadable: true,
+        },
+        {
+          year: 2024,
+          availableOn: "2025-01-01",
+          ready: false,
+          corrected: false,
+          downloadable: false,
+        },
       ],
     });
   });
 
   it("a blocked W-2 is listed as not ready", async () => {
     const res = await get("/api/my/w2", overMax.session);
-    expect(res.json()).toEqual({ w2s: [{ year: 2023, availableOn: "2024-01-01", ready: false }] });
+    expect(res.json()).toEqual({
+      w2s: [
+        {
+          year: 2023,
+          availableOn: "2024-01-01",
+          ready: false,
+          corrected: false,
+          downloadable: false,
+        },
+      ],
+    });
   });
 });
 

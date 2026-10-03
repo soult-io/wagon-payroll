@@ -11,6 +11,8 @@
  * - bank/SSN data never appears in ANY email.
  */
 
+import { PAYSLIPS_NAV_LABEL, W2_CARD_HEADING } from "@payroll/shared";
+
 export const EVENT_TYPE = {
   payrollDraftReady: "payroll_draft_ready",
   payslipIssued: "payslip_issued",
@@ -609,11 +611,11 @@ export function w2Changed(
   const year = data.taxYear;
   if (data.consented) {
     const lead = (co: string) =>
-      `${co} has corrected your ${year} Form W-2 because of a payroll processed after your original W-2 was issued. The corrected W-2 is marked CORRECTED and replaces the earlier one. Use the corrected W-2 for your tax return.`;
+      `${co} has corrected your ${year} Form W-2. The corrected W-2 is marked CORRECTED and replaces the earlier one. Use the corrected W-2 for your tax return.`;
     const tail =
       "If you already filed your return using the earlier W-2, you may need to amend it.";
     const where = (signIn: string) =>
-      `To view and print it, sign in at ${signIn}, open Payslips, and find "W-2 wage and tax statements".`;
+      `To view and print it, sign in at ${signIn}, open ${PAYSLIPS_NAV_LABEL}, and find "${W2_CARD_HEADING}".`;
     const appUrl = escapeHtml(ctx.appUrl);
     const body = `<p>${lead(escapeHtml(ctx.companyName))}</p><p>${where(`<a href="${appUrl}">${appUrl}</a>`)}</p><p>${tail}</p>`;
     return {
@@ -623,7 +625,7 @@ export function w2Changed(
     };
   }
   const notice = (co: string) =>
-    `${co} processed a payroll that changes your ${year} Form W-2. Your employer will give you a corrected paper W-2, marked CORRECTED. Use the corrected paper copy for your tax return, not the earlier one. This email is a notice only and is not your W-2.`;
+    `${co} has corrected your ${year} Form W-2. ${co} will give you a corrected paper W-2, marked CORRECTED. Use the corrected paper copy for your tax return, not the earlier one. This email is a notice only and is not your W-2.`;
   return email(
     ctx,
     `Your ${year} W-2 is being corrected`,

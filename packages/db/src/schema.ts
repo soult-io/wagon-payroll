@@ -998,6 +998,41 @@ export const w2DeliveryConsents = pgTable(
   (t) => [unique("w2_delivery_consents_employee_uniq").on(t.employeeId)],
 );
 
+/**
+ * PAY-206: one row per W-2 furnishing event — the employee could hold a copy
+ * with these figures from `furnished_at`. Append-only (trigger in migration
+ * 0027). `boxes_hash` = w2BoxesHash over boxes 1-6 in cents; it never leaves
+ * the database (no API body, log, email or audit payload).
+ */
+export const w2Furnishings = pgTable(
+  "w2_furnishings",
+  {
+    id: serial("id").primaryKey(),
+    employeeId: integer("employee_id")
+      .notNull()
+      .references(() => employees.id),
+    taxYear: integer("tax_year").notNull(),
+    boxesHash: text("boxes_hash").notNull(),
+    hashVersion: smallint("hash_version").notNull().default(1),
+    corrected: boolean("corrected").notNull(),
+    /** portal_notice | employee_download | admin_print | paper_handed | backfill */
+    method: text("method").notNull(),
+    /** Auth user id for admin/employee actions; null for the scheduler. */
+    actorId: text("actor_id"),
+    furnishedAt: timestamp("furnished_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("w2_furnishings_employee_year_idx").on(t.employeeId, t.taxYear, t.furnishedAt),
+    check("w2_furnishings_tax_year_check", sql`${t.taxYear} BETWEEN 2020 AND 2100`),
+    check("w2_furnishings_boxes_hash_check", sql`${t.boxesHash} ~ '^[0-9a-f]{64}$'`),
+    check(
+      "w2_furnishings_method_check",
+      sql`${t.method} IN ('portal_notice','employee_download','admin_print','paper_handed','backfill')`,
+    ),
+  ],
+);
+
 // ---------------------------------------------------------------------------
 // 12. PAY-13 phase 1 — per-state income-tax withholding
 // ---------------------------------------------------------------------------

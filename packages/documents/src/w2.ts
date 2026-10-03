@@ -20,11 +20,21 @@
  */
 
 import { Buffer } from "node:buffer";
-import { PDFDocument, type PDFForm } from "pdf-lib";
+import {
+  decodePDFRawStream,
+  PDFArray,
+  PDFDocument,
+  type PDFForm,
+  PDFRawStream,
+  PDFStream,
+  rgb,
+  StandardFonts,
+} from "pdf-lib";
 import { templateBytes } from "./forms/templates.js";
 import {
   W2_ADMIN_COPIES,
   W2_ADMIN_COPY_D_PAGES,
+  W2_CORRECTED_MARK_PAGES,
   W2_EMPLOYEE_COPIES,
   W2_EMPLOYEE_PAGES,
   W3_CHECKBOXES,
@@ -188,12 +198,45 @@ export function prepareW2AdminCopyD(input: W2Input): Promise<PDFDocument> {
 }
 
 /**
+ * PAY-206 (iw2w3 p.28): the CORRECTED mark — Helvetica-Bold 14 pt in the top
+ * margin, left-aligned with the form's left edge. Clear of every AcroForm
+ * widget (the highest, box a, sits at y 732-744 on a 612 x 792 page).
+ */
+export const CORRECTED_MARK = { text: "CORRECTED", size: 14, x: 38, y: 762 } as const;
+
+/** Options of the employee packet. */
+export interface W2EmployeePacketOptions {
+  /** Draw "CORRECTED" on Copies B, C and 2 (the employee may hold other figures). */
+  corrected?: boolean;
+}
+
+async function markCorrected(doc: PDFDocument, pages: readonly number[]): Promise<void> {
+  const font = await doc.embedFont(StandardFonts.HelveticaBold);
+  for (const index of pages) {
+    doc.getPage(index).drawText(CORRECTED_MARK.text, {
+      font,
+      size: CORRECTED_MARK.size,
+      x: CORRECTED_MARK.x,
+      y: CORRECTED_MARK.y,
+      color: rgb(0, 0, 0),
+    });
+  }
+}
+
+/**
  * Flatten the WHOLE document first (unfilled copies flatten to blank), then
  * prune to the kept pages — removing pages is trivial once no fields remain,
  * and this sidesteps field-removal quirks in the template's Copy A widgets.
+ * PAY-206: `mark` pages (template indexes) get CORRECTED after the flatten
+ * and before the prune. No mark → the document is untouched (same bytes).
  */
-async function renderPacket(doc: PDFDocument, keep: readonly number[]): Promise<Buffer> {
+async function renderPacket(
+  doc: PDFDocument,
+  keep: readonly number[],
+  mark: readonly number[] = [],
+): Promise<Buffer> {
   doc.getForm().flatten();
+  if (mark.length > 0) await markCorrected(doc, mark);
   removePagesExcept(doc, keep);
   return Buffer.from(await doc.save());
 }
@@ -201,9 +244,17 @@ async function renderPacket(doc: PDFDocument, keep: readonly number[]): Promise<
 /**
  * The employee's ONE W-2 PDF: official Form W-2 filled + flattened — Copy B,
  * Copy C, Copy 2, and the IRS Notice/Instructions-for-Employee pages.
+ * PAY-206: `{ corrected: true }` marks Copies B, C and 2 "CORRECTED".
  */
-export async function renderW2EmployeePacket(input: W2Input): Promise<Buffer> {
-  return renderPacket(await prepareW2EmployeePacket(input), W2_EMPLOYEE_PAGES);
+export async function renderW2EmployeePacket(
+  input: W2Input,
+  opts: W2EmployeePacketOptions = {},
+): Promise<Buffer> {
+  return renderPacket(
+    await prepareW2EmployeePacket(input),
+    W2_EMPLOYEE_PAGES,
+    opts.corrected ? W2_CORRECTED_MARK_PAGES : [],
+  );
 }
 
 /** Admin Copy D (employer records) for one employee — filled + flattened. */
@@ -245,6 +296,37 @@ export async function renderW3Pdf(input: W3Input): Promise<Buffer> {
   doc.getForm().flatten();
   doc.removePage(0); // attention cover — after flatten, so no widgets dangle
   return Buffer.from(await doc.save());
+}
+
+/** Decoded bytes of one content stream, as latin1 text. */
+function streamText(stream: unknown): string {
+  if (stream instanceof PDFRawStream) {
+    return Buffer.from(decodePDFRawStream(stream).decode()).toString("latin1");
+  }
+  if (stream instanceof PDFStream) return Buffer.from(stream.getContents()).toString("latin1");
+  return "";
+}
+
+/** "CORRECTED" shown by Tj, hex- or literal-encoded. */
+const CORRECTED_SHOW = /<434F52524543544544>\s*Tj|\(CORRECTED\)\s*Tj/i;
+
+/**
+ * PAY-206: 0-based pages of a rendered PDF whose own content streams show the
+ * CORRECTED mark (form XObjects — the flattened field values — are not
+ * searched). Lets callers/tests verify the mark without pdf-lib.
+ */
+export async function pagesWithCorrectedMark(bytes: Uint8Array): Promise<number[]> {
+  const doc = await PDFDocument.load(bytes);
+  const marked: number[] = [];
+  doc.getPages().forEach((page, i) => {
+    const contents = page.node.Contents();
+    const streams =
+      contents instanceof PDFArray
+        ? contents.asArray().map((ref) => doc.context.lookup(ref))
+        : [contents];
+    if (CORRECTED_SHOW.test(streams.map(streamText).join("\n"))) marked.push(i);
+  });
+  return marked;
 }
 
 /**

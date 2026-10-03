@@ -6,6 +6,11 @@
  * admin-editable line-7 fractions-of-cents (D4), the mark-as-filed action
  * (D2 track-only — date + method + reference), and the "How to file" help
  * dialog with self-filing instructions.
+ *
+ * PAY-206: the W-2 list shows which W-2s were corrected after the employee
+ * got them, how each latest copy was given, and — for paper employees still
+ * owed a corrected copy — a banner, "Print corrected W-2" and "Mark given
+ * on paper". Recording the SSA filing is never held by them (warning only).
  */
 import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
@@ -40,6 +45,7 @@ import {
 } from "../../lib/api";
 import { useDates } from "../../composables/useDates";
 import { useMoney } from "../../composables/useMoney";
+import { useConfirm } from "primevue/useconfirm";
 import { useNotify } from "../../composables/useNotify";
 import {
   formNotAvailableText,
@@ -56,6 +62,7 @@ const route = useRoute();
 const { date, toIso } = useDates();
 const { money } = useMoney();
 const notify = useNotify();
+const confirm = useConfirm();
 
 const filingId = Number(route.params.id);
 
@@ -81,6 +88,66 @@ const w2FormAvailable = ref(true);
 /** PAY-162: W-2s with any issue, for the "need attention" list. */
 const attentionRows = computed(() => w2Rows.value.filter((r) => r.issues.length > 0));
 const anyUnreadableTotals = computed(() => w2Rows.value.some(hasUnreadableTotals));
+/** PAY-206: any W-2 corrected after the employee got it (SSA note). */
+const anyW2Corrected = computed(() => w2Rows.value.some((r) => r.corrected));
+/** PAY-206: paper employees still owed the corrected copy. */
+const paperCorrectionRows = computed(() =>
+  w2Rows.value.filter((r) => r.correctionToFurnish && !r.consented),
+);
+const markPaperBusy = ref<number | null>(null);
+/** PAY-206: the paper-correction banner, singular or plural. */
+const paperCorrectionBanner = computed(() => {
+  const n = paperCorrectionRows.value.length;
+  const y = filing.value?.year;
+  return n === 1
+    ? `1 employee needs a corrected paper W-2 for ${y}. Print it, give or mail it to them, then choose "Mark given on paper".`
+    : `${n} employees need a corrected paper W-2 for ${y}. Print each one, give or mail it to them, then choose "Mark given on paper".`;
+});
+/** PAY-206: the mark-filed warning, singular or plural. */
+const paperCorrectionWarning = computed(() => {
+  const n = paperCorrectionRows.value.length;
+  return n === 1
+    ? "1 corrected W-2 hasn't been given to the employee yet. You can still record the filing."
+    : `${n} corrected W-2s haven't been given to employees yet. You can still record the filing.`;
+});
+
+/**
+ * PAY-206: the furnished column — how and when the latest copy was given.
+ * A backfilled row (furnished before this record existed) is "Not recorded".
+ */
+function furnishedText(row: W2FiguresRow): string {
+  const on = row.furnishedOn ? ` ${date(row.furnishedOn)}` : "";
+  if (row.furnished === "online") return `Online since${on}`;
+  if (row.furnished === "printed") return `Printed${on}`;
+  if (row.furnished === "paper") return `Given on paper${on}`;
+  if (row.furnished === "unknown") return "Not recorded";
+  return "Not yet given";
+}
+
+/** PAY-206: record that the corrected W-2 was handed over on paper. */
+function markGivenOnPaper(row: W2FiguresRow): void {
+  const year = filing.value?.year;
+  if (year === undefined) return;
+  confirm.require({
+    message: `Only do this after you have handed or mailed ${row.legalName} their corrected ${year} W-2. This removes it from your to-do list and can't be undone.`,
+    header: `Mark ${row.legalName}'s W-2 as given?`,
+    icon: "pi pi-check",
+    rejectProps: { label: "Cancel", severity: "secondary", text: true },
+    acceptProps: { label: "Yes, it's been given" },
+    accept: async () => {
+      markPaperBusy.value = row.employeeId;
+      try {
+        await adminFilingsApi.w2MarkGivenOnPaper(row.employeeId, year);
+        w2Rows.value = (await adminFilingsApi.w2List(year)).w2s;
+        notify.success(`${row.legalName}'s corrected W-2 is marked as given.`);
+      } catch (err) {
+        notify.error(err, "Could not mark the W-2 as given");
+      } finally {
+        markPaperBusy.value = null;
+      }
+    },
+  });
+}
 /** PAY-162: warnings stand but nothing is on hold. */
 const warnOnlyCount = computed(() => (anyW2Blocked.value ? 0 : attentionRows.value.length));
 /** PAY-162 (D1): a W-2/W-3 filing cannot be recorded while held. */
@@ -731,6 +798,25 @@ onMounted(async () => {
         >
           {{ formNotAvailableText(filing.year) }}
         </Message>
+        <!-- PAY-206: paper employees still owed a corrected W-2. -->
+        <Message
+          v-if="!w2LoadError && paperCorrectionRows.length > 0"
+          severity="warn"
+          :closable="false"
+          data-testid="w2-paper-correction-banner"
+        >
+          {{ paperCorrectionBanner }}
+        </Message>
+        <Message
+          v-if="!w2LoadError && anyW2Corrected && !filed"
+          severity="info"
+          :closable="false"
+          data-testid="w2-corrected-ssa-note"
+        >
+          Some W-2s were corrected after employees got them. File the corrected figures with the
+          SSA as normal W-2s. Don't mark them CORRECTED. If you already printed a paper Copy A (the
+          SSA's copy) with the old figures, write VOID on it and don't send it.
+        </Message>
 
         <DataTable v-if="worksheetW3" :value="worksheetW3Lines" data-key="line" striped-rows>
           <Column field="line" header="Box" style="width: 4rem" />
@@ -768,7 +854,12 @@ onMounted(async () => {
                of abbreviating or double-wrapping headers. -->
           <DataTable :value="w2Rows" data-key="employeeId" striped-rows class="w2-table">
             <template #empty><p class="muted">No W-2 employees were paid in {{ filing.year }}.</p></template>
-            <Column field="legalName" header="Employee" />
+            <Column header="Employee">
+              <template #body="{ data }">
+                {{ data.legalName }}
+                <Tag v-if="data.corrected" value="Corrected" severity="info" style="margin-left: 0.25rem" />
+              </template>
+            </Column>
             <Column header="Wages, tips, other compensation" style="text-align: right">
               <template #body="{ data }">{{ money(data.box1Wages) }}</template>
             </Column>
@@ -803,9 +894,21 @@ onMounted(async () => {
                 />
               </template>
             </Column>
+            <!-- PAY-206: how and when the latest copy reached the employee. -->
+            <Column header="Given to employee" style="min-width: 10rem">
+              <template #body="{ data }">
+                <span :class="{ muted: data.furnished === 'none' }">{{ furnishedText(data) }}</span>
+                <Tag
+                  v-if="data.correctionToFurnish && !data.consented"
+                  value="Corrected copy needed"
+                  severity="warn"
+                  style="display: block; margin-top: 0.25rem; width: fit-content"
+                />
+              </template>
+            </Column>
             <!-- PAY-23: actions live in their own Documents column — "Download
                  Copy D" reads as an action, not a label. -->
-            <Column header="Documents" style="width: 17rem">
+            <Column header="Documents" style="width: 22rem">
               <template #body="{ data }">
                 <span v-if="data.blocked" class="muted small">On hold – see above</span>
                 <span v-else-if="!w2FormAvailable" class="muted">—</span>
@@ -822,8 +925,24 @@ onMounted(async () => {
                     target="_blank"
                     rel="noopener"
                   >
-                    <Button label="Print packet" icon="pi pi-print" size="small" text />
+                    <Button
+                      :label="data.corrected ? 'Print corrected W-2' : 'Print packet'"
+                      icon="pi pi-print"
+                      size="small"
+                      text
+                    />
                   </a>
+                  <!-- PAY-206: only paper employees still owed the corrected copy. -->
+                  <Button
+                    v-if="data.correctionToFurnish && !data.consented"
+                    label="Mark given on paper"
+                    :aria-label="`Mark ${data.legalName}'s corrected W-2 as given on paper`"
+                    icon="pi pi-check"
+                    size="small"
+                    text
+                    :loading="markPaperBusy === data.employeeId"
+                    @click="markGivenOnPaper(data)"
+                  />
                 </div>
               </template>
             </Column>
@@ -983,6 +1102,15 @@ onMounted(async () => {
             File {{ formLabel(filing.formType) }} for {{ periodLabel() }} first — by mail or
             e-file — then record it here.
           </p>
+          <!-- PAY-206: a warning only; the SSA filing uses the current figures. -->
+          <Message
+            v-if="filing.formType === 'w2_w3' && paperCorrectionRows.length > 0"
+            severity="warn"
+            :closable="false"
+            data-testid="mark-filed-paper-warning"
+          >
+            {{ paperCorrectionWarning }}
+          </Message>
           <div class="field">
             <label for="filedOn">Filing date</label>
             <DatePicker id="filedOn" v-model="filedOn" date-format="yy-mm-dd" show-icon />

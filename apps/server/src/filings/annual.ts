@@ -18,7 +18,7 @@
  * available on January 1 of the following year (w2AvailableOn gate).
  */
 
-import { and, eq, ne, sql } from "drizzle-orm";
+import { and, eq, isNull, like, ne, sql } from "drizzle-orm";
 import {
   appSettings,
   company,
@@ -28,6 +28,7 @@ import {
   payrollRuns,
   taxConfig,
   taxFilings,
+  w2DeliveryConsents,
 } from "@payroll/db";
 import { round2 } from "@payroll/engine/money";
 import { effectiveFutaRate } from "@payroll/engine";
@@ -45,8 +46,11 @@ import type { AppConfig } from "../config.js";
 import { templateContext } from "../notify/outbox.js";
 import { w2EmployeeAddressAt } from "../change-requests/address-history.js";
 import { decryptField } from "../crypto/field-encryption.js";
+import { lockEmployee } from "../payroll/locks.js";
+import { furnishCurrent } from "./w2-furnish-core.js";
 import {
   type Deps,
+  errorClass,
   FilingServiceError,
   type TaxFilingRow,
   toMoney,
@@ -704,7 +708,7 @@ function formatSsn(plain: string): string {
 
 /** Company header for official IRS forms: legal name, decrypted EIN, address. */
 export async function employerBlock(
-  db: Db,
+  db: Pick<Db, "select">,
   config: AppConfig,
 ): Promise<{ legalName: string; ein: string | null; address: FormAddress | null }> {
   const rows = await db.select().from(company).limit(1);
@@ -716,18 +720,25 @@ export async function employerBlock(
   };
 }
 
+/** A W-2 PDF input with the integer-cent boxes it was built from (PAY-206 hash). */
+export interface W2InputWithBoxes {
+  input: W2Input;
+  boxes: W2BoxesCents;
+}
+
 /**
  * Assemble the full W-2 PDF input for one employee/year — figures from frozen
  * entries, PII decrypted at this point only. Throws invalid_transition before
  * the January availability gate; not_found when the employee has no W-2 for
- * the year (no issued runs, or a contractor).
+ * the year (no issued runs, or a contractor). PAY-206: `deps.db` may be a
+ * transaction holding the employee lock; the boxes come back in cents.
  */
-export async function w2InputFor(
-  deps: Deps,
+export async function w2InputWithBoxes(
+  deps: { db: Pick<Db, "select">; config: AppConfig },
   employeeId: number,
   year: number,
   opts: { today?: string; requireBundledForm?: boolean } = {},
-): Promise<W2Input> {
+): Promise<W2InputWithBoxes> {
   const { db, config } = deps;
   if (!isW2Available(year, opts.today)) {
     throw new FilingServiceError(
@@ -735,14 +746,7 @@ export async function w2InputFor(
       `W-2 for ${year} becomes available on ${w2AvailableOn(year)}`,
     );
   }
-  const figures = (await w2FiguresForYear(db, year)).find((f) => f.employeeId === employeeId);
-  if (!figures) {
-    throw new FilingServiceError("not_found", `no W-2 for employee ${employeeId} in ${year}`);
-  }
-  // PAY-162: a blocked W-2 is never rendered.
-  if (isW2Blocked(figures) || figures.box1Cents === null) {
-    throw new W2BlockedError(blockCodes([figures]));
-  }
+  const boxes = readableBoxes(await employeeW2Figures(db, employeeId, year));
   // PAY-162: PDF callers stop here when the year has no official form —
   // before any PII is read or decrypted.
   if (opts.requireBundledForm && !hasTemplate(year, "fw2")) throw new FormNotAvailableError(year);
@@ -755,7 +759,7 @@ export async function w2InputFor(
   // both resolved through the effective-dated change-request history.
   const boxFAddress = await w2EmployeeAddressAt(db, employeeId, year, config.encryptionKey);
 
-  return {
+  const input: W2Input = {
     taxYear: year,
     employer: await employerBlock(db, config),
     employee: {
@@ -765,8 +769,40 @@ export async function w2InputFor(
     },
     // Box d control number = the employee ID (D5).
     controlNumber: String(employee.id),
-    ...w2BoxStrings(figures),
+    ...w2BoxStrings(boxes),
   };
+  return { input, boxes };
+}
+
+/** w2InputWithBoxes, the PDF input only. */
+export async function w2InputFor(
+  deps: Deps,
+  employeeId: number,
+  year: number,
+  opts: { today?: string; requireBundledForm?: boolean } = {},
+): Promise<W2Input> {
+  return (await w2InputWithBoxes(deps, employeeId, year, opts)).input;
+}
+
+/** One employee's W-2 figures for the year; not_found when there is none. */
+export async function employeeW2Figures(
+  db: Pick<Db, "select">,
+  employeeId: number,
+  year: number,
+): Promise<W2Figures> {
+  const figures = (await w2FiguresForYear(db, year)).find((f) => f.employeeId === employeeId);
+  if (!figures) {
+    throw new FilingServiceError("not_found", `no W-2 for employee ${employeeId} in ${year}`);
+  }
+  return figures;
+}
+
+/** PAY-162: the boxes of a W-2 that may be issued, or W2BlockedError. */
+export function readableBoxes(figures: W2Figures): W2BoxesCents {
+  if (isW2Blocked(figures) || figures.box1Cents === null) {
+    throw new W2BlockedError(blockCodes([figures]));
+  }
+  return figures;
 }
 
 /** Assemble the W-3 transmittal PDF input (admin-only; company PII only). */
@@ -836,8 +872,9 @@ export async function listMyW2Years(
 const W2_NOTIFIED_YEARS_KEY = "w2_available_notified_years";
 
 /**
- * The tax years whose w2_available notice already went out (PAY-193 L4
- * reads it to decide the w2_changed notice).
+ * The tax years whose w2_available notice already went out. PAY-206: no
+ * longer the w2_changed gate (that is the w2_furnishings record); read once
+ * by the furnishing backfill.
  */
 export async function notifiedYears(db: Pick<Db, "select">): Promise<number[]> {
   const rows = await db
@@ -850,9 +887,12 @@ export async function notifiedYears(db: Pick<Db, "select">): Promise<number[]> {
 }
 
 /** W-2 employees (with a user account) who have issued runs in the year. */
-async function w2RecipientsForYear(db: Db, year: number): Promise<string[]> {
+async function w2RecipientsForYear(
+  db: Db,
+  year: number,
+): Promise<{ userId: string; employeeId: number }[]> {
   const rows = await db
-    .selectDistinct({ userId: employees.userId })
+    .selectDistinct({ userId: employees.userId, employeeId: employees.id })
     .from(payrollRuns)
     .innerJoin(employees, eq(payrollRuns.employeeId, employees.id))
     .where(
@@ -863,8 +903,118 @@ async function w2RecipientsForYear(db: Db, year: number): Promise<string[]> {
         sql`${payrollRuns.payDate} <= ${`${year}-12-31`}`,
         sql`${employees.userId} IS NOT NULL`,
       ),
-    );
-  return rows.map((r) => r.userId).filter((id): id is string => id !== null);
+    )
+    .orderBy(employees.id);
+  return rows.flatMap((r) =>
+    r.userId === null ? [] : [{ userId: r.userId, employeeId: r.employeeId }],
+  );
+}
+
+/** True when the employee has an electronic W-2 delivery consent that is not withdrawn. */
+export async function hasActiveW2Consent(
+  db: Pick<Db, "select">,
+  employeeId: number,
+): Promise<boolean> {
+  const rows = await db
+    .select({ id: w2DeliveryConsents.id })
+    .from(w2DeliveryConsents)
+    .where(
+      and(eq(w2DeliveryConsents.employeeId, employeeId), isNull(w2DeliveryConsents.withdrawnAt)),
+    )
+    .limit(1);
+  return rows.length > 0;
+}
+
+/** The outbox marker of a year notice (one per recipient per year). */
+function yearNoticeMarker(year: number): string {
+  return `<!-- w2-available:${year} -->`;
+}
+
+/** True when the user's year notice for `year` is already in the outbox. */
+async function yearNoticeQueued(
+  db: Pick<Db, "select">,
+  userId: string,
+  year: number,
+): Promise<boolean> {
+  const rows = await db
+    .select({ id: emailOutbox.id })
+    .from(emailOutbox)
+    .where(
+      and(
+        eq(emailOutbox.userId, userId),
+        eq(emailOutbox.eventType, EVENT_TYPE.w2Available),
+        like(emailOutbox.bodyHtml, `%${yearNoticeMarker(year)}%`),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
+}
+
+/**
+ * One recipient's year notice, in its own transaction under the employee
+ * lock. PAY-206 (R2, 26 CFR 31.6051-1(j)(5)): a recipient with active
+ * consent at send time is furnished the current figures (portal_notice);
+ * without consent nothing is furnished (they cannot download). Review round
+ * D6: a consented recipient whose latest portal_notice already carries the
+ * current figures (a rerun after a partial failure) is skipped — no row, no
+ * mail; round 3 R2: so is a recipient without consent whose year notice is
+ * already in the outbox. Returns true when a mail was queued.
+ */
+async function sendOneW2AvailableNotice(
+  db: Db,
+  recipient: { userId: string; employeeId: number },
+  year: number,
+  rendered: { subject: string; html: string },
+): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    await lockEmployee(tx, recipient.employeeId);
+    if (await hasActiveW2Consent(tx, recipient.employeeId)) {
+      const boxes = readableBoxes(await employeeW2Figures(tx, recipient.employeeId, year));
+      const { inserted } = await furnishCurrent(tx, {
+        employeeId: recipient.employeeId,
+        taxYear: year,
+        boxes,
+        method: "portal_notice",
+        actorId: null,
+      });
+      if (!inserted) return false;
+    } else if (await yearNoticeQueued(tx, recipient.userId, year)) {
+      // Round 3 R2: no furnishing row to dedupe on — the outbox marker is
+      // the record that this recipient already got the year's notice.
+      return false;
+    }
+    await tx.insert(emailOutbox).values({
+      userId: recipient.userId,
+      eventType: EVENT_TYPE.w2Available,
+      subject: rendered.subject,
+      bodyHtml: `${rendered.html}${yearNoticeMarker(year)}`,
+    });
+    return true;
+  });
+}
+
+/**
+ * The year notice to every recipient. PAY-206 review round D5/D6: one
+ * failing recipient is rolled back, logged by class and skipped; the caller
+ * then leaves the year un-notified so the next tick retries it (recipients
+ * already notified are skipped then).
+ */
+async function sendYearNotices(
+  db: Db,
+  year: number,
+  rendered: { subject: string; html: string },
+): Promise<{ sent: number; failed: number }> {
+  let sent = 0;
+  let failed = 0;
+  for (const recipient of await w2RecipientsForYear(db, year)) {
+    try {
+      if (await sendOneW2AvailableNotice(db, recipient, year, rendered)) sent += 1;
+    } catch (err) {
+      failed += 1;
+      console.error(`[filings] W-2 notices: one ${year} recipient failed (${errorClass(err)})`);
+    }
+  }
+  return { sent, failed };
 }
 
 /** PAY-162: every W-2 of the year computes and none is blocked. */
@@ -920,6 +1070,8 @@ export async function isMyW2Ready(db: Db, employeeId: number, year: number): Pro
  * (January of the following year). Fires at most once per year per employee:
  * notified years persist in app_settings. Content rules hold — the email
  * states the tax year and "log in to download", never amounts or SSN.
+ * PAY-206: each consented recipient's notice records a portal_notice
+ * furnishing in the same transaction (sendOneW2AvailableNotice).
  */
 export async function sendW2AvailableNotices(
   deps: Deps,
@@ -943,16 +1095,9 @@ export async function sendW2AvailableNotices(
     // its figures cannot be computed); a later tick sends once resolved.
     if (!(await w2sIssuable(db, year))) continue;
     const rendered = tplW2Available(ctx, { taxYear: year });
-    const marker = `w2-available:${year}`;
-    for (const userId of await w2RecipientsForYear(db, year)) {
-      await db.insert(emailOutbox).values({
-        userId,
-        eventType: EVENT_TYPE.w2Available,
-        subject: rendered.subject,
-        bodyHtml: `${rendered.html}<!-- ${marker} -->`,
-      });
-      sent += 1;
-    }
+    const out = await sendYearNotices(db, year, rendered);
+    sent += out.sent;
+    if (out.failed > 0) continue;
     notified.push(year);
     await db
       .insert(appSettings)

@@ -16,6 +16,7 @@ import Badge from "primevue/badge";
 import type Menu from "primevue/menu";
 import Toast from "primevue/toast";
 import ConfirmDialog from "primevue/confirmdialog";
+import { PAYSLIPS_NAV_LABEL } from "@payroll/shared";
 import { useAuthStore } from "./stores/auth";
 import { pinia } from "./stores/pinia";
 import { changeRequestsApi } from "./lib/api";
@@ -44,7 +45,7 @@ const { appEnv, brandName } = useRuntimeConfig();
  */
 const employeeNav = computed(() => {
   const items = [{ label: "Dashboard", name: "my-dashboard" }];
-  if (auth.employmentType === "w2") items.push({ label: "Payslips", name: "my-payslips" });
+  if (auth.employmentType === "w2") items.push({ label: PAYSLIPS_NAV_LABEL, name: "my-payslips" });
   if (auth.employmentType === "1099") items.push({ label: "Invoices", name: "my-invoices" });
   items.push(
     { label: "Requests", name: "my-requests" },
