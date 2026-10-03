@@ -45,6 +45,7 @@ import {
   W2BlockedError,
   yearW2BlockCodes,
 } from "./annual.js";
+import { closingFilings } from "./closing-filings.js";
 import {
   addDays,
   DATE_RE,
@@ -403,7 +404,7 @@ async function computeFreshWorksheet(db: Db, filing: TaxFilingRow): Promise<Fres
  * previously computed default it tracks the new computation; an overridden
  * value is preserved.
  */
-async function refreshWorksheet(db: Db, filing: TaxFilingRow): Promise<boolean> {
+async function refreshWorksheet(db: Db | Tx, filing: TaxFilingRow): Promise<boolean> {
   // PAY-11: annual forms (940 / W-2-W-3) refresh through their own module.
   if (filing.formType !== "941") return refreshAnnualWorksheet(db, filing);
   const fresh = await computeFreshWorksheet(db, filing);
@@ -422,6 +423,33 @@ async function refreshWorksheet(db: Db, filing: TaxFilingRow): Promise<boolean> 
     .where(and(eq(taxFilings.id, filing.id), ne(taxFilings.status, "filed")))
     .returning({ id: taxFilings.id });
   return updated.length > 0;
+}
+
+/**
+ * PAY-193 L4 (L4.5 step 6): inside a late issue's transaction, refresh every
+ * existing, unfiled member of closingFilings(payDate) — the 941 of the
+ * pay-date quarter, the 940 and the W-2/W-3 of its year — so the worksheets
+ * include the issued run before it commits. Missing rows are left to the
+ * daily syncFilings / syncAnnualFilings. A W-3 that cannot be computed
+ * (W2BlockedError) keeps its stored worksheet and does not fail the issue.
+ */
+export async function refreshFilingsForPayDate(tx: Tx, payDate: string): Promise<void> {
+  for (const f of closingFilings(payDate)) {
+    const rows = await tx
+      .select()
+      .from(taxFilings)
+      .where(
+        and(
+          eq(taxFilings.formType, f.formType),
+          eq(taxFilings.year, f.year),
+          eq(taxFilings.quarter, f.quarter),
+        ),
+      )
+      .limit(1);
+    const row = rows[0];
+    if (!row || row.status === "filed") continue;
+    await refreshWorksheet(tx, row);
+  }
 }
 
 /**

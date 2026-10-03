@@ -67,6 +67,8 @@ import {
   w3Totals,
 } from "./w2-boxes.js";
 
+type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
 // ---------------------------------------------------------------------------
 // Pure date math
 // ---------------------------------------------------------------------------
@@ -548,7 +550,10 @@ export async function computeW3Worksheet(db: Db, year: number): Promise<Workshee
  * true when the stored worksheet changed. Filed rows are frozen forever (the
  * caller checks status, same as the 941 path).
  */
-export async function refreshAnnualWorksheet(db: Db, filing: TaxFilingRow): Promise<boolean> {
+export async function refreshAnnualWorksheet(
+  db: Db | Tx,
+  filing: TaxFilingRow,
+): Promise<boolean> {
   let worksheet: Worksheet940 | WorksheetW3;
   if (filing.formType === "940") {
     worksheet = await compute940Worksheet(db, filing.year);
