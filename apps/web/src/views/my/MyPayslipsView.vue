@@ -8,6 +8,12 @@
  * PAY-19: the W-2 card gates downloads on electronic-delivery consent
  * (Pub 1141 §2.4) — disclosures + an affirmative consent button first,
  * download buttons and a withdraw link afterwards.
+ *
+ * PAY-206: a corrected W-2 is labelled "{year} W-2 (CORRECTED)"; the PDF
+ * link always serves the current figures. D9: after a withdrawal, a year
+ * already furnished online keeps its download button (row.downloadable)
+ * through electronicW2AccessThrough(year); the consent prompt shows only
+ * while some year still needs consent.
  */
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
@@ -25,6 +31,7 @@ import {
   type PayslipSummary,
   type W2ConsentStatus,
 } from "../../lib/api";
+import { electronicW2AccessThrough, W2_CARD_HEADING } from "@payroll/shared";
 import { myW2NotReadyText } from "../../lib/w2-issues";
 import { useMoney } from "../../composables/useMoney";
 import { useDates } from "../../composables/useDates";
@@ -33,7 +40,7 @@ import { useNotify } from "../../composables/useNotify";
 const route = useRoute();
 const router = useRouter();
 const { money } = useMoney();
-const { date, dateTime } = useDates();
+const { date, longDate, dateTime } = useDates();
 const notify = useNotify();
 
 const loading = ref(true);
@@ -43,6 +50,16 @@ const w2Years = ref<MyW2Year[]>([]);
 /** PAY-19: electronic-delivery consent (null while unknown / not a W-2 employee). */
 const w2Consent = ref<W2ConsentStatus | null>(null);
 const consentBusy = ref(false);
+
+/** PAY-206 (R7): "{year} W-2 (CORRECTED)" when the W-2 replaces one with other figures. */
+function w2Label(w2: MyW2Year): string {
+  return w2.corrected ? `${w2.year} W-2 (CORRECTED)` : `${w2.year} W-2`;
+}
+/** PAY-206 (D9): rows shown above the consent prompt — downloadable without consent. */
+const w2Downloadable = computed(() => w2Years.value.filter((w2) => w2.downloadable));
+/** PAY-206 (D9): some year is not downloadable and consent would change that. */
+const w2NeedsConsent = computed(() => w2Years.value.some((w2) => !w2.downloadable));
+
 // PAY-17: the selected year is mirrored to ?year= so it survives detail → back
 // and browser-back. The default (no param) is the newest year with data.
 const selectedYear = ref<string>(typeof route.query.year === "string" ? route.query.year : "");
@@ -79,6 +96,7 @@ async function giveConsent() {
   consentBusy.value = true;
   try {
     w2Consent.value = await myW2Api.consentGive();
+    w2Years.value = (await myW2Api.list()).w2s;
     notify.success("Consent recorded — your W-2s are ready to download.");
   } catch (err) {
     notify.error(err, "Could not record consent");
@@ -91,6 +109,8 @@ async function withdrawConsent() {
   consentBusy.value = true;
   try {
     w2Consent.value = await myW2Api.consentWithdraw();
+    // PAY-206 (D9): which years stay downloadable is decided by the server.
+    w2Years.value = (await myW2Api.list()).w2s;
     notify.success("Consent withdrawn — future W-2s will be furnished on paper.");
   } catch (err) {
     notify.error(err, "Could not withdraw consent");
@@ -161,32 +181,78 @@ onMounted(async () => {
     </p>
 
     <div v-if="w2Years.length > 0" class="card stack">
-      <h3 style="margin: 0">W-2 wage and tax statements</h3>
+      <h3 style="margin: 0">{{ W2_CARD_HEADING }}</h3>
       <p class="muted small" style="margin: 0">
         Your annual W-2 for each year you were paid, available from January of the following year.
       </p>
 
-      <!-- PAY-19: consent gate (Pub 1141 §2.4 disclosures before consent). -->
+      <!-- PAY-206 (D9): consent withdrawn — years already furnished online stay downloadable. -->
       <template v-if="w2Consent && !w2Consent.consented">
-        <ul class="muted small" style="margin: 0; padding-left: 1.25rem">
-          <li v-for="(d, i) in w2Consent.disclosures" :key="i">{{ d }}</li>
-        </ul>
-        <div>
-          <Button
-            label="I consent to electronic W-2 delivery"
-            icon="pi pi-check"
-            size="small"
-            :loading="consentBusy"
-            @click="giveConsent"
-          />
+        <div
+          v-for="w2 in w2Downloadable"
+          :key="w2.year"
+          class="row"
+          style="justify-content: space-between"
+        >
+          <span>
+            <strong>{{ w2Label(w2) }}</strong>
+            <span class="muted small">· available since {{ date(w2.availableOn) }}</span>
+            <span v-if="w2.corrected" class="muted small" style="display: block">
+              This replaces any earlier {{ w2.year }} W-2 you may have. Use this one for your tax
+              return.
+            </span>
+            <span v-if="w2Consent.withdrawnAt" class="muted small" style="display: block">
+              You turned off online W-2s. You can still download this one until
+              {{ longDate(electronicW2AccessThrough(w2.year)) }}.
+            </span>
+          </span>
+          <a :href="myW2Api.pdfUrl(w2.year)" target="_blank" rel="noopener">
+            <Button
+              label="Download PDF"
+              :aria-label="`Download ${w2Label(w2)} PDF`"
+              icon="pi pi-download"
+              size="small"
+              text
+            />
+          </a>
         </div>
+
+        <!-- PAY-19: consent gate (Pub 1141 §2.4 disclosures before consent). -->
+        <template v-if="w2NeedsConsent">
+          <ul class="muted small" style="margin: 0; padding-left: 1.25rem">
+            <li v-for="(d, i) in w2Consent.disclosures" :key="i">{{ d }}</li>
+          </ul>
+          <div>
+            <Button
+              label="I consent to electronic W-2 delivery"
+              icon="pi pi-check"
+              size="small"
+              :loading="consentBusy"
+              @click="giveConsent"
+            />
+          </div>
+        </template>
       </template>
 
       <template v-else-if="w2Consent?.consented">
         <div v-for="w2 in w2Years" :key="w2.year" class="row" style="justify-content: space-between">
-          <span><strong>{{ w2.year }}</strong> <span class="muted small">· available since {{ date(w2.availableOn) }}</span></span>
+          <span>
+            <!-- PAY-206: the current figures replace a copy the employee may hold. -->
+            <strong>{{ w2Label(w2) }}</strong>
+            <span class="muted small">· available since {{ date(w2.availableOn) }}</span>
+            <span v-if="w2.corrected" class="muted small" style="display: block">
+              This replaces any earlier {{ w2.year }} W-2 you may have. Use this one for your tax
+              return.
+            </span>
+          </span>
           <a v-if="w2.ready" :href="myW2Api.pdfUrl(w2.year)" target="_blank" rel="noopener">
-            <Button label="Download PDF" icon="pi pi-download" size="small" text />
+            <Button
+              label="Download PDF"
+              :aria-label="`Download ${w2Label(w2)} PDF`"
+              icon="pi pi-download"
+              size="small"
+              text
+            />
           </a>
           <!-- PAY-162: not ready (held, or the form is not in the app yet) — no reason given. -->
           <Message v-else severity="info" :closable="false" role="status">

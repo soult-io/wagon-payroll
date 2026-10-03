@@ -297,8 +297,15 @@ async function f940Row(year: number) {
   return rows[0];
 }
 
+/**
+ * PAY-206 D12: ISO / Postgres timestamps are removed first — "…T10:15:32.591Z" or
+ * "…:32.591Z" (seconds.millis) can contain an amount string such as "32.59"
+ * and made T09(c) flaky. No amount is ever written in timestamp form.
+ */
+const ISO_TS = /\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?/g;
 function noAmounts(body: string, amounts: readonly string[]) {
-  for (const a of amounts) expect(body, `body leaks ${a}`).not.toContain(a);
+  const text = body.replace(ISO_TS, "<ts>");
+  for (const a of amounts) expect(text, `body leaks ${a}`).not.toContain(a);
 }
 
 const BOX_FIELDS = [

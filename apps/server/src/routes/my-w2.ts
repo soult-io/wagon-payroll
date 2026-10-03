@@ -7,7 +7,11 @@
  *
  * PAY-19 (D4, Pub 1141 §2.4): the PDF download is gated on an active
  * electronic-delivery consent — the consent endpoints carry the required
- * disclosures, and withdrawal re-gates the download immediately.
+ * disclosures. PAY-206 review round D9 (26 CFR 31.6051-1(j)(6)): after a
+ * withdrawal, a year already furnished electronically stays downloadable
+ * through electronicW2AccessThrough(year); every other year is re-gated at
+ * once. The D9 window reads "today" from the app clock (deps.clock) in the
+ * company timezone; the January availability gate keeps the real date.
  */
 
 import type { FastifyInstance, FastifyReply } from "fastify";
@@ -17,24 +21,27 @@ import { renderW2EmployeePacket } from "@payroll/documents";
 import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
 import type { Guards } from "../plugins/guards.js";
-import {
-  annualBlockBody,
-  isMyW2Ready,
-  listMyW2Years,
-  w2AvailableOn,
-  w2InputFor,
-} from "../filings/annual.js";
+import { annualBlockBody, isMyW2Ready, listMyW2Years, w2AvailableOn } from "../filings/annual.js";
 import {
   consentToElectronicW2,
   w2ConsentStatus,
   withdrawW2Consent,
 } from "../filings/w2-consent.js";
 import { FilingServiceError } from "../filings/shared.js";
+import {
+  electronicAccessAfterWithdrawal,
+  furnishForRender,
+  isMyW2Corrected,
+} from "../filings/w2-furnish.js";
+import { localDate } from "../payroll/run-dates.js";
+import { PDF_RATE_LIMIT, refuseCrossSite } from "../plugins/fetch-site.js";
 
 interface Deps {
   db: Db;
   config: AppConfig;
   guards: Guards;
+  /** Test override: the wall clock for the D9 access window. */
+  clock?: () => Date;
 }
 
 /** The session user's W-2 employee row, or null (contractor / no profile). */
@@ -47,18 +54,27 @@ async function myEmployee(db: Db, userId: string) {
   return rows[0] ?? null;
 }
 
-/** Render + send the employee packet; maps service errors to HTTP. */
+/**
+ * Render + send the employee packet; maps service errors to HTTP. PAY-206:
+ * the employee_download furnishing is recorded (under the employee lock)
+ * before any byte is rendered or sent; the packet says CORRECTED when the
+ * employee may hold a copy with other figures.
+ */
 async function sendW2Pdf(
   deps: { db: Db; config: AppConfig },
   employeeId: number,
   year: number,
+  actorId: string,
   reply: FastifyReply,
 ) {
   try {
     // PAY-162: requireBundledForm stops before any PII is read when the
     // year has no official form.
-    const input = await w2InputFor(deps, employeeId, year, { requireBundledForm: true });
-    const pdf = await renderW2EmployeePacket(input);
+    const { input, corrected } = await furnishForRender(deps, employeeId, year, {
+      method: "employee_download",
+      actorId,
+    });
+    const pdf = await renderW2EmployeePacket(input, { corrected });
     return reply
       .header("content-type", "application/pdf")
       .header("content-disposition", `inline; filename="w2-${year}.pdf"`)
@@ -77,16 +93,27 @@ async function sendW2Pdf(
 
 export function registerMyW2Routes(app: FastifyInstance, deps: Deps): void {
   const { db, config, guards } = deps;
+  const now = deps.clock ?? (() => new Date());
+  const today = () => localDate(now(), config.appTz);
 
   app.get("/api/my/w2", { preHandler: guards.requireAuth }, async (req) => {
     const userId = req.authUser!.id;
     const years = await listMyW2Years(db, userId);
     const employee = years.length > 0 ? await myEmployee(db, userId) : null;
+    const consented = employee ? (await w2ConsentStatus(db, employee.id)).consented : false;
     const w2s = [];
     for (const year of years) {
       // PAY-162 (D2): a bare ready flag — never why a W-2 is not ready.
       const ready = employee ? await isMyW2Ready(db, employee.id, year) : false;
-      w2s.push({ year, availableOn: w2AvailableOn(year), ready });
+      // PAY-206 (R7): a bare corrected flag — no reasons, no dates of change.
+      const corrected = employee && ready ? await isMyW2Corrected(db, employee.id, year) : false;
+      // PAY-206 (D9): the same gate as the PDF route — an active consent, or
+      // a year furnished electronically still inside its access window.
+      const downloadable =
+        employee !== null &&
+        ready &&
+        (consented || (await electronicAccessAfterWithdrawal(db, employee.id, year, today())));
+      w2s.push({ year, availableOn: w2AvailableOn(year), ready, corrected, downloadable });
     }
     return { w2s };
   });
@@ -119,21 +146,34 @@ export function registerMyW2Routes(app: FastifyInstance, deps: Deps): void {
     }
   });
 
-  app.get("/api/my/w2/:year/pdf", { preHandler: guards.requireAuth }, async (req, reply) => {
-    const year = Number((req.params as { year: string }).year);
-    if (!Number.isInteger(year) || year < 2020 || year > 2100) {
-      return reply.code(400).send({ error: "invalid_year" });
-    }
-    const employee = await myEmployee(db, req.authUser!.id);
-    if (!employee) return reply.code(404).send({ error: "not_found" });
-    // Pub 1141 §2.4: no electronic W-2 without an active consent (D4).
-    const consent = await w2ConsentStatus(db, employee.id);
-    if (!consent.consented) {
-      return reply.code(409).send({
-        error: "consent_required",
-        message: "consent to electronic W-2 delivery before downloading",
-      });
-    }
-    return sendW2Pdf({ db, config }, employee.id, year, reply);
-  });
+  // D10: refused cross-site / same-site; 20 per minute per client.
+  app.get(
+    "/api/my/w2/:year/pdf",
+    {
+      preHandler: [refuseCrossSite, guards.requireAuth],
+      config: { rateLimit: PDF_RATE_LIMIT },
+    },
+    async (req, reply) => {
+      const year = Number((req.params as { year: string }).year);
+      if (!Number.isInteger(year) || year < 2020 || year > 2100) {
+        return reply.code(400).send({ error: "invalid_year" });
+      }
+      const employee = await myEmployee(db, req.authUser!.id);
+      if (!employee) return reply.code(404).send({ error: "not_found" });
+      // Pub 1141 §2.4: no electronic W-2 without an active consent (D4),
+      // except a year already furnished electronically, through
+      // electronicW2AccessThrough(year) (review round D9).
+      const consent = await w2ConsentStatus(db, employee.id);
+      if (
+        !consent.consented &&
+        !(await electronicAccessAfterWithdrawal(db, employee.id, year, today()))
+      ) {
+        return reply.code(409).send({
+          error: "consent_required",
+          message: "consent to electronic W-2 delivery before downloading",
+        });
+      }
+      return sendW2Pdf({ db, config }, employee.id, year, req.authUser!.id, reply);
+    },
+  );
 }

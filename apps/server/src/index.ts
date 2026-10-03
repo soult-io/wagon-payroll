@@ -16,6 +16,8 @@ import { buildApp } from "./app.js";
 import { databaseUrl } from "./config.js";
 import { startScheduler } from "./payroll/scheduler.js";
 import { startRecurringInvoiceScheduler } from "./contractors/scheduler.js";
+import { backfillW2Furnishings } from "./filings/w2-furnish.js";
+import { errorClass } from "./filings/shared.js";
 
 // Scheduler is wired here (not in buildApp) so integration tests boot the app
 // without pg-boss, which needs a real Postgres.
@@ -43,6 +45,15 @@ const start = async () => {
       app.log.warn(
         "using dev fallback session secret — set SECRETS_DIR/session-secret in production",
       );
+    }
+    // PAY-206 review round D4: the one-shot W-2 furnishing backfill runs at
+    // boot (idempotent via its app_settings flag), before any request can
+    // issue a late run. A failure never stops the boot; the daily tick retries.
+    try {
+      const backfill = await backfillW2Furnishings({ db, config });
+      if (!backfill.skipped) app.log.info(`W-2 furnishing backfill: ${JSON.stringify(backfill)}`);
+    } catch (err) {
+      app.log.error(`W-2 furnishing backfill failed (${errorClass(err)})`);
     }
     if (schedulerEnabled) {
       const scheduler = await startScheduler({ db, config, databaseUrl: databaseUrl(config) });

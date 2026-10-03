@@ -428,7 +428,9 @@ export {
 } from "./nec-1099.js";
 
 export {
+  CORRECTED_MARK,
   formatEin,
+  pagesWithCorrectedMark,
   prepareW2AdminCopyD,
   prepareW2EmployeePacket,
   prepareW3,
@@ -439,6 +441,7 @@ export {
   splitLegalName,
   W2FormAmountError,
   type FormAddress,
+  type W2EmployeePacketOptions,
   type W2Input,
   type W3Input,
 } from "./w2.js";
@@ -446,6 +449,7 @@ export {
 export {
   W2_ADMIN_COPIES,
   W2_ADMIN_COPY_D_PAGES,
+  W2_CORRECTED_MARK_PAGES,
   W2_EMPLOYEE_COPIES,
   W2_EMPLOYEE_PAGES,
   W3_CHECKBOXES,

@@ -42,8 +42,15 @@ import {
   w2InputFor,
   w3InputFor,
 } from "../filings/annual.js";
-import { w2ConsentFlags } from "../filings/w2-consent.js";
+import { electronicW2Channel } from "../filings/w2-consent.js";
+import { PDF_RATE_LIMIT, refuseCrossSite } from "../plugins/fetch-site.js";
 import { FilingServiceError } from "../filings/shared.js";
+import {
+  type FurnishingView,
+  furnishForRender,
+  furnishingViews,
+  markFurnishedOnPaper,
+} from "../filings/w2-furnish.js";
 
 interface Deps {
   db: Db;
@@ -62,11 +69,47 @@ const NULL_BOXES = {
   box6MedicareTax: null,
 };
 
-/** One W-2 list row: box strings (or null), issues, blocked — never cents. */
-function listRow(f: W2Figures, consented: boolean) {
+const NOT_FURNISHED: FurnishingView = {
+  corrected: false,
+  correctionToFurnish: false,
+  furnished: "none",
+  furnishedOn: null,
+};
+
+/**
+ * One W-2 list row: box strings (or null), issues, blocked — never cents.
+ * PAY-206 (R8): + corrected, correctionToFurnish, furnished, furnishedOn.
+ */
+function listRow(f: W2Figures, consented: boolean, furnishing: FurnishingView | undefined) {
   const { employeeId, legalName, issues } = f;
   const boxes = f.box1Cents === null ? NULL_BOXES : w2BoxStrings(f);
-  return { employeeId, legalName, ...boxes, issues, blocked: isW2Blocked(f), consented };
+  return {
+    employeeId,
+    legalName,
+    ...boxes,
+    issues,
+    blocked: isW2Blocked(f),
+    consented,
+    ...(furnishing ?? NOT_FURNISHED),
+  };
+}
+
+/** Parse :employeeId + ?year=, or send 400. */
+function employeeYear(
+  req: { params: unknown; query: unknown },
+  reply: { code: (n: number) => { send: (b: unknown) => unknown } },
+): { employeeId: number; year: number } | null {
+  const employeeId = Number((req.params as { employeeId: string }).employeeId);
+  if (!Number.isInteger(employeeId) || employeeId <= 0) {
+    reply.code(400).send({ error: "invalid_id" });
+    return null;
+  }
+  const q = yearQuery.safeParse(req.query);
+  if (!q.success) {
+    reply.code(400).send({ error: "invalid_year", details: q.error.issues });
+    return null;
+  }
+  return { employeeId, year: q.data.year };
 }
 
 function serviceError(
@@ -97,24 +140,30 @@ export function registerAdminAnnualFormRoutes(app: FastifyInstance, deps: Deps):
     } catch (err) {
       return serviceError(err, reply);
     }
-    const consent = await w2ConsentFlags(
+    const electronic = await electronicW2Channel(
       db,
       figures.map((f) => f.employeeId),
     );
+    const furnishing = await furnishingViews({ db, config }, q.data.year, figures);
     return {
       year: q.data.year,
       available: isW2Available(q.data.year),
       availableOn: w2AvailableOn(q.data.year),
       // PAY-162 (D3): the official W-2/W-3 form is bundled for the year.
       formAvailable: hasTemplate(q.data.year, "fw2") && hasTemplate(q.data.year, "fw3"),
-      w2s: figures.map((f) => listRow(f, consent.get(f.employeeId) ?? false)),
+      w2s: figures.map((f) =>
+        listRow(f, electronic.has(f.employeeId), furnishing.get(f.employeeId)),
+      ),
     };
   });
 
-  /** Copy D for one employee (employer records; PII at render time only). */
+  /**
+   * Copy D for one employee (employer records; PII at render time only).
+   * Round 3 R5: refused cross-site / same-site before auth; 20/min per client.
+   */
   app.get(
     "/api/admin/annual-forms/w2/:employeeId/pdf",
-    { preHandler: admin },
+    { preHandler: [refuseCrossSite, admin], config: { rateLimit: PDF_RATE_LIMIT } },
     async (req, reply) => {
       const employeeId = Number((req.params as { employeeId: string }).employeeId);
       if (!Number.isInteger(employeeId) || employeeId <= 0) {
@@ -144,31 +193,56 @@ export function registerAdminAnnualFormRoutes(app: FastifyInstance, deps: Deps):
   /**
    * Print-ready employee packet (Copies B/C/2 + IRS instructions) for one
    * employee — the physical-furnishing route for employees who have not
-   * consented to electronic delivery (D4). Consent-independent.
+   * consented to electronic delivery (D4). Consent-independent. PAY-206:
+   * records admin_print (the printed copy can reach the employee) before
+   * rendering; CORRECTED when the employee may hold other figures.
    */
   app.get(
     "/api/admin/annual-forms/w2/:employeeId/print-packet",
-    { preHandler: admin },
+    // PAY-206 review round D10: refused cross-site / same-site; 20/min per client.
+    { preHandler: [refuseCrossSite, admin], config: { rateLimit: PDF_RATE_LIMIT } },
     async (req, reply) => {
-      const employeeId = Number((req.params as { employeeId: string }).employeeId);
-      if (!Number.isInteger(employeeId) || employeeId <= 0) {
-        return reply.code(400).send({ error: "invalid_id" });
-      }
-      const q = yearQuery.safeParse(req.query);
-      if (!q.success)
-        return reply.code(400).send({ error: "invalid_year", details: q.error.issues });
+      const target = employeeYear(req, reply);
+      if (!target) return reply;
       try {
-        const input = await w2InputFor({ db, config }, employeeId, q.data.year, {
-          requireBundledForm: true,
-        });
-        const pdf = await renderW2EmployeePacket(input);
+        const { input, corrected } = await furnishForRender(
+          { db, config },
+          target.employeeId,
+          target.year,
+          { method: "admin_print", actorId: req.authUser!.id },
+        );
+        const pdf = await renderW2EmployeePacket(input, { corrected });
         return reply
           .header("content-type", "application/pdf")
           .header(
             "content-disposition",
-            `inline; filename="w2-${q.data.year}-employee-${employeeId}-print-packet.pdf"`,
+            `inline; filename="w2-${target.year}-employee-${target.employeeId}-print-packet.pdf"`,
           )
           .send(pdf);
+      } catch (err) {
+        return serviceError(err, reply);
+      }
+    },
+  );
+
+  /**
+   * PAY-206 (R8): the admin gave the employee the current W-2 on paper.
+   * Idempotent; audit w2_furnishing.paper_handed. No amounts in the body.
+   */
+  app.post(
+    "/api/admin/annual-forms/w2/:employeeId/furnished-on-paper",
+    { preHandler: admin },
+    async (req, reply) => {
+      const target = employeeYear(req, reply);
+      if (!target) return reply;
+      try {
+        const { corrected } = await markFurnishedOnPaper(
+          { db, config },
+          target.employeeId,
+          target.year,
+          req.authUser!.id,
+        );
+        return { furnished: "paper", corrected };
       } catch (err) {
         return serviceError(err, reply);
       }

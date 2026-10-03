@@ -27,6 +27,12 @@ export type W2Copy = "CopyB" | "CopyC" | "Copy2" | "CopyD";
 
 /** 0-indexed pages kept for the employee packet: B + C + 2 + instructions. */
 export const W2_EMPLOYEE_PAGES = [3, 4, 5, 6, 7, 8] as const;
+/**
+ * PAY-206: 0-indexed template pages of the employee's Copies B, C and 2 —
+ * the only pages that carry "CORRECTED" (iw2w3 p.28). Instruction pages,
+ * Copy D and the W-3 are never marked.
+ */
+export const W2_CORRECTED_MARK_PAGES = [3, 5, 7] as const;
 /** 0-indexed pages kept for the admin per-employee Copy D packet. */
 export const W2_ADMIN_COPY_D_PAGES = [9] as const;
 
