@@ -185,7 +185,7 @@ function submit(): void {
           <li>Add this payroll to your {{ year }} pay and tax totals.</li>
           <li>Update any {{ year }} tax returns for this period that you haven't marked as filed.</li>
           <li>Add any extra tax deposit you now owe. It may already be past due.</li>
-          <li>Email {{ employeeName }} if their {{ year }} W-2 changes.</li>
+          <li>Tell you how to get {{ employeeName }} a corrected W-2 if their {{ year }} W-2 changes.</li>
           <li>Make the payslip visible to {{ employeeName }}. This can't be undone.</li>
         </ul>
       </div>

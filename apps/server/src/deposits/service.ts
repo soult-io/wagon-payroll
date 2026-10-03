@@ -402,6 +402,13 @@ async function mailShortfall(
   }
 }
 
+/** A deposit row a sync inserted, or (`flipped`) an existing pending row it flipped overdue. */
+interface FlaggedRow {
+  seq: number;
+  status: string;
+  flipped?: boolean;
+}
+
 /**
  * The open federal pending row takes max(0, R). EF-8d: on the late-issue path
  * (`pastDue` = late issue and its due date has passed) a row with something
@@ -414,7 +421,7 @@ async function updatePendingFederal(
   remainder: number,
   pastDue: boolean,
   result: SyncResult,
-): Promise<{ seq: number; status: string } | null> {
+): Promise<FlaggedRow | null> {
   const target = formatCents(Math.max(0, remainder));
   const flip = pastDue && remainder > 0;
   if (pending.amount === target && !flip) return null;
@@ -427,7 +434,7 @@ async function updatePendingFederal(
   result.recomputed += updated.length;
   if (!flip || updated.length === 0) return null;
   result.flippedOverdue += 1;
-  return { seq: pending.seq, status: "overdue" };
+  return { seq: pending.seq, status: "overdue", flipped: true };
 }
 
 /**
@@ -453,7 +460,7 @@ async function syncFederalDeposit(
     actorId: "scheduler",
     lateIssue: false,
   },
-): Promise<{ flagged: { seq: number; status: string } | null }> {
+): Promise<{ flagged: FlaggedRow | null }> {
   const year = Number(periodStart.slice(0, 4));
   const month = Number(periodStart.slice(5, 7));
   const amount = await computeDepositAmount(db, year, month);
@@ -862,7 +869,7 @@ export async function syncDeposits(deps: Deps, opts: { today?: string } = {}): P
  * follow-up codes (no amounts):
  * - `deposit_shortfall:<jurisdiction>:<periodStart>` — a seq > 0 row was inserted;
  * - `deposit_overdue:<jurisdiction>:<periodStart>` — a seq 0 row was inserted overdue,
- *   or (federal) an existing past-due pending seq 0 row was flipped overdue;
+ *   or (federal) an existing past-due pending row (any seq) was flipped overdue;
  * - `deposit_sync_deferred:<state>` — the state unit failed in its savepoint;
  *   the issue still commits and the daily tick re-plans and reports it.
  * Federal errors propagate (the issue rolls back).
@@ -916,12 +923,12 @@ export async function syncDepositsForPayDate(
   return followUps;
 }
 
-/** A late issue's follow-up code for an inserted deposit row, or null (L4.3). */
-function followUpCode(
-  jurisdiction: string,
-  periodStart: string,
-  row: { seq: number; status: string },
-): string | null {
+/**
+ * A late issue's follow-up code for an inserted or flipped deposit row, or
+ * null (L4.3). A flipped row (any seq) is overdue, not a new shortfall.
+ */
+function followUpCode(jurisdiction: string, periodStart: string, row: FlaggedRow): string | null {
+  if (row.flipped) return `deposit_overdue:${jurisdiction}:${periodStart}`;
   if (row.seq > 0) return `deposit_shortfall:${jurisdiction}:${periodStart}`;
   if (row.status === "overdue") return `deposit_overdue:${jurisdiction}:${periodStart}`;
   return null;
