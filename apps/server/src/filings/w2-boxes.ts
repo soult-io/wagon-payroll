@@ -53,12 +53,32 @@ export type W2IssueCode =
   | "box4_without_box3"
   | "box6_without_box5"
   | "box4_off_rate"
-  | "box6_off_rate";
+  | "box6_off_rate"
+  // Spec 24 (PAY-116): state lines (boxes 15–17).
+  | "legacy_state_runs"
+  | "missing_state_id"
+  | "reconciliation_mismatch"
+  | "local_boxes_pending"
+  | "missing_state_id_zero_tax"
+  | "legacy_runs_without_state"
+  | "local_tax_md"
+  | "local_tax_ny"
+  | "exempt_reciprocity"
+  | "ny_all_wages"
+  | "period_spans_move";
 
-/** A W-2 check result: code and severity only — never amounts. */
+/**
+ * A W-2 check result: code and severity, plus (Spec 24) the state line it
+ * belongs to, the move date (period_spans_move) or the legacy runs
+ * (legacy_state_runs, the only issue with amounts; admin JSON only).
+ * internal_mismatch and local_boxes_pending carry code and severity only.
+ */
 export interface W2Issue {
   code: W2IssueCode;
-  severity: "block" | "warn";
+  severity: "block" | "warn" | "info";
+  state?: string;
+  runs?: { runPublicId: string; payDate: string; stateTax: string }[];
+  date?: string;
 }
 
 export interface W3TotalsCents extends W2BoxesCents {
