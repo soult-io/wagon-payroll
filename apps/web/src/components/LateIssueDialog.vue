@@ -44,7 +44,6 @@ type Answers = Record<Flag, boolean | null>;
 const amount = ref<number | null>(null);
 const confirmed = ref(false);
 const answers = ref<Record<string, Answers>>({});
-const heading = ref<HTMLElement | null>(null);
 const refusalBox = ref<HTMLElement | null>(null);
 
 const ANSWER_OPTIONS = [
@@ -152,10 +151,6 @@ function submit(): void {
     stateReturns,
   });
 }
-
-function onShow(): void {
-  heading.value?.focus();
-}
 </script>
 
 <template>
@@ -163,10 +158,10 @@ function onShow(): void {
     v-model:visible="visible"
     modal
     :style="{ width: 'min(36rem, 95vw)' }"
-    @show="onShow"
+    :pt="{ root: { 'aria-labelledby': 'late-dialog-title' } }"
   >
     <template #header>
-      <h2 ref="heading" tabindex="-1" class="late-heading">Confirm this payment before you issue it</h2>
+      <h2 id="late-dialog-title" tabindex="-1" autofocus class="late-heading">Confirm this payment before you issue it</h2>
     </template>
 
     <div class="stack late-body">
@@ -208,7 +203,7 @@ function onShow(): void {
           :min-fraction-digits="2"
           :max-fraction-digits="2"
           :min="0"
-          aria-describedby="late-amount-help"
+          :pt="{ pcInputText: { root: { 'aria-describedby': 'late-amount-help' } } }"
         />
         <small id="late-amount-help">
           Type the take-home pay (net pay) exactly as it shows in your bank record, including cents. This

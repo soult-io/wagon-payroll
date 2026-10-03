@@ -113,25 +113,41 @@ async function act(action: "approve" | "issue" | "void", reason?: string) {
     );
   } catch (err) {
     if (action === "issue" && openLateDialog(err)) return;
-    notify.error(err, `Could not ${action} run`);
+    notify.error(lateConfirmationWithoutDialog(err) ?? err, `Could not ${action} run`);
   } finally {
     busy.value = false;
   }
 }
 
-/** W-L1: a 409 late_payment_confirmation_required opens the late dialog (no toast). */
+/**
+ * W-L1: a 409 late_payment_confirmation_required opens the late dialog (no
+ * toast). False when the body carries no attestation: the dialog cannot
+ * open, so the caller shows the generic error instead.
+ */
 function openLateDialog(err: unknown): boolean {
   if (!(err instanceof ApiError) || err.code !== "late_payment_confirmation_required") return false;
   const body = err.body ?? {};
-  lateAttestation.value = (body["attestation"] as LateAttestationBody | undefined) ?? null;
+  const attestation = (body["attestation"] as LateAttestationBody | undefined) ?? null;
+  if (attestation === null) return false;
+  lateAttestation.value = attestation;
   lateStates.value = Array.isArray(body["stateJurisdictions"])
     ? (body["stateJurisdictions"] as string[])
     : [];
   lateMessage.value = typeof body["message"] === "string" ? body["message"] : "";
   lateRefusal.value = null;
   lateNetPayHint.value = null;
-  lateDialog.value = lateAttestation.value !== null;
+  lateDialog.value = true;
   return true;
+}
+
+/**
+ * A confirmation request the dialog could not open for (no attestation):
+ * useNotify never toasts that code, so it becomes a generic error.
+ */
+function lateConfirmationWithoutDialog(err: unknown): Error | null {
+  return err instanceof ApiError && err.code === "late_payment_confirmation_required"
+    ? new Error("Something went wrong. Nothing was issued. Reload the page and try again.")
+    : null;
 }
 
 const MONTHS = [
@@ -170,6 +186,12 @@ function followUpToast(code: string, taxYear: number): { summary: string; detail
       detail: `${employeeName.value}'s ${taxYear} W-2 changed. We emailed them that a corrected copy is ready.`,
     };
   }
+  if (kind === "w2_paper_correction_needed") {
+    return {
+      summary: "W-2 updated",
+      detail: `${employeeName.value}'s ${taxYear} W-2 changed. Print a corrected paper W-2 for them from Tax filings → W-2/W-3.`,
+    };
+  }
   if (kind === "deposit_sync_deferred") {
     const who = jurisdiction === "federal" ? "federal" : stateName(jurisdiction);
     return {
@@ -200,6 +222,7 @@ const FOLLOW_UP_ORDER = [
   "deposit_shortfall",
   "deposit_sync_deferred",
   "w2_changed_notice_sent",
+  "w2_paper_correction_needed",
 ];
 
 function showFollowUps(followUps: string[], taxYear: number): void {
@@ -230,9 +253,25 @@ async function onLateIssued(res: IssueResponse): Promise<void> {
   }
 }
 
-/** Copy 1.11: refusals stay in the open dialog; stale/ordering/filed close it. */
+/** True when the refusal's state list differs from the questions on screen (UX fix 1). */
+function stateListChanged(err: ApiError): boolean {
+  const now = err.body?.["stateJurisdictions"];
+  if (!Array.isArray(now)) return false;
+  const shown = lateStates.value;
+  return now.length !== shown.length || now.some((j) => !shown.includes(j as string));
+}
+
+/**
+ * Copy 1.11: refusals stay in the dialog while it is open; stale/ordering/
+ * filed close it. A late_payment_incomplete whose state list changed cannot
+ * be fixed in the dialog, so it closes and the sticky toast shows instead.
+ * A dialog closed during the request gets the sticky toast too.
+ */
 function onLateRefused(err: unknown): void {
-  if (err instanceof ApiError && IN_DIALOG_REFUSALS.has(err.code)) {
+  if (err instanceof ApiError && err.code === "late_payment_incomplete" && stateListChanged(err)) {
+    lateDialog.value = false;
+  }
+  if (err instanceof ApiError && IN_DIALOG_REFUSALS.has(err.code) && lateDialog.value) {
     // Dialog stays open with every value kept; no duplicate toast.
     lateRefusal.value = notify.errorMessage(err);
     if (err.code === "late_payment_amount_mismatch") {

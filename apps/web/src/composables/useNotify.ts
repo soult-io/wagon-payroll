@@ -27,9 +27,12 @@ const STATE_RETURN_FILED_FALLBACK =
   "Nothing was issued. You said a return or report for your state that covers this pay date is already filed. Adding this payroll means correcting that filing with a state correction form, which Wagon Payroll doesn't prepare. Keep the pay date as it is. Keep your own record of this payment, and make the correction outside Wagon Payroll or with your tax preparer.";
 const AMOUNT_MISMATCH_FALLBACK =
   "Nothing was issued. The amount you typed doesn't match this payroll's net pay. Check it against your bank record, including cents. If you paid a different amount, the wages and taxes for that payment may be different from this payroll, and Wagon Payroll can't record it as it is. Talk to your tax preparer before you issue it.";
+const LATE_NOT_SUPPORTED_FALLBACK =
+  "Wagon Payroll can't record a late payroll for your business's deposit schedule yet. Nothing was issued.";
 
 const LATE_FALLBACKS: Record<string, string> = {
   late_payment_incomplete: LATE_INCOMPLETE_FALLBACK,
+  late_issue_not_supported: LATE_NOT_SUPPORTED_FALLBACK,
   state_return_filed: STATE_RETURN_FILED_FALLBACK,
   late_payment_amount_mismatch: AMOUNT_MISMATCH_FALLBACK,
 };
@@ -78,6 +81,7 @@ const STICKY_ERROR_CODES = new Set([
   "late_payment_incomplete",
   "state_return_filed",
   "late_payment_amount_mismatch",
+  "late_issue_not_supported",
   "worksheet_changed",
   "invalid_w4_effective_date",
   "effective_date",
@@ -89,6 +93,7 @@ const ISSUE_REFUSED_CODES = new Set([
   "late_payment_incomplete",
   "state_return_filed",
   "late_payment_amount_mismatch",
+  "late_issue_not_supported",
 ]);
 
 export function useNotify() {

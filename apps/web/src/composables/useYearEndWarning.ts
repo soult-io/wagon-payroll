@@ -12,7 +12,7 @@ import { adminPayrollApi, isOpenRun, type PayrollRunRow, type YearEndStatus } fr
 import { useDates } from "./useDates";
 
 export function useYearEndWarning() {
-  const { date } = useDates();
+  const { date, longDate } = useDates();
   const yearEnd = ref<YearEndStatus | null>(null);
 
   /** A reminder; the page works without it, so a failed read shows nothing. */
@@ -34,7 +34,7 @@ export function useYearEndWarning() {
   /** ", and by {closesOn} at the latest" (copy 4.4: empty when closesOn is unknown). */
   const byClosesOn = computed(() => {
     const closesOn = yearEnd.value?.closesOn;
-    return closesOn ? `, and by ${date(closesOn)} at the latest` : "";
+    return closesOn ? `, and by ${longDate(closesOn)} at the latest` : "";
   });
 
   /** Dashboard banner text, or null outside the window. */
@@ -68,7 +68,7 @@ export function useYearEndWarning() {
     if (ye.phase === "december") {
       return `This payroll's pay date is in ${y}. Issue it by ${date(`${y}-12-31`)} so it counts in ${y}.`;
     }
-    return `This payroll's pay date, ${date(r.payDate)}, is in ${y}, which has ended. If you paid it on that date, issue it before you file any ${y} fourth-quarter or year-end tax return${byClosesOn.value}. You'll be asked to confirm the amount you paid. Keep the pay date as it is. If you didn't pay it on that date, void it and generate it again with the date you actually pay.`;
+    return `This payroll's pay date, ${longDate(r.payDate)}, is in ${y}, which has ended. If you paid it on that date, issue it before you file any ${y} fourth-quarter or year-end tax return${byClosesOn.value}. You'll be asked to confirm the amount you paid. Keep the pay date as it is. If you didn't pay it on that date, void it and generate it again with the date you actually pay.`;
   }
 
   return { yearEnd, load, dueSentence, dashboardText, runNotice };
