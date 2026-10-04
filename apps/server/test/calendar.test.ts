@@ -15,7 +15,7 @@
  * W-8 expiries, and date-sorted output.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   company,
   contractorDetails,
@@ -399,51 +399,102 @@ describe("GET /api/admin/calendar — aggregation", () => {
   });
 
   describe("projected filing events", () => {
-    it("FUTURE quarter with issued run and no tax_filings row: filing_generates on quarterEnd+1 and filing_due_projected in due month", async () => {
+    // PAY-219: the service decides "future" from the real clock, so these
+    // cases pin it (Date only) and use literal years. Expected due dates come
+    // from the Form 941 rule, not the app: Q1 is due April 30; a due date on
+    // a Saturday, Sunday or legal holiday moves to the next business day
+    // (Instructions for Form 941, "When Must You File?"; IRC 7503).
+    // 2027-04-30 is a Friday -> 2027-04-30. 2028-04-30 is a Sunday -> Monday
+    // 2028-05-01 (not a federal legal holiday).
+    const PINNED_NOW = new Date("2026-10-04T12:00:00Z");
+    async function futureQ1Run(year: number, legalName: string): Promise<void> {
       const companyId = (await t.db.select({ id: company.id }).from(company).limit(1))[0]!.id;
-      const futureEmployeeId = (
+      const employeeId = (
         await t.db
           .insert(employees)
-          .values({ companyId, legalName: "Future Employee", hireDate: "2025-01-01" })
+          .values({ companyId, legalName, hireDate: "2025-01-01" })
           .returning()
       )[0]!.id;
-
-      const year = new Date().getFullYear() + 1;
-      const quarter = 1;
-      const payDate = `${year}-02-15`;
-      const periodStart = `${year}-01-01`;
-      const periodEnd = `${year}-03-31`;
-      const generatesDate = `${year}-04-01`;
-      const dueDate = `${year}-04-30`;
-
       await t.db.insert(payrollRuns).values({
-        employeeId: futureEmployeeId,
-        periodStart,
-        periodEnd,
-        payDate,
+        employeeId,
+        periodStart: `${year}-01-01`,
+        periodEnd: `${year}-03-31`,
+        payDate: `${year}-02-15`,
         status: "issued",
         runSnapshot: {},
       });
+    }
 
-      const apr = await calendar(year, 4);
-      expect(apr.events).toContainEqual(
-        expect.objectContaining({
-          date: generatesDate,
-          kind: "filing_generates",
-          label: `Form 941 Q${quarter} ${year} generates`,
-          detail: "Created by the daily filing sync",
-        }),
-      );
-      expect(apr.events).toContainEqual(
-        expect.objectContaining({
-          date: dueDate,
-          kind: "filing_due_projected",
-          label: `Form 941 Q${quarter} ${year} due (projected)`,
-          detail: "Projected — filing not generated yet",
-        }),
-      );
+    it("FUTURE quarter with issued run and no tax_filings row: filing_generates on quarterEnd+1 and filing_due_projected in due month", async () => {
+      vi.useFakeTimers({ toFake: ["Date"], now: PINNED_NOW });
+      try {
+        const year = 2027;
+        const quarter = 1;
+        const generatesDate = "2027-04-01";
+        const dueDate = "2027-04-30";
+        expect(new Date(`${dueDate}T00:00:00Z`).getUTCDay()).toBe(5); // Friday: no roll
 
-      expect(apr.events.filter((e) => e.kind === "filing_due_projected")).toHaveLength(1);
+        await futureQ1Run(year, "Future Employee");
+
+        const apr = await calendar(year, 4);
+        expect(apr.events).toContainEqual(
+          expect.objectContaining({
+            date: generatesDate,
+            kind: "filing_generates",
+            label: `Form 941 Q${quarter} ${year} generates`,
+            detail: "Created by the daily filing sync",
+          }),
+        );
+        expect(apr.events).toContainEqual(
+          expect.objectContaining({
+            date: dueDate,
+            kind: "filing_due_projected",
+            label: `Form 941 Q${quarter} ${year} due (projected)`,
+            detail: "Projected — filing not generated yet",
+          }),
+        );
+
+        expect(apr.events.filter((e) => e.kind === "filing_due_projected")).toHaveLength(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("FUTURE quarter whose April 30 is a Sunday (Q1 2028): projected due rolls to Monday May 1", async () => {
+      vi.useFakeTimers({ toFake: ["Date"], now: PINNED_NOW });
+      try {
+        const year = 2028;
+        const quarter = 1;
+        const generatesDate = "2028-04-01";
+        const dueDate = "2028-05-01";
+        expect(new Date("2028-04-30T00:00:00Z").getUTCDay()).toBe(0); // Sunday
+        expect(new Date(`${dueDate}T00:00:00Z`).getUTCDay()).toBe(1); // Monday
+
+        await futureQ1Run(year, "Future Employee 2028");
+
+        const apr = await calendar(year, 4);
+        expect(apr.events).toContainEqual(
+          expect.objectContaining({
+            date: generatesDate,
+            kind: "filing_generates",
+            label: `Form 941 Q${quarter} ${year} generates`,
+          }),
+        );
+        expect(apr.events.filter((e) => e.kind === "filing_due_projected")).toHaveLength(0);
+
+        const may = await calendar(year, 5);
+        expect(may.events).toContainEqual(
+          expect.objectContaining({
+            date: dueDate,
+            kind: "filing_due_projected",
+            label: `Form 941 Q${quarter} ${year} due (projected)`,
+            detail: "Projected — filing not generated yet",
+          }),
+        );
+        expect(may.events.filter((e) => e.kind === "filing_due_projected")).toHaveLength(1);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("Same quarter WITH a tax_filings row: no filing_generates / filing_due_projected, only real filing_due", async () => {
