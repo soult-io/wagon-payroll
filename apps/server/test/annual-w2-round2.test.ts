@@ -347,6 +347,7 @@ describe("S4 figures defect: no amounts or ids in the employee and filing bodies
           ready: false,
           corrected: false,
           downloadable: false,
+          formCount: null,
         },
       ],
     });

@@ -990,6 +990,7 @@ describe("my W-2 routes", () => {
           ready: true,
           corrected: false,
           downloadable: true,
+          formCount: 1,
         },
       ],
     });

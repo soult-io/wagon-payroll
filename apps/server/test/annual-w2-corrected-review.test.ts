@@ -372,6 +372,7 @@ describe("D2 figures that come back to an earlier hash are furnished again", () 
               ready: true,
               corrected: true,
               downloadable: true,
+              formCount: 1,
             },
           ],
         },
@@ -834,6 +835,7 @@ describe("D9 after consent is withdrawn", () => {
       ready: true,
       corrected: false,
       downloadable,
+      formCount: 1,
     });
     const listed = {
       consented: (await myList(env, c)).json(),
