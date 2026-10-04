@@ -882,10 +882,12 @@ export async function w2YearIssues(
 export async function w2FiguresWithYearIssues(
   db: ReadDb,
   year: number,
+  opts: { renderChecks?: boolean } = {},
 ): Promise<{ figures: W2Figures[]; yearIssues: W2Issue[] }> {
   return inW2Snapshot(db, async (r) => {
     const figures = await w2FiguresForYear(r, year);
     const yearIssues = await w2YearIssues(r, year, figures);
+    if (opts.renderChecks === false) return { figures, yearIssues };
     return { figures: await withRenderChecks(r, year, figures), yearIssues };
   });
 }
@@ -896,9 +898,23 @@ export async function w2FiguresWithYearIssues(
  * STATE_BOXES_FROM_YEAR, a box 15 ID that does not decrypt
  * (state_id_unreadable) or does not fit the form (state_id_too_long). The
  * values are probed and discarded (company/state-ids.ts); the issues carry
- * code, severity and state only. Every readiness and furnishing path reads
- * figures through here (employeeW2Figures, w2FiguresWithYearIssues,
- * isMyW2Ready), so no furnishing row is written for such a W-2.
+ * code, severity and state only. Every readiness and furnishing path gets
+ * its figures with these checks, so no furnishing row or mail exists for
+ * such a W-2:
+ *  - employeeW2Figures: markFurnishedOnPaper, sendOneW2AvailableNotice
+ *    (portal_notice), isMyW2Ready, and in
+ *    w2-furnish.ts printableFigures → currentHash (furnishCorrectionIfNeeded
+ *    from reconcileW2Furnishings and runs.ts applyLateIssueEffects) and
+ *    backfillOneInTx (backfillEmployeeYearIfNeeded, backfillW2Furnishings).
+ *  - w2FiguresWithYearIssues: the admin W-2 list, yearW2BlockCodes
+ *    (w2sIssuable → sendW2AvailableNotices, markFiled, the filings list).
+ *  - Directly, after the form check (round 3 L1): w2InputWithBoxes (Copy D,
+ *    furnishAndRender for the employee download and admin print packet)
+ *    and w3InputFor.
+ * Without checks (`renderChecks: false`, or w2FiguresForYear) only to decide
+ * the PAY-162 refusals that come before the form check, and to compute the
+ * stored W-3 worksheet (w3WorksheetIn) and backfillOneYear's employee list
+ * (each employee then goes through backfillOneInTx).
  */
 async function withRenderChecks(
   db: ReadDb,
@@ -1204,10 +1220,15 @@ export async function w2InputWithBoxes(
       `W-2 for ${year} becomes available on ${w2AvailableOn(year)}`,
     );
   }
-  const boxes = readableBoxes(await employeeW2Figures(db, employeeId, year));
-  // PAY-162: PDF callers stop here when the year has no official form —
-  // before any PII is read or decrypted.
+  // PAY-162 order: missing config / not found / blocked figures first (no
+  // decrypt), then the form check — PDF callers stop there when the year
+  // has no official form, before any PII is read or decrypted, including
+  // the PR-3 render-check probes (round 3 L1) — then the render checks.
+  const figures = readableBoxes(
+    await employeeW2Figures(db, employeeId, year, { renderChecks: false }),
+  );
   if (opts.requireBundledForm && !hasTemplate(year, "fw2")) throw new FormNotAvailableError(year);
+  const boxes = readableBoxes((await withRenderChecks(db, year, [figures]))[0] as W2Figures);
   const rows = await db.select().from(employees).where(eq(employees.id, employeeId)).limit(1);
   const employee = rows[0];
   if (!employee) throw new FilingServiceError("not_found", `employee ${employeeId} not found`);
@@ -1249,11 +1270,13 @@ export async function employeeW2Figures(
   db: Pick<Db, "select">,
   employeeId: number,
   year: number,
+  opts: { renderChecks?: boolean } = {},
 ): Promise<W2Figures> {
   const figures = (await w2FiguresForYear(db, year)).find((f) => f.employeeId === employeeId);
   if (!figures) {
     throw new FilingServiceError("not_found", `no W-2 for employee ${employeeId} in ${year}`);
   }
+  if (opts.renderChecks === false) return figures;
   return (await withRenderChecks(db, year, [figures]))[0] as W2Figures;
 }
 
@@ -1310,7 +1333,12 @@ export async function w3InputFor(
       `W-3 for ${year} becomes available on ${w2AvailableOn(year)}`,
     );
   }
-  const { figures, yearIssues } = await w2FiguresWithYearIssues(db, year);
+  // PAY-162 order: figures and their blocks first (no decrypt), then the
+  // form check (before any PII is read or decrypted, round 3 L1), then the
+  // PR-3 render checks.
+  const { figures, yearIssues } = await w2FiguresWithYearIssues(db, year, {
+    renderChecks: false,
+  });
   if (figures.length === 0) {
     throw new FilingServiceError("not_found", `no W-2s for ${year}`);
   }
@@ -1322,7 +1350,10 @@ export async function w3InputFor(
     throw new W2BlockedError(["reconciliation_mismatch"]);
   }
   if (opts.requireBundledForm && !hasTemplate(year, "fw3")) throw new FormNotAvailableError(year);
-  const readable = readableFigures(figures);
+  const checked = await withRenderChecks(db, year, figures);
+  const unprintable = blockCodes(checked);
+  if (unprintable.length > 0) throw new W2BlockedError(unprintable);
+  const readable = readableFigures(checked);
   const totals = w3Totals(readable);
   return {
     taxYear: year,

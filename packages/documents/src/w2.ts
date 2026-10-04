@@ -184,8 +184,8 @@ export class W2FormLinesError extends Error {
 
 /**
  * Spec 24 (PAY-116) PR-3 R5: a box 15 state ID too wide for its field even at
- * the smallest allowed size (STATE_ID_MIN_SIZE). Fixed message; never echoes
- * the ID.
+ * the smallest allowed size (STATE_ID_MIN_SIZE), or with a character the
+ * form's font cannot print (L4). Fixed message; never echoes the ID.
  */
 export class W2StateIdTooLongError extends Error {
   constructor() {
@@ -256,10 +256,17 @@ const STATE_ID_FONT = StandardFontEmbedder.for(
 /**
  * The font size that fits `id` into a field `width` pt wide: the template's
  * 8 pt when it fits, else the largest tenth of a point down to 6 pt; null
- * when it does not fit even at 6 pt.
+ * when it does not fit even at 6 pt, or when it has a character the form's
+ * font cannot encode (outside WinAnsi). PR-3 L4: pdf-lib's encoding error
+ * names the character, so it is swallowed here, never rethrown.
  */
 function stateIdSize(id: string, width: number): number | null {
-  const perPoint = STATE_ID_FONT.widthOfTextAtSize(id, 1);
+  let perPoint: number;
+  try {
+    perPoint = STATE_ID_FONT.widthOfTextAtSize(id, 1);
+  } catch {
+    return null;
+  }
   const room = width - STATE_ID_INSET;
   if (perPoint * STATE_ID_SIZE <= room) return STATE_ID_SIZE;
   const size = Math.floor((room / perPoint) * 10) / 10;
