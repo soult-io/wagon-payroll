@@ -440,6 +440,39 @@ export function registerAdminEmployeeRoutes(app: FastifyInstance, deps: Deps): v
   );
 
   /**
+   * The employee's login for a sign-in email change, or null (no login).
+   * S-H1: pendingEnrollment — the user is still enrolling, so the admin
+   * re-sends the invite to the new address (nothing is sent automatically).
+   */
+  async function signInTarget(
+    employeeId: number,
+  ): Promise<{ userId: string; oldEmail: string; pendingEnrollment: boolean } | null> {
+    const rows = await db
+      .select({ userId: employees.userId, email: authUser.email, banReason: authUser.banReason })
+      .from(employees)
+      .leftJoin(authUser, eq(authUser.id, employees.userId))
+      .where(eq(employees.id, employeeId))
+      .limit(1);
+    const row = rows[0];
+    if (!row?.userId || !row.email) return null;
+    return {
+      userId: row.userId,
+      oldEmail: row.email,
+      pendingEnrollment: row.banReason === "pending_enrollment",
+    };
+  }
+
+  /** Another user signs in with `email` (case-insensitive). */
+  async function emailTakenByOther(email: string, userId: string): Promise<boolean> {
+    const taken = await db
+      .select({ id: authUser.id })
+      .from(authUser)
+      .where(and(sql`lower(${authUser.email}) = ${email}`, ne(authUser.id, userId)))
+      .limit(1);
+    return taken.length > 0;
+  }
+
+  /**
    * D-A: the sign-in email change itself. One transaction: the new address,
    * S-H1 revocation of every outstanding setup link, the masked audit row
    * and the notice to the new and the old address. False when another
@@ -514,25 +547,12 @@ export function registerAdminEmployeeRoutes(app: FastifyInstance, deps: Deps): v
         .safeParse(req.body);
       if (!body.success) return reply.code(400).send({ error: "invalid_body" });
       const newEmail = body.data.email.toLowerCase();
-      const rows = await db
-        .select({ userId: employees.userId, email: authUser.email, banReason: authUser.banReason })
-        .from(employees)
-        .leftJoin(authUser, eq(authUser.id, employees.userId))
-        .where(eq(employees.id, employeeId))
-        .limit(1);
-      const row = rows[0];
-      if (!row?.userId || !row.email) return reply.code(404).send({ error: "not_found" });
-      const userId = row.userId;
-      const oldEmail = row.email;
-      // S-H1: a user still enrolling needs a new invite at the new address
-      // (the admin re-sends it; nothing is sent automatically).
-      const pendingEnrollment = row.banReason === "pending_enrollment";
-      const taken = await db
-        .select({ id: authUser.id })
-        .from(authUser)
-        .where(and(sql`lower(${authUser.email}) = ${newEmail}`, ne(authUser.id, userId)))
-        .limit(1);
-      if (taken.length > 0) return reply.code(409).send({ error: "email_exists" });
+      const target = await signInTarget(employeeId);
+      if (!target) return reply.code(404).send({ error: "not_found" });
+      const { userId, oldEmail, pendingEnrollment } = target;
+      if (await emailTakenByOther(newEmail, userId)) {
+        return reply.code(409).send({ error: "email_exists" });
+      }
       if (oldEmail.toLowerCase() === newEmail) return { changed: false, pendingEnrollment };
       const done = await applySignInEmailChange({
         employeeId,
