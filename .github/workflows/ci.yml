@@ -212,12 +212,70 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # PAY-220 (brief D-F): the server suite with the process clock shifted to
+  # Jan 2 of the first year with no bundled federal tax tables
+  # (scripts/clock-target.mjs; 2027-01-02 while 2025 + 2026 are bundled). It
+  # catches tests and code that assume "this year has tables" before January
+  # does. The offset is computed once for the whole job and passed to every
+  # process as whole days. Gates push-image from day one.
+  clock-shift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.17.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # Build first: clock-target reads BUNDLED_FEDERAL_TAX_YEARS from
+      # packages/db/dist, and server tests import workspace dists.
+      - name: Build web + server + packages
+        run: pnpm -r run build
+
+      - name: Clock tooling self-test (target, whole-day offset, double-shift guard)
+        run: pnpm test:clock-shift
+
+      # Assignment first: under `set -e` a failing clock-target fails the step
+      # (a bare `echo "$(...)"` would not). Both values must be non-empty.
+      - name: Resolve clock target (Jan 2 of the first year without bundled tables)
+        run: |
+          shift_env=$(node scripts/clock-target.mjs)
+          echo "$shift_env"
+          days=$(printf '%s\n' "$shift_env" | sed -n 's/^PAYROLL_CLOCK_SHIFT_DAYS=//p')
+          target=$(printf '%s\n' "$shift_env" | sed -n 's/^PAYROLL_CLOCK_TARGET=//p')
+          test -n "$days" || { echo "clock-target printed no PAYROLL_CLOCK_SHIFT_DAYS"; exit 1; }
+          test -n "$target" || { echo "clock-target printed no PAYROLL_CLOCK_TARGET"; exit 1; }
+          echo "PAYROLL_CLOCK_SHIFT_DAYS=$days" >> "$GITHUB_ENV"
+          echo "PAYROLL_CLOCK_TARGET=$target" >> "$GITHUB_ENV"
+
+      # Fails closed: the JS clock and PGlite current_date must both read the
+      # target date in a vitest worker, or the job stops here.
+      - name: Prove the shift is live
+        env:
+          CLOCK_SHIFT_REQUIRED: "1"
+        run: pnpm --filter @payroll/server exec vitest run test/clock-shift.proof.test.ts --reporter=verbose
+
+      - name: Server tests at the shifted clock
+        env:
+          CLOCK_SHIFT_REQUIRED: "1"
+        run: pnpm --filter @payroll/server exec vitest run
+
   push-image:
     # Image is pushed only from main (spec 8/13). This repo is artifact-only:
     # CI publishes sha-<full-sha> + latest tags and nothing here touches any
     # deployment — prod moves via release.yml + a pin PR in the stack repo.
     # E2E gates the push: the image carries exactly what the journeys exercise.
-    needs: [verify, e2e]
+    # clock-shift gates it too (PAY-220, decision D-F).
+    needs: [verify, e2e, clock-shift]
     # Repo gate: the image names are explicit soult-io/* packages (PAY-68), which
     # a fork's GITHUB_TOKEN cannot push to — a fork's main push skips this job.
     if: github.repository == 'soult-io/wagon-payroll' && github.event_name == 'push' && github.ref == 'refs/heads/main'

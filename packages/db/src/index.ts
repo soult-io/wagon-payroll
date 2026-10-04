@@ -1,6 +1,11 @@
 export * from "./schema.js";
 export * from "./auth-tables.js";
-export { seedDatabase, SEED_COMPANY_NAME, type SeedDb } from "./seed.js";
+export {
+  BUNDLED_FEDERAL_TAX_YEARS,
+  seedDatabase,
+  SEED_COMPANY_NAME,
+  type SeedDb,
+} from "./seed.js";
 export {
   LOCAL_TAX_COVERAGE_FILE,
   seedLocalTaxCoverage,

@@ -46,6 +46,31 @@ pnpm --filter @payroll/e2e e2e
 (The nightly e2e against a live QA deployment requires our self-hosted runner
 and is not expected to run on forks — it skips cleanly there.)
 
+### Clock-shift run (the first year without tax tables)
+
+The `clock-shift` CI job runs the server tests with the clock moved to Jan 2
+of the first year that has no bundled federal tax tables: the year after the
+latest one in `BUNDLED_FEDERAL_TAX_YEARS` (`packages/db/src/seed.ts`). It
+catches code and tests that assume "this year has tables" before January
+does. `scripts/clock-target.mjs` prints the shift in whole days and the target
+date; `scripts/clock-shift.mjs` adds those days to the real clock in every
+vitest worker (the server `vitest.config.ts` preloads it, and it does nothing
+while `PAYROLL_CLOCK_SHIFT_DAYS` is unset). To run it locally (bash or zsh):
+
+```sh
+pnpm -r run build
+pnpm test:clock-shift
+set -a; eval "$(node scripts/clock-target.mjs)"; set +a
+pnpm --filter @payroll/server exec vitest run test/clock-shift.proof.test.ts --reporter=verbose
+pnpm --filter @payroll/server exec vitest run
+unset PAYROLL_CLOCK_SHIFT_DAYS PAYROLL_CLOCK_TARGET
+```
+
+Do not also put `scripts/clock-shift.mjs` in `NODE_OPTIONS` for vitest. The
+same path loads only once (Node caches the module, so there is no double
+shift), but a different path or URL to it, such as a copy, loads a second time
+and throws instead of shifting twice.
+
 ### Mutation testing (test strength on the money path)
 
 [StrykerJS](https://stryker-mutator.io/) makes small changes ("mutants") to the

@@ -25,6 +25,18 @@ export type SeedDb = PostgresJsDatabase<typeof schema>;
 
 export const SEED_COMPANY_NAME = "Example Corp";
 
+/** Federal tax configs `seedDatabase` installs, oldest first. Add a year here. */
+const BUNDLED_FEDERAL_TAX_CONFIGS: readonly TaxConfig[] = [TAX_CONFIG_2025, TAX_CONFIG];
+
+/**
+ * Federal tax years this build seeds (single source: derived from the list
+ * above). PAY-220: scripts/clock-target.mjs shifts the CI clock to Jan 2 of
+ * the year after the latest one.
+ */
+export const BUNDLED_FEDERAL_TAX_YEARS: readonly number[] = BUNDLED_FEDERAL_TAX_CONFIGS.map(
+  (config) => config.year,
+);
+
 async function seedCompany(db: SeedDb): Promise<void> {
   const existing = await db.select({ id: company.id }).from(company).limit(1);
   if (existing.length > 0) return;
@@ -117,8 +129,7 @@ async function seedContractorReportingConfig(db: SeedDb): Promise<void> {
 /** Run all seeds. Returns a summary for CLI output / test assertions. */
 export async function seedDatabase(db: SeedDb): Promise<{ done: true }> {
   await seedCompany(db);
-  await seedTaxConfig(db, TAX_CONFIG_2025);
-  await seedTaxConfig(db, TAX_CONFIG);
+  for (const config of BUNDLED_FEDERAL_TAX_CONFIGS) await seedTaxConfig(db, config);
   await seedPaySchedule(db);
   await seedContractorReportingConfig(db);
   // PAY-13 phase 1: TX/IL/CA state withholding tables.
