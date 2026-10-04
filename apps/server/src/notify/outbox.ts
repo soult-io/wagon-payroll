@@ -143,7 +143,14 @@ export async function drainOutbox(deps: DrainDeps): Promise<DrainResult> {
       result.sent += 1;
     } catch (err) {
       const attempts = row.attempts + 1;
-      const message = err instanceof Error ? err.message : String(err);
+      // S-M1: a row sent to an override address never stores the error
+      // text (a mail server's reply names the address) — the class only.
+      const message =
+        row.recipientEmail !== null
+          ? `send failed (${err instanceof Error ? err.constructor.name || "Error" : typeof err})`
+          : err instanceof Error
+            ? err.message
+            : String(err);
       await db
         .update(emailOutbox)
         .set({

@@ -29,14 +29,30 @@ import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
 import type { Guards } from "../plugins/guards.js";
 import { inviteUser, resendInvite, UserServiceError } from "../auth/users.js";
-import { requestContext } from "../auth/audit.js";
+import { AUTH_EVENT, requestContext, writeAuthEvent } from "../auth/audit.js";
 import { toHeaders } from "../plugins/guards.js";
 import { encryptField, maskLast4 } from "../crypto/field-encryption.js";
 import { addressForStorage, decryptAddress, encryptAddress } from "../crypto/address-encryption.js";
-import { refuseCrossSite } from "../plugins/fetch-site.js";
+import { PDF_RATE_LIMIT, refuseCrossSite } from "../plugins/fetch-site.js";
+import { revokeOutstandingSetupTokens } from "../auth/tokens.js";
 import { w2ConsentState, withdrawW2Consent } from "../filings/w2-consent.js";
 import { FilingServiceError } from "../filings/shared.js";
 import { templateContext } from "../notify/outbox.js";
+
+/** The admin signed in within FRESH_SESSION_MS (Better Auth freshAge). */
+function sessionIsFresh(createdAt: Date | string | undefined): boolean {
+  if (createdAt === undefined) return false;
+  return Date.now() - new Date(createdAt).getTime() <= FRESH_SESSION_MS;
+}
+
+/** Postgres unique_violation (23505), wherever the driver puts the code. */
+function isUniqueViolation(err: unknown): boolean {
+  for (let e: unknown = err, i = 0; e && i < 4; i += 1) {
+    if ((e as { code?: unknown }).code === "23505") return true;
+    e = (e as { cause?: unknown }).cause;
+  }
+  return false;
+}
 
 /** Better Auth session.freshAge (auth.ts): a sensitive action needs a sign-in this recent. */
 export const FRESH_SESSION_MS = 60 * 60 * 1000;
@@ -424,6 +440,55 @@ export function registerAdminEmployeeRoutes(app: FastifyInstance, deps: Deps): v
   );
 
   /**
+   * D-A: the sign-in email change itself. One transaction: the new address,
+   * S-H1 revocation of every outstanding setup link, the masked audit row
+   * and the notice to the new and the old address. False when another
+   * change took the address first (S-L1: unique violation, no detail
+   * logged). After the commit, S-M2: every session of the user ends.
+   */
+  async function applySignInEmailChange(c: {
+    employeeId: number;
+    userId: string;
+    oldEmail: string;
+    newEmail: string;
+    actorId: string;
+    headers: Headers;
+  }): Promise<boolean> {
+    const rendered = signInEmailChanged(await templateContext(db, config));
+    try {
+      await db.transaction(async (tx) => {
+        await tx
+          .update(authUser)
+          .set({ email: c.newEmail, updatedAt: new Date() })
+          .where(eq(authUser.id, c.userId));
+        await revokeOutstandingSetupTokens(tx, c.userId);
+        await tx.insert(auditEvents).values({
+          actorId: c.actorId,
+          action: "employee.sign_in_email_change",
+          entity: "employee",
+          entityId: String(c.employeeId),
+          before: { email: maskEmail(c.oldEmail) },
+          after: { email: maskEmail(c.newEmail), setupLinksRevoked: true },
+        });
+        const notice = {
+          userId: c.userId,
+          eventType: EVENT_TYPE.signInEmailChanged,
+          subject: rendered.subject,
+          bodyHtml: rendered.html,
+        };
+        await tx.insert(emailOutbox).values([notice, { ...notice, recipientEmail: c.oldEmail }]);
+      });
+    } catch (err) {
+      if (isUniqueViolation(err)) return false;
+      throw err;
+    }
+    const ctx = await auth.$context;
+    await ctx.internalAdapter.deleteUserSessions(c.userId);
+    await writeAuthEvent(db, AUTH_EVENT.sessionRevoked, c.userId, requestContext(c.headers));
+    return true;
+  }
+
+  /**
    * PAY-208 D-A ((j)(3)(vii): how an employee's W-2 email address is
    * updated): change the email the employee signs in with. Needs a fresh
    * admin session (signed in within FRESH_SESSION_MS — Better Auth's
@@ -434,20 +499,23 @@ export function registerAdminEmployeeRoutes(app: FastifyInstance, deps: Deps): v
    */
   app.put(
     "/api/admin/employees/:employeeId/sign-in-email",
-    { preHandler: [refuseCrossSite, admin] },
+    // S-L2: 20 per minute per client, like the PDF routes.
+    { preHandler: [refuseCrossSite, admin], config: { rateLimit: PDF_RATE_LIMIT } },
     async (req, reply) => {
-      const created = new Date(req.authSession!.createdAt).getTime();
-      if (!(Date.now() - created <= FRESH_SESSION_MS)) {
+      const employeeId = Number((req.params as { employeeId: string }).employeeId);
+      if (!Number.isInteger(employeeId) || employeeId <= 0) {
+        return reply.code(400).send({ error: "invalid_id" });
+      }
+      if (!sessionIsFresh(req.authSession?.createdAt)) {
         return reply.code(403).send({ error: "session_not_fresh" });
       }
-      const employeeId = Number((req.params as { employeeId: string }).employeeId);
       const body = z
         .object({ email: z.string().trim().max(254).pipe(z.email()) })
         .safeParse(req.body);
       if (!body.success) return reply.code(400).send({ error: "invalid_body" });
       const newEmail = body.data.email.toLowerCase();
       const rows = await db
-        .select({ userId: employees.userId, email: authUser.email })
+        .select({ userId: employees.userId, email: authUser.email, banReason: authUser.banReason })
         .from(employees)
         .leftJoin(authUser, eq(authUser.id, employees.userId))
         .where(eq(employees.id, employeeId))
@@ -456,36 +524,26 @@ export function registerAdminEmployeeRoutes(app: FastifyInstance, deps: Deps): v
       if (!row?.userId || !row.email) return reply.code(404).send({ error: "not_found" });
       const userId = row.userId;
       const oldEmail = row.email;
+      // S-H1: a user still enrolling needs a new invite at the new address
+      // (the admin re-sends it; nothing is sent automatically).
+      const pendingEnrollment = row.banReason === "pending_enrollment";
       const taken = await db
         .select({ id: authUser.id })
         .from(authUser)
         .where(and(sql`lower(${authUser.email}) = ${newEmail}`, ne(authUser.id, userId)))
         .limit(1);
       if (taken.length > 0) return reply.code(409).send({ error: "email_exists" });
-      if (oldEmail.toLowerCase() === newEmail) return { changed: false };
-      const rendered = signInEmailChanged(await templateContext(db, config));
-      await db.transaction(async (tx) => {
-        await tx
-          .update(authUser)
-          .set({ email: newEmail, updatedAt: new Date() })
-          .where(eq(authUser.id, userId));
-        await tx.insert(auditEvents).values({
-          actorId: req.authUser!.id,
-          action: "employee.sign_in_email_change",
-          entity: "employee",
-          entityId: String(employeeId),
-          before: { email: maskEmail(oldEmail) },
-          after: { email: maskEmail(newEmail) },
-        });
-        const notice = {
-          userId,
-          eventType: EVENT_TYPE.signInEmailChanged,
-          subject: rendered.subject,
-          bodyHtml: rendered.html,
-        };
-        await tx.insert(emailOutbox).values([notice, { ...notice, recipientEmail: oldEmail }]);
+      if (oldEmail.toLowerCase() === newEmail) return { changed: false, pendingEnrollment };
+      const done = await applySignInEmailChange({
+        employeeId,
+        userId,
+        oldEmail,
+        newEmail,
+        actorId: req.authUser!.id,
+        headers: toHeaders(req),
       });
-      return { changed: true };
+      if (!done) return reply.code(409).send({ error: "email_exists" });
+      return { changed: true, pendingEnrollment };
     },
   );
 }
