@@ -92,8 +92,13 @@ const anyW2Blocked = computed(
 const w2LoadError = ref(false);
 /** PAY-162 (D3): the official W-2/W-3 form is bundled for the year. */
 const w2FormAvailable = ref(true);
-/** PAY-162: W-2s with any issue, for the "need attention" list. */
-const attentionRows = computed(() => w2Rows.value.filter((r) => r.issues.length > 0));
+/**
+ * PAY-162: W-2s with a block or warn issue, for the "need attention" list.
+ * Info issues (e.g. period_spans_move) are notes, not something to fix.
+ */
+const attentionRows = computed(() =>
+  w2Rows.value.filter((r) => r.issues.some((i) => i.severity === "block" || i.severity === "warn")),
+);
 const anyUnreadableTotals = computed(() => w2Rows.value.some(hasUnreadableTotals));
 /** PAY-206: any W-2 corrected after the employee got it (SSA note). */
 const anyW2Corrected = computed(() => w2Rows.value.some((r) => r.corrected));
