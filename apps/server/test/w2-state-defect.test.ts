@@ -23,6 +23,10 @@
  *
  * Fail first on origin/main a58dfc5: no per-run loader, so neither defect
  * raises an issue and the PDF routes answer form_not_available.
+ *
+ * Spec 24 (PAY-116) PR-4 W35-ext: the admin list's new keys — stateChecks
+ * is [] (the year's W-2 boxes are withheld) and notified is false — and the
+ * body still carries no amount (fail first on fd56964: no such keys).
  */
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -119,6 +123,17 @@ describe("W35a box 1 one cent off the run sum", () => {
       ...urls.map((url) => ({ url, status: 409, body: W2_NOT_READY })),
       { url: "my", status: 409, body: { error: "w2_not_ready" } },
     ]);
+  });
+
+  it("W35-ext (PR-4 S2): list stateChecks [] and notified false while the boxes are withheld; the new keys carry no amount", async () => {
+    const l = await list(env, 2026);
+    const body = l.json as unknown as { stateChecks?: unknown; notified?: unknown };
+    expect({ status: l.status, stateChecks: body.stateChecks, notified: body.notified }).toEqual({
+      status: 200,
+      stateChecks: [],
+      notified: false,
+    });
+    noLeak(l.body, runs);
   });
 
   it("guard: GET /api/admin/company/state-ids does not 500 (S1)", async () => {

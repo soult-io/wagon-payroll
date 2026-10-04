@@ -268,12 +268,19 @@ test("W-2/W-3 filing detail: full headers, Documents column, W-3 action placemen
       ).toBeVisible();
     });
 
-    await step(page, "W-3 action in the transmittal; full W-2 column titles", async () => {
+    await step(page, "W-3 action in the W-3 card; full W-2 column titles", async () => {
+      // Spec 24 (PAY-116) PR-4 (D-PL1): the W-3 is a records copy — heading
+      // "W-3 totals (for your records)", button "Download W-3 (records copy)".
+      // Matched by keyword: the UX wording may still move. The button is
+      // only rendered when no W-2 of the year is on hold; from 2027-01-01 the
+      // closed year is 2026 (state lines), which the Q1 seed EIN keeps
+      // unblocked (risk R1).
       const w3Section = page.locator("section", {
-        has: page.getByRole("heading", { name: /W-3 transmittal totals/ }),
+        has: page.getByRole("heading", { name: /W-3 totals/ }),
       });
-      // The W-3 download belongs to the transmittal header, not the W-2 list.
-      await expect(w3Section.getByRole("button", { name: "Download W-3 PDF" })).toBeVisible();
+      // The W-3 download belongs to the W-3 card header, not the W-2 list.
+      await expect(w3Section.getByRole("button", { name: /^Download W-3\b/ })).toBeVisible();
+      await expect(w3Section.getByRole("button", { name: "Download W-3 PDF" })).toHaveCount(0);
       await expect(page.getByRole("heading", { name: "Employee W-2s" })).toBeVisible();
 
       // Full column titles; Delivery (status) and Documents (actions) are split.
