@@ -44,7 +44,7 @@ import {
   type W2Figures,
   w2AvailableOn,
   w2BoxStrings,
-  w2FiguresForYear,
+  w2FiguresWithYearIssues,
   w2InputFor,
   w2YearIssues,
   w3InputFor,
@@ -155,8 +155,7 @@ export function registerAdminAnnualFormRoutes(app: FastifyInstance, deps: Deps):
     let figures: W2Figures[];
     let yearIssues: Awaited<ReturnType<typeof w2YearIssues>>;
     try {
-      figures = await w2FiguresForYear(db, q.data.year);
-      yearIssues = await w2YearIssues(db, q.data.year, figures);
+      ({ figures, yearIssues } = await w2FiguresWithYearIssues(db, q.data.year));
     } catch (err) {
       return serviceError(err, reply);
     }

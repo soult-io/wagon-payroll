@@ -18,7 +18,8 @@
  * available on January 1 of the following year (w2AvailableOn gate).
  */
 
-import { and, eq, isNull, like, ne, sql } from "drizzle-orm";
+import { and, eq, is, isNull, like, ne, sql } from "drizzle-orm";
+import { PgTransaction } from "drizzle-orm/pg-core";
 import {
   appSettings,
   company,
@@ -492,6 +493,30 @@ function figuresFor(
   return { ...boxes, issues };
 }
 
+type ReadDb = Pick<Db, "select">;
+
+/**
+ * Spec 24 (PAY-116): run one W-2 decision (perEmployeeSums, the planner
+ * inputs, and the state-withholding reconciliation) against ONE snapshot.
+ * Under READ COMMITTED each statement sees its own snapshot, so a run issued
+ * between two of the reads could make box 1, the state lines and the W-3
+ * reconciliation disagree (a false internal_mismatch or
+ * reconciliation_mismatch, or a decision on mixed data). A root handle opens
+ * a read-only REPEATABLE READ transaction. A caller's transaction is used as
+ * it is: markFiled (filings/service.ts fileableRowUnderLock) holds
+ * FILING_CLOSE_LOCK there, and opening a second transaction would read
+ * outside its lock.
+ */
+async function inW2Snapshot<T>(db: ReadDb, fn: (r: ReadDb) => Promise<T>): Promise<T> {
+  if (is(db, PgTransaction)) return fn(db);
+  const root = db as Partial<Pick<Db, "transaction">>;
+  if (typeof root.transaction !== "function") return fn(db);
+  return root.transaction((tx) => fn(tx), {
+    isolationLevel: "repeatable read",
+    accessMode: "read only",
+  });
+}
+
 /** The planner's per-year inputs (Spec 24 PR-2 loader). */
 interface StatePlanContext {
   year: number;
@@ -565,10 +590,11 @@ function withStateLines(
  * planner alone (no federal config needed). Employees whose box 1 cannot be
  * read or whose plan is internal_mismatch have none.
  */
-export async function w2StateLinesForYear(
-  db: Pick<Db, "select">,
-  year: number,
-): Promise<W2FigureLine[][]> {
+export async function w2StateLinesForYear(db: ReadDb, year: number): Promise<W2FigureLine[][]> {
+  return inW2Snapshot(db, (r) => stateLinesIn(r, year));
+}
+
+async function stateLinesIn(db: ReadDb, year: number): Promise<W2FigureLine[][]> {
   const ctx = await statePlanContext(db, year);
   if (ctx === null) return [];
   const out: W2FigureLine[][] = [];
@@ -595,7 +621,11 @@ export async function w2StateLinesForYear(
  * Spec 24 (PAY-116): years ≥ STATE_BOXES_FROM_YEAR add the planner's state
  * lines and issues.
  */
-export async function w2FiguresForYear(db: Pick<Db, "select">, year: number): Promise<W2Figures[]> {
+export async function w2FiguresForYear(db: ReadDb, year: number): Promise<W2Figures[]> {
+  return inW2Snapshot(db, (r) => figuresIn(r, year));
+}
+
+async function figuresIn(db: ReadDb, year: number): Promise<W2Figures[]> {
   const byEmployee = await perEmployeeSums(db, year);
   const employeeIds = [...byEmployee.keys()];
   if (employeeIds.length === 0) return [];
@@ -777,6 +807,21 @@ export async function w2YearIssues(
 }
 
 /**
+ * The year's W-2 figures and year-level issues from one snapshot
+ * (inW2Snapshot): the admin list, the W-3 PDF and the block codes decide on
+ * both together.
+ */
+export async function w2FiguresWithYearIssues(
+  db: ReadDb,
+  year: number,
+): Promise<{ figures: W2Figures[]; yearIssues: W2Issue[] }> {
+  return inW2Snapshot(db, async (r) => {
+    const figures = await w2FiguresForYear(r, year);
+    return { figures, yearIssues: await w2YearIssues(r, year, figures) };
+  });
+}
+
+/**
  * W-3 transmittal worksheet — the box-by-box aggregate across all W-2s,
  * exact integer sums (PAY-162; keys and value strings unchanged). Throws
  * W2BlockedError while any W-2 has internal_mismatch / negative_amount, so
@@ -784,7 +829,11 @@ export async function w2YearIssues(
  * years ≥ STATE_BOXES_FROM_YEAR add the state keys; earlier years are
  * byte-identical (W15).
  */
-export async function computeW3Worksheet(db: Db, year: number): Promise<WorksheetW3> {
+export async function computeW3Worksheet(db: ReadDb, year: number): Promise<WorksheetW3> {
+  return inW2Snapshot(db, (r) => w3WorksheetIn(r, year));
+}
+
+async function w3WorksheetIn(db: ReadDb, year: number): Promise<WorksheetW3> {
   const figures = readableFigures(await w2FiguresForYear(db, year));
   const totals = w3Totals(figures);
   const base: WorksheetW3 = {
@@ -1070,7 +1119,7 @@ export async function w3InputFor(
       `W-3 for ${year} becomes available on ${w2AvailableOn(year)}`,
     );
   }
-  const figures = await w2FiguresForYear(db, year);
+  const { figures, yearIssues } = await w2FiguresWithYearIssues(db, year);
   if (figures.length === 0) {
     throw new FilingServiceError("not_found", `no W-2s for ${year}`);
   }
@@ -1078,7 +1127,7 @@ export async function w3InputFor(
   const blocked = blockCodes(figures);
   if (blocked.length > 0) throw new W2BlockedError(blocked);
   // Spec 24 (PAY-116) R9: no W-3 while a state does not reconcile.
-  if ((await w2YearIssues(db, year, figures)).length > 0) {
+  if (yearIssues.length > 0) {
     throw new W2BlockedError(["reconciliation_mismatch"]);
   }
   if (opts.requireBundledForm && !hasTemplate(year, "fw3")) throw new FormNotAvailableError(year);
@@ -1298,9 +1347,9 @@ export async function yearW2BlockCodes(
   year: number,
 ): Promise<W2IssueCode[]> {
   try {
-    const figures = await w2FiguresForYear(db, year);
+    const { figures, yearIssues } = await w2FiguresWithYearIssues(db, year);
     const codes = blockCodes(figures);
-    if ((await w2YearIssues(db, year, figures)).length > 0) codes.push("reconciliation_mismatch");
+    if (yearIssues.length > 0) codes.push("reconciliation_mismatch");
     return codes;
   } catch (err) {
     if (err instanceof AnnualFiguresDefectError) return ["internal_mismatch"];
