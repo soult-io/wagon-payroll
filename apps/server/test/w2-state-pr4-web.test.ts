@@ -63,10 +63,15 @@ function src(path: string): string {
 
 /** Source text with tags removed and whitespace collapsed (template text as rendered). */
 function flat(text: string): string {
-  return text
-    .replace(/<[^>]+>/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  // Strip tags until the text stops changing, so no tag survives a single
+  // pass (a nested "<<b>script>" would; CodeQL js/incomplete-multi-character-sanitization).
+  let out = text;
+  let previous: string;
+  do {
+    previous = out;
+    out = out.replace(/<[^>]+>/g, "");
+  } while (out !== previous);
+  return out.replace(/\s+/g, " ").trim();
 }
 
 const line = (
