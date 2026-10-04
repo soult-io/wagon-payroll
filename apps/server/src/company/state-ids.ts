@@ -18,7 +18,7 @@
  *   year the change would reach. Audit rows carry `{ idMasked }` only.
  */
 
-import { and, asc, eq, gt, lte, desc, sql } from "drizzle-orm";
+import { and, asc, eq, gt, lte, desc } from "drizzle-orm";
 import { auditEvents, company, companyStateIds, taxFilings } from "@payroll/db";
 import { EIN_DEFAULT_STATES } from "@payroll/shared";
 import { decryptField, encryptField } from "../crypto/field-encryption.js";
@@ -58,6 +58,15 @@ export function maskEinDefault(einStored: string, key: string): string {
   } catch {
     return MASK;
   }
+}
+
+/**
+ * The company's stored (encrypted) EIN, or null when there is none. An empty
+ * string is no EIN: the IL/NY default must never print blank digits. The one
+ * place every box 15 path decides "has an EIN".
+ */
+export function storedEin(value: string | null | undefined): string | null {
+  return value === undefined || value === null || value === "" ? null : value;
 }
 
 function isEinDefaultState(stateCode: string): boolean {
@@ -103,7 +112,7 @@ export async function resolveStateId(
     .from(company)
     .where(eq(company.id, query.companyId))
     .limit(1);
-  const ein = companyRow?.ein ?? null;
+  const ein = storedEin(companyRow?.ein);
   const source = stateIdSourceFor(
     query.stateCode,
     query.taxYear,
@@ -126,10 +135,7 @@ export async function stateIdAvailability(
 ): Promise<Record<string, StateIdSource | null>> {
   const out: Record<string, StateIdSource | null> = {};
   if (states.length === 0) return out;
-  const [owner] = await db
-    .select({ id: company.id, hasEin: sql<boolean>`${company.ein} IS NOT NULL` })
-    .from(company)
-    .limit(1);
+  const [owner] = await db.select({ id: company.id, ein: company.ein }).from(company).limit(1);
   const rows = owner
     ? await db
         .select({ stateCode: companyStateIds.stateCode, fromTaxYear: companyStateIds.fromTaxYear })
@@ -138,7 +144,7 @@ export async function stateIdAvailability(
     : [];
   for (const state of states) {
     const years = rows.filter((r) => r.stateCode === state).map((r) => r.fromTaxYear);
-    out[state] = stateIdSourceFor(state, taxYear, years, owner?.hasEin === true);
+    out[state] = stateIdSourceFor(state, taxYear, years, storedEin(owner?.ein) !== null);
   }
   return out;
 }

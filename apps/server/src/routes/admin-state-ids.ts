@@ -31,6 +31,7 @@ import type { Guards } from "../plugins/guards.js";
 import {
   deleteStateId,
   einDefaults,
+  storedEin,
   maskEinDefault,
   maskStateId,
   neededStates,
@@ -97,7 +98,7 @@ export function registerAdminStateIdRoutes(app: FastifyInstance, deps: Deps): vo
     for (const r of rows) {
       yearsByState.set(r.stateCode, [...(yearsByState.get(r.stateCode) ?? []), r.fromTaxYear]);
     }
-    const ein = owner.ein || null;
+    const ein = storedEin(owner.ein);
 
     const stateIds = rows.map((r) => ({
       stateCode: r.stateCode,
