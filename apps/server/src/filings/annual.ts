@@ -18,7 +18,7 @@
  * available on January 1 of the following year (w2AvailableOn gate).
  */
 
-import { and, eq, is, isNull, like, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, is, isNull, like, ne, sql } from "drizzle-orm";
 import { PgTransaction } from "drizzle-orm/pg-core";
 import {
   appSettings,
@@ -48,7 +48,7 @@ import {
 import { EVENT_TYPE, w2Available as tplW2Available } from "@payroll/notifications";
 import { formatCents } from "@payroll/shared";
 import type { Db } from "../db.js";
-import { stateWithholdingByYear } from "../deposits/service.js";
+import { stateDepositedByYear, stateWithholdingByYear } from "../deposits/service.js";
 import {
   EinUnreadableError,
   einReadable,
@@ -60,7 +60,7 @@ import {
 } from "../company/state-ids.js";
 import type { AppConfig } from "../config.js";
 import { templateContext } from "../notify/outbox.js";
-import { w2EmployeeAddressAt } from "../change-requests/address-history.js";
+import { AddressUnreadableError, w2EmployeeAddressAt } from "../change-requests/address-history.js";
 import { decryptField, fieldKey } from "../crypto/field-encryption.js";
 import { lockEmployee } from "../payroll/locks.js";
 import { furnishCurrent } from "./w2-furnish-core.js";
@@ -182,6 +182,18 @@ export class FormNotAvailableError extends Error {
   }
 }
 
+/**
+ * Spec 24 (PAY-116) PR-4: the employee's SSN failed to decrypt at render
+ * time (the readiness probe passed, then the render read failed). Fixed
+ * message; never carries the value or a cause. Maps to 409 ssn_unreadable.
+ */
+export class SsnUnreadableError extends Error {
+  constructor() {
+    super("SSN could not be decrypted");
+    this.name = "SsnUnreadableError";
+  }
+}
+
 /** A fixed 409 body for a W-2/W-3 refusal: codes and year only, never amounts or ids. */
 export type AnnualBlockBody =
   | { error: "missing_tax_config"; year: number }
@@ -212,6 +224,12 @@ export function annualBlockBody(err: unknown): AnnualBlockBody | null {
     return { error: "w2_not_ready", issues: ["ein_unreadable"] };
   if (err instanceof W2StateIdTooLongError) {
     return { error: "w2_not_ready", issues: ["state_id_too_long"] };
+  }
+  // Spec 24 (PAY-116) PR-4: the SSN or box f address does not decrypt.
+  if (err instanceof SsnUnreadableError)
+    return { error: "w2_not_ready", issues: ["ssn_unreadable"] };
+  if (err instanceof AddressUnreadableError) {
+    return { error: "w2_not_ready", issues: ["address_unreadable"] };
   }
   if (err instanceof FormNotAvailableError) return { error: "form_not_available", year: err.year };
   return null;
@@ -641,13 +659,24 @@ function withStateLines(
  * read or whose plan is internal_mismatch have none.
  */
 export async function w2StateLinesForYear(db: ReadDb, year: number): Promise<W2FigureLine[][]> {
+  return [...(await w2StateLinesByEmployee(db, year)).values()];
+}
+
+/**
+ * w2StateLinesForYear keyed by employee id (Spec 24 (PAY-116) PR-4: the
+ * state-ID screen's furnished counts).
+ */
+export async function w2StateLinesByEmployee(
+  db: ReadDb,
+  year: number,
+): Promise<Map<number, W2FigureLine[]>> {
   return inW2Snapshot(db, (r) => stateLinesIn(r, year));
 }
 
-async function stateLinesIn(db: ReadDb, year: number): Promise<W2FigureLine[][]> {
+async function stateLinesIn(db: ReadDb, year: number): Promise<Map<number, W2FigureLine[]>> {
+  const out = new Map<number, W2FigureLine[]>();
   const ctx = await statePlanContext(db, year);
-  if (ctx === null) return [];
-  const out: W2FigureLine[][] = [];
+  if (ctx === null) return out;
   for (const [employeeId, sums] of await perEmployeeSums(db, year)) {
     let box1Cents: number;
     try {
@@ -658,7 +687,10 @@ async function stateLinesIn(db: ReadDb, year: number): Promise<W2FigureLine[][]>
     }
     const plan = planFor(ctx, employeeId, box1Cents);
     if (plan.issues.some((i) => i.code === "internal_mismatch")) continue;
-    out.push(plan.lines.map((l) => figureLine(ctx, l)));
+    out.set(
+      employeeId,
+      plan.lines.map((l) => figureLine(ctx, l)),
+    );
   }
   return out;
 }
@@ -866,12 +898,64 @@ export async function w2YearIssues(
   year: number,
   figures: readonly W2Figures[],
 ): Promise<W2Issue[]> {
-  if (year < STATE_BOXES_FROM_YEAR || figures.length === 0) return [];
-  if (figures.some((f) => f.box1Cents === null)) return [];
-  const section = await w3StateSection(db, year, figures as ReadableW2Figures[]);
+  return yearIssuesOf(await yearStateSection(db, year, figures));
+}
+
+/**
+ * The year's W-3 state section, or null before STATE_BOXES_FROM_YEAR, with
+ * no W-2s, or while any W-2 of the year has withheld boxes.
+ */
+async function yearStateSection(
+  db: Pick<Db, "select">,
+  year: number,
+  figures: readonly W2Figures[],
+): Promise<W3StateSection | null> {
+  if (year < STATE_BOXES_FROM_YEAR || figures.length === 0) return null;
+  if (figures.some((f) => f.box1Cents === null)) return null;
+  return w3StateSection(db, year, figures as ReadableW2Figures[]);
+}
+
+function yearIssuesOf(section: W3StateSection | null): W2Issue[] {
+  if (section === null) return [];
   return section.states
     .filter((s) => !s.reconciled)
     .map((s) => ({ code: "reconciliation_mismatch", severity: "block", state: s.state }));
+}
+
+/**
+ * Spec 24 (PAY-116) PR-4 (I3): one state's tax check on the admin W-2 list.
+ * Admin JSON only. `deposited` is UI-only (S24-D10): never in a worksheet or
+ * a hash, and never part of `reconciled`.
+ */
+export interface W2StateCheck {
+  state: string;
+  /** Σ box 17 on the year's W-2 lines (a null line counts 0). */
+  box17: string;
+  /** state_withholding of the issued runs, pay-date year. */
+  runWithholding: string;
+  /** Always "0.00" until PR-5 (S24-D7). */
+  attributedLegacy: string;
+  /** Σ tax_deposits rows of the state marked deposited, period start in the year. */
+  deposited: string;
+  reconciled: boolean;
+}
+
+/** The state tax check rows of a year state section ([] for none). */
+export async function w2StateChecks(
+  db: Pick<Db, "select">,
+  year: number,
+  section: W3StateSection | null,
+): Promise<W2StateCheck[]> {
+  if (section === null || section.states.length === 0) return [];
+  const deposited = await stateDepositedByYear(db, year);
+  return section.states.map((s) => ({
+    state: s.state,
+    box17: s.box17,
+    runWithholding: s.runWithholding,
+    attributedLegacy: s.attributedLegacy,
+    deposited: formatCents(deposited.get(s.state) ?? 0),
+    reconciled: s.reconciled,
+  }));
 }
 
 /**
@@ -883,12 +967,15 @@ export async function w2FiguresWithYearIssues(
   db: ReadDb,
   year: number,
   opts: { renderChecks?: boolean } = {},
-): Promise<{ figures: W2Figures[]; yearIssues: W2Issue[] }> {
+): Promise<{ figures: W2Figures[]; yearIssues: W2Issue[]; stateSection: W3StateSection | null }> {
   return inW2Snapshot(db, async (r) => {
     const figures = await w2FiguresForYear(r, year);
-    const yearIssues = await w2YearIssues(r, year, figures);
-    if (opts.renderChecks === false) return { figures, yearIssues };
-    return { figures: await withRenderChecks(r, year, figures), yearIssues };
+    // Spec 24 (PAY-116) PR-4: the section is returned too, so the admin
+    // list's state tax check comes from the same snapshot as the issues.
+    const stateSection = await yearStateSection(r, year, figures);
+    const yearIssues = yearIssuesOf(stateSection);
+    if (opts.renderChecks === false) return { figures, yearIssues, stateSection };
+    return { figures: await withRenderChecks(r, year, figures), yearIssues, stateSection };
   });
 }
 
@@ -898,7 +985,12 @@ export async function w2FiguresWithYearIssues(
  * STATE_BOXES_FROM_YEAR, a box 15 ID that does not decrypt
  * (state_id_unreadable) or does not fit the form (state_id_too_long). The
  * values are probed and discarded (company/state-ids.ts); the issues carry
- * code, severity and state only. Every readiness and furnishing path gets
+ * code, severity and state only. Spec 24 (PAY-116) PR-4: also an employee
+ * SSN (ssn_unreadable) or box f address (address_unreadable, the same
+ * effective-dated resolution the PDF uses) that does not decrypt — probed
+ * only for a year with a bundled W-2 form (a year that cannot print never
+ * decrypts an SSN), decrypted and discarded, never logged; those issues
+ * carry code and severity only. Every readiness and furnishing path gets
  * its figures with these checks, so no furnishing row or mail exists for
  * such a W-2:
  *  - employeeW2Figures: markFurnishedOnPaper, sendOneW2AvailableNotice
@@ -933,9 +1025,18 @@ async function withRenderChecks(
     year >= STATE_BOXES_FROM_YEAR
       ? await probeStateIds(db, key, year, states, fits)
       : new Map<string, never>();
+  const pii = hasTemplate(year, "fw2")
+    ? await probeEmployeePii(
+        db,
+        key,
+        year,
+        figures.map((f) => f.employeeId),
+      )
+    : new Map<number, W2Issue[]>();
   return figures.map((f) => {
     const extra: W2Issue[] = [];
     if (!einOk) extra.push({ code: "ein_unreadable", severity: "block" });
+    extra.push(...(pii.get(f.employeeId) ?? []));
     for (const state of new Set(f.stateLines.map((l) => l.state))) {
       const problem = problems.get(state);
       // An IL/NY default whose EIN does not decrypt: the EIN issue covers it.
@@ -944,6 +1045,47 @@ async function withRenderChecks(
     }
     return extra.length === 0 ? f : { ...f, issues: [...f.issues, ...extra] };
   });
+}
+
+/**
+ * Spec 24 (PAY-116) PR-4: per employee, ssn_unreadable when the stored SSN
+ * does not decrypt and address_unreadable when the box f address (current
+ * value or a history value it resolves through) does not decrypt. One
+ * batched employees read; every value is decrypted and discarded — never
+ * stored, returned, logged or hashed (the PR-3 probe exception, extended to
+ * employee PII by the PR-4 security condition). Employees with no issue are
+ * absent from the map.
+ */
+async function probeEmployeePii(
+  db: ReadDb,
+  key: string,
+  year: number,
+  employeeIds: readonly number[],
+): Promise<Map<number, W2Issue[]>> {
+  const out = new Map<number, W2Issue[]>();
+  if (employeeIds.length === 0) return out;
+  const rows = await db
+    .select({ id: employees.id, taxId: employees.taxId })
+    .from(employees)
+    .where(inArray(employees.id, [...employeeIds]));
+  for (const row of rows) {
+    const issues: W2Issue[] = [];
+    if (row.taxId) {
+      try {
+        decryptField(row.taxId, key);
+      } catch {
+        issues.push({ code: "ssn_unreadable", severity: "block" });
+      }
+    }
+    try {
+      await w2EmployeeAddressAt(db, row.id, year, key);
+    } catch (err) {
+      if (!(err instanceof AddressUnreadableError)) throw err;
+      issues.push({ code: "address_unreadable", severity: "block" });
+    }
+    if (issues.length > 0) out.set(row.id, issues);
+  }
+  return out;
 }
 
 /**
@@ -1132,6 +1274,15 @@ function formatSsn(plain: string): string {
   return /^(\d{3})(\d{2})(\d{4})$/.exec(plain)?.slice(1).join("-") ?? plain;
 }
 
+/** Decrypt an employee SSN; SsnUnreadableError (no value, no cause) on failure (PR-4). */
+function decryptSsn(stored: string, key: string): string {
+  try {
+    return decryptField(stored, key);
+  } catch {
+    throw new SsnUnreadableError();
+  }
+}
+
 /** Decrypt the company EIN; EinUnreadableError (no value, no cause) on failure (R4). */
 function decryptEin(stored: string, key: string): string {
   try {
@@ -1236,6 +1387,8 @@ export async function w2InputWithBoxes(
   // Box f (PAY-20): the mailing address effective Dec 31 of the tax year,
   // falling back to the residential address effective at the same date —
   // both resolved through the effective-dated change-request history.
+  // Spec 24 (PAY-116) PR-4: a decrypt failure here (after the probe passed)
+  // is a typed hold — AddressUnreadableError / SsnUnreadableError, 409.
   const boxFAddress = await w2EmployeeAddressAt(db, employeeId, year, config.encryptionKey);
 
   const input: W2Input = {
@@ -1243,7 +1396,7 @@ export async function w2InputWithBoxes(
     employer: await employerBlock(db, config),
     employee: {
       legalName: employee.legalName,
-      ssn: employee.taxId ? formatSsn(decryptField(employee.taxId, config.encryptionKey)) : null,
+      ssn: employee.taxId ? formatSsn(decryptSsn(employee.taxId, config.encryptionKey)) : null,
       address: asAddress(boxFAddress),
     },
     // Box d control number = the employee ID (D5).
@@ -1587,17 +1740,30 @@ export async function yearW2BlockCodes(
  * boolean: no reason codes reach the employee.
  */
 export async function isMyW2Ready(db: Db, employeeId: number, year: number): Promise<boolean> {
-  if (!hasTemplate(year, "fw2")) return false;
+  return (await myW2FormCount(db, employeeId, year)) !== null;
+}
+
+/**
+ * Spec 24 (PAY-116) PR-4 (S3): the number of W-2 forms of a ready W-2 (the
+ * isMyW2Ready test), else null. A count only — a W-2 that is not ready never
+ * reveals one (no states, no reasons).
+ */
+export async function myW2FormCount(
+  db: Db,
+  employeeId: number,
+  year: number,
+): Promise<number | null> {
+  if (!hasTemplate(year, "fw2")) return null;
   try {
     const figures = await employeeW2Figures(db, employeeId, year);
-    return figures.box1Cents !== null && !isW2Blocked(figures);
+    return figures.box1Cents !== null && !isW2Blocked(figures) ? figures.formCount : null;
   } catch (err) {
     if (
       err instanceof MissingTaxConfigError ||
       err instanceof AnnualFiguresDefectError ||
       (err instanceof FilingServiceError && err.code === "not_found")
     ) {
-      return false;
+      return null;
     }
     throw err;
   }

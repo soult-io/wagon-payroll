@@ -617,6 +617,32 @@ export async function stateWithholdingByYear(
   return out;
 }
 
+/**
+ * Spec 24 (PAY-116) PR-4 (S24-D10): per state, the cents marked as deposited
+ * for periods starting in `year` — rows with status 'deposited' (a live
+ * status) only. UI-only (the admin W-2 list's state tax check): never part
+ * of a worksheet or a hash.
+ */
+export async function stateDepositedByYear(
+  db: Pick<Db, "select">,
+  year: number,
+): Promise<Map<string, number>> {
+  const rows = await db
+    .select({ state: taxDeposits.jurisdiction, amount: taxDeposits.amount })
+    .from(taxDeposits)
+    .where(
+      and(
+        ne(taxDeposits.jurisdiction, "federal"),
+        eq(taxDeposits.status, "deposited"),
+        sql`${taxDeposits.periodStart} >= ${`${year}-01-01`}`,
+        sql`${taxDeposits.periodStart} <= ${`${year}-12-31`}`,
+      ),
+    );
+  const out = new Map<string, number>();
+  for (const r of rows) out.set(r.state, (out.get(r.state) ?? 0) + parseCents(r.amount));
+  return out;
+}
+
 function unitFor(units: Map<string, StateUnit>, state: string, periodStart: string): StateUnit {
   const year = Number(periodStart.slice(0, 4));
   const quarter = quarterOfMonth(Number(periodStart.slice(5, 7)));

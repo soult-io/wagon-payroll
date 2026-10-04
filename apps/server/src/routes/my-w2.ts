@@ -20,7 +20,7 @@ import { employees } from "@payroll/db";
 import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
 import type { Guards } from "../plugins/guards.js";
-import { annualBlockBody, isMyW2Ready, listMyW2Years, w2AvailableOn } from "../filings/annual.js";
+import { annualBlockBody, listMyW2Years, myW2FormCount, w2AvailableOn } from "../filings/annual.js";
 import {
   consentToElectronicW2,
   w2ConsentStatus,
@@ -102,7 +102,9 @@ export function registerMyW2Routes(app: FastifyInstance, deps: Deps): void {
     const w2s = [];
     for (const year of years) {
       // PAY-162 (D2): a bare ready flag — never why a W-2 is not ready.
-      const ready = employee ? await isMyW2Ready(db, employee.id, year) : false;
+      // Spec 24 (PAY-116) PR-4 (S3): + the form count, null unless ready.
+      const formCount = employee ? await myW2FormCount(db, employee.id, year) : null;
+      const ready = formCount !== null;
       // PAY-206 (R7): a bare corrected flag — no reasons, no dates of change.
       const corrected = employee && ready ? await isMyW2Corrected(db, employee.id, year) : false;
       // PAY-206 (D9): the same gate as the PDF route — an active consent, or
@@ -111,7 +113,14 @@ export function registerMyW2Routes(app: FastifyInstance, deps: Deps): void {
         employee !== null &&
         ready &&
         (consented || (await electronicAccessAfterWithdrawal(db, employee.id, year, today())));
-      w2s.push({ year, availableOn: w2AvailableOn(year), ready, corrected, downloadable });
+      w2s.push({
+        year,
+        availableOn: w2AvailableOn(year),
+        ready,
+        corrected,
+        downloadable,
+        formCount,
+      });
     }
     return { w2s };
   });

@@ -290,8 +290,8 @@ export interface StateIdFact {
    * SHA-256 hex of the entered row's stored ciphertext ("enc:v1:…"), null
    * for the EIN default or no ID. The ciphertext, not the value: the hash
    * must change when box 15 changes without any decrypt (the value is
-   * decrypted at render time only). A rewrite of the same ID (new IV) also
-   * changes it — a spurious CORRECTED, accepted.
+   * decrypted at render time only). Spec 24 (PAY-116) PR-4: re-saving the
+   * same ID writes nothing (writeStateId), so it does not change the digest.
    */
   digest: string | null;
 }
@@ -385,7 +385,7 @@ export function neededStates(
 
 type YearFiled = { status: 409; error: "state_id_year_filed"; firstOpenYear: number };
 
-export type StateIdSetResult = { status: 200; idMasked: string } | YearFiled;
+export type StateIdSetResult = { status: 200; idMasked: string; unchanged: boolean } | YearFiled;
 export type StateIdDeleteResult = { status: 204 } | { status: 404 } | YearFiled;
 
 interface WriteTarget {
@@ -484,7 +484,23 @@ async function insertOrReplace(
   return previous.stateId;
 }
 
-/** Upsert the (normalized) ID for `target`. */
+/** True when the stored value decrypts to exactly `normalized`; a decrypt failure is false. */
+function storesSameValue(stored: string, key: string, normalized: string): boolean {
+  try {
+    return decryptField(stored, key) === normalized;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Upsert the (normalized) ID for `target`. Spec 24 (PAY-116) PR-4 (D-PL2):
+ * when the row already holds exactly this value, nothing is written — no new
+ * ciphertext (so no CORRECTED W-2 from the furnishing hash), no updated_at
+ * change, no audit row — and `unchanged` is true. The stored value is
+ * decrypted for the compare inside the locked transaction and discarded;
+ * a stored value that does not decrypt is replaced as a normal write.
+ */
 export async function writeStateId(
   db: Db,
   key: string,
@@ -497,8 +513,12 @@ export async function writeStateId(
     if (firstOpenYear !== null) {
       return { status: 409, error: "state_id_year_filed", firstOpenYear } as const;
     }
-    const replaced = await insertOrReplace(tx, target, encryptField(normalized, key), actorId);
     const idMasked = maskPlainStateId(normalized);
+    const existing = await lockedRow(tx, target);
+    if (existing && storesSameValue(existing.stateId, key, normalized)) {
+      return { status: 200, idMasked, unchanged: true } as const;
+    }
+    const replaced = await insertOrReplace(tx, target, encryptField(normalized, key), actorId);
     await tx.insert(auditEvents).values({
       actorId,
       action: "company.state_id.set",
@@ -507,7 +527,7 @@ export async function writeStateId(
       before: replaced === null ? null : { idMasked: maskStateId(replaced, key) },
       after: { idMasked },
     });
-    return { status: 200, idMasked } as const;
+    return { status: 200, idMasked, unchanged: false } as const;
   });
 }
 

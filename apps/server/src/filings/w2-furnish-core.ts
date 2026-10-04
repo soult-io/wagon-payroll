@@ -120,8 +120,9 @@ function strOrNull(v: unknown): string | null {
  * stateIdSource, stateIdDigest} in line order + localLines (always [] from
  * Spec 24). PR-3 R3: box 15 is covered by its source and the digest of the
  * entered ID's stored ciphertext — not the value, so the hash stays pure (no
- * key, no decrypt) and a changed ID makes the next furnishing CORRECTED (a
- * re-entered identical value gets a new IV: a spurious CORRECTED, accepted).
+ * key, no decrypt) and a changed ID makes the next furnishing CORRECTED.
+ * Spec 24 (PAY-116) PR-4: re-entering the identical value writes nothing,
+ * so its ciphertext and digest stay the same.
  * Changed in place: no v2 row existed in production. Other keys of
  * `figures` (names, issues) never enter it. Amounts are integers or null;
  * anything else throws a fixed TypeError.

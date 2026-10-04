@@ -513,10 +513,19 @@ export interface StateIdNeeded {
   reason: "tax_withheld" | "wages_only";
 }
 
+/** Spec 24 (PAY-116) PR-4: employees already given a W-2 with a state's line (count only). */
+export interface StateIdFurnished {
+  stateCode: string;
+  taxYear: number;
+  employees: number;
+}
+
 export interface StateIdList {
   stateIds: StateIdRow[];
   defaults: StateIdDefault[];
   needed: StateIdNeeded[];
+  /** PR-4: per unfiled tax year, how many employees already hold a W-2 with that state. */
+  furnished: StateIdFurnished[];
 }
 
 export interface AuthEventRow {
@@ -855,7 +864,7 @@ export const adminSettingsApi = {
   /** Spec 24 (PAY-116): write-only; reads return masks only. */
   stateIds: () => get<StateIdList>("/api/admin/company/state-ids"),
   putStateId: (stateCode: string, input: { stateId: string; fromTaxYear: number }) =>
-    put<{ stateId: StateIdRow }>(
+    put<{ stateId: StateIdRow; unchanged: boolean }>(
       `/api/admin/company/state-ids/${encodeURIComponent(stateCode)}`,
       input,
     ),
@@ -1373,7 +1382,10 @@ export type W2IssueCode =
   // Spec 24 (PAY-116) PR-3: box 15 / EIN cannot be printed (blocks).
   | "state_id_unreadable"
   | "ein_unreadable"
-  | "state_id_too_long";
+  | "state_id_too_long"
+  // Spec 24 (PAY-116) PR-4: the SSN or box f address cannot be read (blocks).
+  | "ssn_unreadable"
+  | "address_unreadable";
 
 export interface W2Issue {
   code: W2IssueCode;
@@ -1384,6 +1396,19 @@ export interface W2Issue {
   runs?: { runPublicId: string; payDate: string; stateTax: string }[];
   /** Spec 24 — period_spans_move only: the work-state change date. */
   date?: string;
+}
+
+/**
+ * Spec 24 (PAY-116) PR-4 — one state's tax check on the admin W-2 list.
+ * `deposited` is what was marked as deposited (display only).
+ */
+export interface W2StateCheck {
+  state: string;
+  box17: string;
+  runWithholding: string;
+  attributedLegacy: string;
+  deposited: string;
+  reconciled: boolean;
 }
 
 /** Spec 24 (PAY-116) — one W-2 state line (boxes 15–17); never the state ID. */
@@ -1443,6 +1468,8 @@ export interface MyW2Year {
    * consent or a year already furnished online inside its access window.
    */
   downloadable: boolean;
+  /** Spec 24 (PAY-116) PR-4 — number of W-2 forms; null unless ready. */
+  formCount: number | null;
 }
 
 /** PAY-162 — a filing-level block issue on the tax-filings list. */
@@ -1576,6 +1603,10 @@ export const adminFilingsApi = {
       w2s: W2FiguresRow[];
       /** Spec 24 — year-level issues (reconciliation_mismatch per state). */
       yearIssues: W2Issue[];
+      /** PR-4 — the year's "your W-2 is ready" email already went out. */
+      notified: boolean;
+      /** PR-4 — per-state tax check (2026+; [] while W-2 boxes are withheld). */
+      stateChecks: W2StateCheck[];
     }>(`/api/admin/annual-forms/w2?year=${year}`),
   w2PdfUrl: (employeeId: number, year: number) =>
     `/api/admin/annual-forms/w2/${employeeId}/pdf?year=${year}`,

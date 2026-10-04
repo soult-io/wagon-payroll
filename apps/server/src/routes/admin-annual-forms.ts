@@ -24,6 +24,14 @@
  * localLines [] and formCount; the response carries yearIssues (year-level
  * reconciliation_mismatch per state). Only legacy_state_runs issues carry
  * amounts (admin JSON only).
+ *
+ * Spec 24 (PAY-116) PR-4: issue codes ssn_unreadable / address_unreadable
+ * (no state) hold a W-2 whose SSN or box f address does not decrypt, on the
+ * list and as 409 w2_not_ready on every PDF route. The list adds `notified`
+ * (the year's "your W-2 is ready" email went out) and `stateChecks` (per
+ * state: box 17 total, issued-run withholding, attributed legacy, the
+ * amount marked as deposited — UI-only, never hashed — and reconciled; []
+ * before 2026 and while any W-2's boxes are withheld). Admin JSON only.
  */
 
 import type { FastifyInstance } from "fastify";
@@ -36,11 +44,14 @@ import {
   annualBlockBody,
   isW2Available,
   isW2Blocked,
+  notifiedYears,
   type W2Figures,
   w2AvailableOn,
   w2BoxStrings,
   w2FiguresWithYearIssues,
   w2InputFor,
+  type W2StateCheck,
+  w2StateChecks,
   w2YearIssues,
   w3InputFor,
 } from "../filings/annual.js";
@@ -149,8 +160,11 @@ export function registerAdminAnnualFormRoutes(app: FastifyInstance, deps: Deps):
     if (!q.success) return reply.code(400).send({ error: "invalid_year", details: q.error.issues });
     let figures: W2Figures[];
     let yearIssues: Awaited<ReturnType<typeof w2YearIssues>>;
+    let stateChecks: W2StateCheck[];
     try {
-      ({ figures, yearIssues } = await w2FiguresWithYearIssues(db, q.data.year));
+      const out = await w2FiguresWithYearIssues(db, q.data.year);
+      ({ figures, yearIssues } = out);
+      stateChecks = await w2StateChecks(db, q.data.year, out.stateSection);
     } catch (err) {
       return serviceError(err, reply);
     }
@@ -169,6 +183,8 @@ export function registerAdminAnnualFormRoutes(app: FastifyInstance, deps: Deps):
         listRow(f, electronic.has(f.employeeId), furnishing.get(f.employeeId)),
       ),
       yearIssues,
+      notified: (await notifiedYears(db)).includes(q.data.year),
+      stateChecks,
     };
   });
 
