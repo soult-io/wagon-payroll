@@ -66,8 +66,10 @@ pnpm --filter @payroll/server exec vitest run
 unset PAYROLL_CLOCK_SHIFT_DAYS PAYROLL_CLOCK_TARGET
 ```
 
-Do not also put `scripts/clock-shift.mjs` in `NODE_OPTIONS` for vitest: a
-second load in one process throws instead of shifting twice.
+Do not also put `scripts/clock-shift.mjs` in `NODE_OPTIONS` for vitest. The
+same path loads only once (Node caches the module, so there is no double
+shift), but a different path or URL to it, such as a copy, loads a second time
+and throws instead of shifting twice.
 
 ### Mutation testing (test strength on the money path)
 

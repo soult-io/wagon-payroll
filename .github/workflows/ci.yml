@@ -245,19 +245,28 @@ jobs:
         run: pnpm test:clock-shift
 
       # Assignment first: under `set -e` a failing clock-target fails the step
-      # (a bare `echo "$(...)"` would not).
+      # (a bare `echo "$(...)"` would not). Both values must be non-empty.
       - name: Resolve clock target (Jan 2 of the first year without bundled tables)
         run: |
           shift_env=$(node scripts/clock-target.mjs)
           echo "$shift_env"
-          echo "$shift_env" >> "$GITHUB_ENV"
+          days=$(printf '%s\n' "$shift_env" | sed -n 's/^PAYROLL_CLOCK_SHIFT_DAYS=//p')
+          target=$(printf '%s\n' "$shift_env" | sed -n 's/^PAYROLL_CLOCK_TARGET=//p')
+          test -n "$days" || { echo "clock-target printed no PAYROLL_CLOCK_SHIFT_DAYS"; exit 1; }
+          test -n "$target" || { echo "clock-target printed no PAYROLL_CLOCK_TARGET"; exit 1; }
+          echo "PAYROLL_CLOCK_SHIFT_DAYS=$days" >> "$GITHUB_ENV"
+          echo "PAYROLL_CLOCK_TARGET=$target" >> "$GITHUB_ENV"
 
       # Fails closed: the JS clock and PGlite current_date must both read the
       # target date in a vitest worker, or the job stops here.
       - name: Prove the shift is live
+        env:
+          CLOCK_SHIFT_REQUIRED: "1"
         run: pnpm --filter @payroll/server exec vitest run test/clock-shift.proof.test.ts --reporter=verbose
 
       - name: Server tests at the shifted clock
+        env:
+          CLOCK_SHIFT_REQUIRED: "1"
         run: pnpm --filter @payroll/server exec vitest run
 
   push-image:

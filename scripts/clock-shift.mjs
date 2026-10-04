@@ -45,6 +45,9 @@ export function installClockShift(days) {
   }
   Object.setPrototypeOf(ShiftedDate, RealDate);
   ShiftedDate.prototype = RealDate.prototype;
+  // Look like the built-in to code that inspects it (Date.name, Date.length).
+  Object.defineProperty(ShiftedDate, "name", { value: "Date" });
+  Object.defineProperty(ShiftedDate, "length", { value: 7 });
   ShiftedDate.now = () => RealDate.now() + offset;
   Object.defineProperty(ShiftedDate, SHIFT_MARK, {
     value: { days, realNow: () => RealDate.now() },

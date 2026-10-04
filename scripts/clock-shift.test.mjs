@@ -108,3 +108,9 @@ test("refused in production", () => {
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /refused in production/);
 });
+
+test("shifted Date keeps the built-in name and length", () => {
+  const r = runNode([SHIFT], 'process.stdout.write(Date.name + "/" + Date.length)');
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, "Date/7");
+});

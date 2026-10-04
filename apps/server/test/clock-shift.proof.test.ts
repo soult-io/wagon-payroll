@@ -26,6 +26,13 @@ describe("clock shift (PAY-220)", () => {
     );
   });
 
+  // The CI job sets CLOCK_SHIFT_REQUIRED=1: empty shift variables there are a
+  // broken job, not an unshifted run.
+  it.runIf(process.env.CLOCK_SHIFT_REQUIRED === "1")("shift is required: variables are set", () => {
+    expect(shiftDays, "CLOCK_SHIFT_REQUIRED=1 but PAYROLL_CLOCK_SHIFT_DAYS is empty").not.toBe("");
+    expect(target, "CLOCK_SHIFT_REQUIRED=1 but PAYROLL_CLOCK_TARGET is empty").not.toBe("");
+  });
+
   it.runIf(shiftDays === "")("no shift: Date is the real clock", () => {
     expect(shiftInfo).toBeUndefined();
   });
