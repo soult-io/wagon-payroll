@@ -11,7 +11,14 @@
  * - bank/SSN data never appears in ANY email.
  */
 
-import { PAYSLIPS_NAV_LABEL, W2_CARD_HEADING } from "@payroll/shared";
+import {
+  addressLine,
+  electronicW2AccessThrough,
+  longIsoDate,
+  PAYSLIPS_NAV_LABEL,
+  W2_CARD_HEADING,
+  type W2Contact,
+} from "@payroll/shared";
 
 export const EVENT_TYPE = {
   payrollDraftReady: "payroll_draft_ready",
@@ -41,7 +48,11 @@ export const EVENT_TYPE = {
   taxDepositShortfall: "tax_deposit_shortfall",
   /** PAY-10 — quarterly filing (Form 941) due-date reminder (admin). */
   taxFilingDue: "tax_filing_due",
-  /** PAY-11 — an employee's W-2 for a tax year is available for download. */
+  /**
+   * PAY-11 — the year notice of an employee's W-2. PAY-208 (OD6, 26 CFR
+   * 31.6051-1(j)(5)(i)): always on — for a consenter it is the legal notice
+   * of the online W-2, so it is not in WORKFLOW_EVENTS.
+   */
   w2Available: "w2_available",
   /**
    * PAY-193 L4 — a late-issued payroll changed an employee's already-released
@@ -49,6 +60,14 @@ export const EVENT_TYPE = {
    * opt-out-able.
    */
   w2Changed: "w2_changed",
+  /** PAY-208 ((j)(3)(v)(B)) — written confirmation of a withdrawal. Always on. */
+  w2ConsentWithdrawn: "w2_consent_withdrawn",
+  /** PAY-208 ((j)(3)(vii)) — the employer's W-2 contact details changed. Always on. */
+  w2ContactChanged: "w2_contact_changed",
+  /** PAY-208 (D-D) — please review and agree to the updated online-W-2 terms. Always on. */
+  w2TermsUpdated: "w2_terms_updated",
+  /** PAY-208 (D-A) — an admin changed the employee's sign-in email. Always on. */
+  signInEmailChanged: "sign_in_email_changed",
 } as const;
 
 export type EventType = (typeof EVENT_TYPE)[keyof typeof EVENT_TYPE];
@@ -70,7 +89,6 @@ export const WORKFLOW_EVENTS: readonly EventType[] = [
   EVENT_TYPE.contractorInvoicePaid,
   EVENT_TYPE.taxDepositDue,
   EVENT_TYPE.taxFilingDue,
-  EVENT_TYPE.w2Available,
 ];
 
 /**
@@ -88,7 +106,6 @@ export const EVENT_AUDIENCE: Partial<Record<EventType, EventAudience>> = {
   [EVENT_TYPE.taxDepositDue]: "admin",
   [EVENT_TYPE.taxFilingDue]: "admin",
   [EVENT_TYPE.payslipIssued]: "w2",
-  [EVENT_TYPE.w2Available]: "w2",
   [EVENT_TYPE.contractorInvoiceReviewed]: "contractor",
   [EVENT_TYPE.contractorInvoicePaid]: "contractor",
   [EVENT_TYPE.changeRequestApproved]: "all",
@@ -570,23 +587,151 @@ export function taxFilingDue(
 }
 
 // ---------------------------------------------------------------------------
-// PAY-11 — W-2 availability notice (employee)
+// PAY-11 / PAY-208 — W-2 year notice (employee)
+// ---------------------------------------------------------------------------
+
+/** HTML paragraphs from plain sentences (escaped). URLs stay plain text. */
+function paragraphs(parts: readonly string[]): string {
+  return parts.map((p) => `<p>${escapeHtml(p)}</p>`).join("");
+}
+
+/** {subject-less} body as both HTML and text from the same paragraphs. */
+function bodyOf(ctx: TemplateContext, parts: readonly string[]): { html: string; text: string } {
+  return {
+    html: page(ctx, paragraphs(parts)),
+    text: `${parts.join("\n\n")}\n\n${footer(ctx.companyName, ctx.brandName)}`,
+  };
+}
+
+/** Like email(), for a body written as paragraphs. */
+function paragraphEmail(
+  ctx: TemplateContext,
+  subject: string,
+  parts: readonly string[],
+): RenderedEmail {
+  return { subject: `${ctx.companyName} — ${subject}`, ...bodyOf(ctx, parts) };
+}
+
+/** "W-2 Desk: +1 555 0100, w2@example.com, 100 Example Street, …" */
+function contactLine(c: W2Contact): string {
+  const address = addressLine(c.mailingAddress);
+  return [c.phone, c.email, ...(address ? [address] : [])].join(", ");
+}
+
+/**
+ * Employee: their W-2 for a tax year (January of the following year). Two
+ * variants by the electronic channel of that year (PAY-208, 26 CFR
+ * 31.6051-1(j)(5)(i)):
+ * - consented: the subject starts with the required IMPORTANT phrase (no
+ *   company prefix in front of it); the body says how to access AND print
+ *   it and until when it stays online (electronicW2AccessThrough);
+ * - paper: a courtesy notice only — no IMPORTANT phrase, never "available";
+ *   the employer gives a paper W-2. The switch-online line only when the
+ *   employee can switch (active, a sign-in, a W-2 contact on file).
+ * Never amounts, never the SSN, no attachment, no link with identifiers.
+ */
+export function w2Available(
+  ctx: TemplateContext,
+  data: {
+    taxYear: number;
+    consented: boolean;
+    contact: W2Contact | null;
+    canSwitchOnline: boolean;
+  },
+): RenderedEmail {
+  const year = data.taxYear;
+  const co = ctx.companyName;
+  if (data.consented) {
+    const through = longIsoDate(electronicW2AccessThrough(year));
+    const parts = [
+      `Your ${year} Form W-2 from ${co} is ready.`,
+      `To view and print it, sign in at ${ctx.appUrl}, open ${PAYSLIPS_NAV_LABEL}, and find "${W2_CARD_HEADING}". Select Download PDF, then print or save it from your PDF reader. It stays available there through ${through}.`,
+      "Keep a copy with your tax records. You may need to print it and attach it to your tax return.",
+      ...(data.contact
+        ? [`Want a paper copy too? Ask ${data.contact.name} at ${data.contact.email}.`]
+        : []),
+    ];
+    return {
+      subject: `IMPORTANT TAX RETURN DOCUMENT AVAILABLE: Your ${year} W-2 from ${co}`,
+      ...bodyOf(ctx, parts),
+    };
+  }
+  const parts = [
+    `${co} will give you your ${year} Form W-2 on paper. This email is a notice only and is not your W-2.`,
+    ...(data.canSwitchOnline
+      ? [
+          `Prefer to get it online? Sign in at ${ctx.appUrl}, open ${PAYSLIPS_NAV_LABEL}, and agree to the terms under "${W2_CARD_HEADING}". You can then download it there.`,
+        ]
+      : []),
+  ];
+  return paragraphEmail(ctx, `Your ${year} W-2 will be given to you on paper`, parts);
+}
+
+// ---------------------------------------------------------------------------
+// PAY-208 — online W-2 agreement: withdrawal, contact change, updated terms
 // ---------------------------------------------------------------------------
 
 /**
- * Employee: their W-2 for a tax year is available (January of the following
- * year). Content rules: states the tax year + "log in to view/download" —
- * never amounts, never the SSN, no attachment (same doctrine as
- * payslip_issued).
+ * Employee ((j)(3)(v)(B)): written confirmation of a withdrawal and the date
+ * it takes effect (`effectiveOn`, company-local ISO date; shown long). Says
+ * what changes ((j)(7)), what does not ((v)(C), (j)(6)), how to agree again,
+ * and the W-2 contact. No amounts, no SSN, no links.
  */
-export function w2Available(ctx: TemplateContext, data: { taxYear: number }): RenderedEmail {
-  const body = `<p>Your <strong>W-2 for ${data.taxYear}</strong> is available.</p><p><a href="${ctx.appUrl}">Log in to view and download it</a> from your payslips page.</p>`;
-  return email(
-    ctx,
-    `your ${data.taxYear} W-2 is available`,
-    body,
-    `Your W-2 for ${data.taxYear} is available. Log in to view and download it: ${ctx.appUrl}`,
-  );
+export function w2ConsentWithdrawn(
+  ctx: TemplateContext,
+  data: { effectiveOn: string; contact: W2Contact | null },
+): RenderedEmail {
+  const parts = [
+    `This confirms that you withdrew your agreement to get your W-2s online. It takes effect on ${longIsoDate(data.effectiveOn)}.`,
+    `From that date, ${ctx.companyName} will give you your W-2s on paper.`,
+    `W-2s given to you online before that date don't change. Each one stays available through October 15 of the year after its tax year: sign in at ${ctx.appUrl}, open ${PAYSLIPS_NAV_LABEL}, and find "${W2_CARD_HEADING}".`,
+    `To get your W-2s online again, sign in, open ${PAYSLIPS_NAV_LABEL}, and agree to the terms.`,
+    data.contact
+      ? `Questions, or didn't ask for this? Contact ${data.contact.name}: ${contactLine(data.contact)}.`
+      : `Questions, or didn't ask for this? Contact ${ctx.companyName}.`,
+  ];
+  return paragraphEmail(ctx, "Your online W-2 withdrawal is confirmed", parts);
+}
+
+/** Employee ((j)(3)(vii), 2nd sentence): the new W-2 contact details. Nothing else. */
+export function w2ContactChanged(
+  ctx: TemplateContext,
+  data: { contact: W2Contact },
+): RenderedEmail {
+  const c = data.contact;
+  const lead = `${ctx.companyName} has new contact details for W-2 questions, paper copy requests and withdrawing from online W-2s:`;
+  const lines = [c.name, addressLine(c.mailingAddress), c.phone, c.email].filter((l) => l !== "");
+  const html = `<p>${escapeHtml(lead)}</p><p>${lines.map(escapeHtml).join("<br>")}</p>`;
+  return email(ctx, "New contact for your W-2 questions", html, `${lead}\n${lines.join("\n")}`);
+}
+
+/**
+ * Employee (PAY-208 D-D): the online-W-2 terms changed; their agreement to
+ * the earlier terms does not cover W-2s from `gateYear` on. Asks them to
+ * review and agree again. Once per employee per terms version.
+ */
+export function w2TermsUpdated(ctx: TemplateContext, data: { gateYear: number }): RenderedEmail {
+  const co = ctx.companyName;
+  const parts = [
+    `${co} has updated the terms for getting your W-2 online.`,
+    `To keep getting your W-2s online, sign in at ${ctx.appUrl}, open ${PAYSLIPS_NAV_LABEL}, read the updated terms under "${W2_CARD_HEADING}", and agree to them again.`,
+    `Until you do, ${co} will give you your W-2s for ${data.gateYear} and later on paper. W-2s you already have online stay available.`,
+  ];
+  return paragraphEmail(ctx, "Please review the updated terms for your online W-2s", parts);
+}
+
+/**
+ * Employee (PAY-208 D-A): an administrator changed the email address they
+ * sign in with. Sent to the old AND the new address. No address in the body.
+ */
+export function signInEmailChanged(ctx: TemplateContext): RenderedEmail {
+  const co = ctx.companyName;
+  const parts = [
+    `An administrator at ${co} changed the email address you use to sign in to ${ctx.brandName}.`,
+    "From now on, sign in with the new address. Your W-2 emails and other notices go to the new address.",
+    `If you didn't ask for this, contact ${co} right away.`,
+  ];
+  return paragraphEmail(ctx, "Your sign-in email was changed", parts);
 }
 
 // ---------------------------------------------------------------------------
