@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, gte } from "drizzle-orm";
 import { symmetricDecrypt } from "better-auth/crypto";
 import { createOTP } from "@better-auth/utils/otp";
 import {
@@ -513,15 +513,39 @@ describe("tax filings materialized by the seed", () => {
 });
 
 describe("tax-year preflight", () => {
-  it("refuses, in words, to seed a year the bundled tax tables do not cover", async () => {
+  // PAY-81 (year-rollover guard brief D-A = A1, owner decision D-C = C1): a
+  // year the bundled tables do not cover no longer aborts the seed. History
+  // anchors on the latest covered year L and no current-period draft is made.
+  // The no-installed-year rejection is covered by qa-seed-rollover.test.ts R7.
+  it("seeds a year the bundled tax tables do not cover on the latest covered year, with no current-period draft", async () => {
     const future = await createTestApp();
     try {
-      await expect(
-        seedQaDataset(
-          { db: future.db, auth: future.auth, config: future.config },
-          { today: "2031-06-15" },
-        ),
-      ).rejects.toThrow(/no federal tax config for 2031/);
+      const seeded = await seedQaDataset(
+        { db: future.db, auth: future.auth, config: future.config },
+        { today: "2031-06-15" },
+      );
+      const payroll = seeded.payroll as typeof seeded.payroll & {
+        latestCoveredYear?: number;
+        historyThrough?: string | null;
+        draftPeriod?: string | null;
+      };
+      const late = await future.db
+        .select({ n: payrollRuns.id })
+        .from(payrollRuns)
+        .where(gte(payrollRuns.payDate, "2027-01-01"));
+      expect({
+        latestCoveredYear: payroll.latestCoveredYear,
+        historyThrough: payroll.historyThrough,
+        draftPeriod: payroll.draftPeriod,
+        draftCreated: payroll.draftCreated,
+        runsAfterCoveredYear: late.length,
+      }).toEqual({
+        latestCoveredYear: 2026,
+        historyThrough: "2026-12",
+        draftPeriod: null,
+        draftCreated: false,
+        runsAfterCoveredYear: 0,
+      });
     } finally {
       await future.close();
     }
