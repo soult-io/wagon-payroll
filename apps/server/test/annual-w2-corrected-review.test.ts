@@ -375,6 +375,8 @@ describe("D2 figures that come back to an earlier hash are furnished again", () 
               formCount: 1,
             },
           ],
+          // PAY-208 (2.2b): no issued year waiting for January.
+          upcomingYear: null,
         },
       });
     });
@@ -863,9 +865,10 @@ describe("D9 after consent is withdrawn", () => {
     }).toEqual({
       bfRows: ["backfill"],
       listed: {
-        consented: { w2s: [row(true)] },
-        withdrawnDownloaded: { w2s: [row(true)] },
-        withdrawnBackfillOnly: { w2s: [row(false)] },
+        // PAY-208 (2.2b): no issued year waiting for January -> upcomingYear null.
+        consented: { w2s: [row(true)], upcomingYear: null },
+        withdrawnDownloaded: { w2s: [row(true)], upcomingYear: null },
+        withdrawnBackfillOnly: { w2s: [row(false)], upcomingYear: null },
       },
       pdfs: { consented: 200, withdrawnDownloaded: 200, withdrawnBackfillOnly: 409 },
       afterWindowDownloadable: false,

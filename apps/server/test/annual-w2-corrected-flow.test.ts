@@ -266,6 +266,8 @@ describe("T10 the L4 miss: downloaded before the year notice", () => {
             formCount: 1,
           },
         ],
+        // PAY-208 (2.2b): no issued year waiting for January.
+        upcomingYear: null,
       },
       admin: { corrected: true, correctionToFurnish: false, furnished: "online", boxes: dec },
       copyD: [],
@@ -408,6 +410,8 @@ describe("T12 paper correction: printed, changed, marked given on paper", () => 
             formCount: 1,
           },
         ],
+        // PAY-208 (2.2b): no issued year waiting for January.
+        upcomingYear: null,
       },
       mailsAfter: 1,
     });

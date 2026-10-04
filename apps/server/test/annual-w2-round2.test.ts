@@ -348,6 +348,8 @@ describe("S4 figures defect: no amounts or ids in the employee and filing bodies
           formCount: null,
         },
       ],
+      // PAY-208 (2.2b): no issued year waiting for January.
+      upcomingYear: null,
     });
     expectBare(res.body, [defect.employeeId]);
   });

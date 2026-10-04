@@ -317,6 +317,8 @@ describe("R7/R8 list fields", () => {
           formCount: 1,
         },
       ],
+      // PAY-208 (2.2b): no issued year waiting for January.
+      upcomingYear: null,
     });
   });
 
