@@ -42,6 +42,14 @@ export const CORRECTED_MARK = { text: "CORRECTED", size: 14, x: 38, y: 762 } as 
 /** 0-indexed pages kept for the admin per-employee Copy D packet. */
 export const W2_ADMIN_COPY_D_PAGES = [9] as const;
 
+/** 0-indexed fw2 2025 page of each filled copy. */
+export const W2_COPY_PAGES_2025: Readonly<Record<W2Copy, number>> = {
+  CopyB: 3,
+  CopyC: 5,
+  Copy2: 7,
+  CopyD: 9,
+};
+
 /** fw2 2025 page layout (PAY-19, PAY-206). */
 export const W2_LAYOUT_2025 = {
   employeePages: W2_EMPLOYEE_PAGES,

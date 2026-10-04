@@ -25,9 +25,11 @@ import {
   PDFArray,
   PDFDocument,
   type PDFForm,
+  type PDFPage,
   PDFRawStream,
   PDFStream,
   rgb,
+  StandardFontEmbedder,
   StandardFonts,
 } from "pdf-lib";
 import { templateBytes } from "./forms/templates.js";
@@ -35,20 +37,16 @@ import {
   W2_ADMIN_COPIES,
   W2_EMPLOYEE_COPIES,
   W3_CHECKBOXES,
+  W3_FORM_PAGE,
   type W2Copy,
   type W2FieldMap,
 } from "./forms/field-map-2025.js";
-import { W2_COPY_PAGES_2026, type W2FieldMap2026 } from "./forms/field-map-2026.js";
-import {
-  hasStateRows,
-  hasW3StateBoxes,
-  type W2Layout,
-  w2FieldMapFor,
-  w2LayoutFor,
-  w3FieldMapFor,
-} from "./forms/w2-years.js";
-
-export { CORRECTED_MARK } from "./forms/field-map-2025.js";
+import type {
+  W2FieldMapWithStateRows,
+  W2LocalRowFields,
+  W2StateRowFields,
+} from "./forms/field-map-2026.js";
+import { type W2Layout, w2YearFor } from "./forms/w2-years.js";
 
 export interface FormAddress {
   line1: string;
@@ -185,6 +183,18 @@ export class W2FormLinesError extends Error {
 }
 
 /**
+ * Spec 24 (PAY-116) PR-3 R5: a box 15 state ID too wide for its field even at
+ * the smallest allowed size (STATE_ID_MIN_SIZE). Fixed message; never echoes
+ * the ID.
+ */
+export class W2StateIdTooLongError extends Error {
+  constructor() {
+    super("W-2/W-3 state ID does not fit the form");
+    this.name = "W2StateIdTooLongError";
+  }
+}
+
+/**
  * "8000.00" — IRS information-return convention (no $, no commas). PAY-162:
  * boxes arrive as formatCents strings; only unsigned "d+.dd" is printable
  * (W-2 money boxes are unsigned), anything else throws without echoing it.
@@ -229,6 +239,62 @@ function fillText(form: PDFForm, fieldName: string, value: string | null | undef
 }
 
 // ---------------------------------------------------------------------------
+// Box 15 state ID sizing (R5)
+// ---------------------------------------------------------------------------
+
+/** The template's state ID size (Helvetica-Bold 8 pt) and the smallest we shrink to. */
+const STATE_ID_SIZE = 8;
+const STATE_ID_MIN_SIZE = 6;
+/** pdf-lib draws single-line text inside the rect less 1 pt border + 1 pt padding a side. */
+const STATE_ID_INSET = 4;
+/** Measured in Helvetica-Bold: never narrower than the Helvetica the appearance uses. */
+// StandardFonts and the embedder's FontNames are the same strings (two enums).
+const STATE_ID_FONT = StandardFontEmbedder.for(
+  StandardFonts.HelveticaBold as unknown as Parameters<typeof StandardFontEmbedder.for>[0],
+);
+
+/**
+ * The font size that fits `id` into a field `width` pt wide: the template's
+ * 8 pt when it fits, else the largest tenth of a point down to 6 pt; null
+ * when it does not fit even at 6 pt.
+ */
+function stateIdSize(id: string, width: number): number | null {
+  const perPoint = STATE_ID_FONT.widthOfTextAtSize(id, 1);
+  const room = width - STATE_ID_INSET;
+  if (perPoint * STATE_ID_SIZE <= room) return STATE_ID_SIZE;
+  const size = Math.floor((room / perPoint) * 10) / 10;
+  return size >= STATE_ID_MIN_SIZE ? size : null;
+}
+
+/**
+ * Spec 24 (PAY-116) PR-3 R5: true when the year's W-2 (and, for a single
+ * state, W-3) box 15 can print `id` in full at 6 pt or more. Years without
+ * state rows print no ID: always true. Lets the server block a W-2 before any
+ * furnishing (state_id_too_long) with the renderer's own rule.
+ */
+export function stateIdFitsForm(year: number, id: string): boolean {
+  const entry = w2YearFor(year);
+  if (!entry.twoUp) return true;
+  const narrowest = Math.min(entry.stateIdWidth.w2, entry.stateIdWidth.w3);
+  return stateIdSize(id, narrowest) !== null;
+}
+
+/** Fill a box 15 state ID, shrunk to fit its field; W2StateIdTooLongError when it cannot. */
+function fillStateId(
+  form: PDFForm,
+  fieldName: string,
+  id: string | null | undefined,
+  width: number,
+) {
+  if (!id) return;
+  const size = stateIdSize(id, width);
+  if (size === null) throw new W2StateIdTooLongError();
+  const field = form.getTextField(fieldName);
+  field.setFontSize(size);
+  field.setText(id);
+}
+
+// ---------------------------------------------------------------------------
 // Form W-2 — fill each copy, prune, assemble the packet
 // ---------------------------------------------------------------------------
 
@@ -264,22 +330,7 @@ function hasLines(input: W2Input): boolean {
   return (input.stateLines?.length ?? 0) > 0 || (input.localLines?.length ?? 0) > 0;
 }
 
-/**
- * Single-up years (2025): fill the wanted copies on ONE load of the full
- * template — NOT flattened (tests). The form has no state rows in use, so an
- * input with lines is refused (S24-D5).
- */
-async function fillW2Document(input: W2Input, copies: W2Copy[]): Promise<PDFDocument> {
-  if (hasLines(input)) throw new W2FormLinesError();
-  const doc = await PDFDocument.load(templateBytes(input.taxYear, "fw2"));
-  const form = doc.getForm();
-  for (const copy of copies) {
-    fillW2Federal(form, w2FieldMapFor(input.taxYear, copy), input, true);
-  }
-  return doc;
-}
-
-/** The W-2 form count of a state-box year (absent = 1); a bad count throws. */
+/** The W-2 form count of a two-up year (absent = 1); a bad count throws. */
 function formCountOf(input: W2Input): number {
   const count = input.formCount ?? 1;
   if (!Number.isSafeInteger(count) || count < 1) throw new W2FormLinesError();
@@ -297,23 +348,29 @@ function checkSlots(lines: readonly { form: number; row: number }[], count: numb
   }
 }
 
-/** Form `k` of a state-box year: a–f, boxes 1–6 on form 1 only (N2), its rows. */
-function fillW2Form(form: PDFForm, map: W2FieldMap2026, input: W2Input, k: number): void {
+/** Form `k` of a two-up year: a–f, boxes 1–6 on form 1 only (N2), its rows. */
+function fillW2Form(
+  form: PDFForm,
+  map: W2FieldMapWithStateRows,
+  input: W2Input,
+  k: number,
+  stateIdWidth: number,
+): void {
   // iw2w3 2026, Multiple forms: a further W-2 repeats a–f, but the same
   // federal data is never reported on more than one Copy A — boxes 1–14
   // stay blank on forms 2..N.
   fillW2Federal(form, map, input, k === 1);
   for (const line of input.stateLines ?? []) {
     if (line.form !== k) continue;
-    const row = map.stateRows[line.row - 1] as W2FieldMap2026["stateRows"][0];
+    const row = map.stateRows[line.row - 1] as W2StateRowFields;
     fillText(form, row.state, line.state);
-    fillText(form, row.stateId, line.stateId);
+    fillStateId(form, row.stateId, line.stateId, stateIdWidth);
     fillText(form, row.box16, moneyOrBlank(line.box16));
     fillText(form, row.box17, moneyOrBlank(line.box17));
   }
   for (const line of input.localLines ?? []) {
     if (line.form !== k) continue;
-    const row = map.localRows[line.row - 1] as W2FieldMap2026["localRows"][0];
+    const row = map.localRows[line.row - 1] as W2LocalRowFields;
     fillText(form, row.box18, money(line.box18));
     fillText(form, row.box19, money(line.box19));
     fillText(form, row.box20, line.locality);
@@ -322,19 +379,22 @@ function fillW2Form(form: PDFForm, map: W2FieldMap2026, input: W2Input, k: numbe
 
 /**
  * Spec 24 (PAY-116) S24-D4: the W-2 forms of one employee-year, filled and
- * NOT flattened (tests assert placement on them). State-box years (two-up
- * templates, 2026 on): form k = its own load of the full template with only
- * the upper W-2 (`<Copy>_Top[0]`) of `copies` filled — a–f, boxes 1–6 on
- * form 1 only, and the state/local lines of form k. Single-up years: one
- * document, as before.
+ * NOT flattened (tests assert placement on them). Two-up years (2026 on):
+ * form k = its own load of the full template with only the upper W-2
+ * (`<Copy>_Top[0]`) of `copies` filled — a–f, boxes 1–6 on form 1 only, and
+ * the state/local lines of form k. Single-up years: ONE load with every copy
+ * filled; an input with lines is refused (S24-D5).
  */
 export async function prepareW2Forms(input: W2Input, copies: W2Copy[]): Promise<PDFDocument[]> {
-  const maps = copies.map((copy) => w2FieldMapFor(input.taxYear, copy));
-  const stateMaps = maps.filter(hasStateRows);
-  if (stateMaps.length !== maps.length || maps.length === 0) {
-    return [await fillW2Document(input, copies)];
-  }
+  const year = w2YearFor(input.taxYear);
   const bytes = templateBytes(input.taxYear, "fw2");
+  if (!year.twoUp) {
+    if (hasLines(input)) throw new W2FormLinesError();
+    const doc = await PDFDocument.load(bytes);
+    const form = doc.getForm();
+    for (const copy of copies) fillW2Federal(form, year.w2Map(copy), input, true);
+    return [doc];
+  }
   const count = formCountOf(input);
   checkSlots(input.stateLines ?? [], count);
   checkSlots(input.localLines ?? [], count);
@@ -342,16 +402,18 @@ export async function prepareW2Forms(input: W2Input, copies: W2Copy[]): Promise<
   for (let k = 1; k <= count; k += 1) {
     const doc = await PDFDocument.load(bytes);
     const form = doc.getForm();
-    for (const map of stateMaps) fillW2Form(form, map, input, k);
+    for (const copy of copies) {
+      fillW2Form(form, year.w2Map(copy), input, k, year.stateIdWidth.w2);
+    }
     forms.push(doc);
   }
   return forms;
 }
 
-/** The one document of a single-form W-2 (tests); several forms → use prepareW2Forms. */
+/** The one document of a single-form W-2 (tests); several forms → prepareW2Forms. */
 async function prepareSingle(input: W2Input, copies: W2Copy[]): Promise<PDFDocument> {
   const forms = await prepareW2Forms(input, copies);
-  if (forms.length !== 1) throw new W2FormLinesError();
+  if (forms.length !== 1) throw new Error("multi-form W-2: use prepareW2Forms");
   return forms[0] as PDFDocument;
 }
 
@@ -372,13 +434,10 @@ export interface W2EmployeePacketOptions {
 }
 
 /** PAY-206: draw the year's CORRECTED mark on the given template pages. */
-async function markCorrected(
-  doc: PDFDocument,
-  pages: readonly number[],
-  mark: W2Layout["correctedMark"],
-): Promise<void> {
+async function markCorrected(doc: PDFDocument, layout: W2Layout): Promise<void> {
   const font = await doc.embedFont(StandardFonts.HelveticaBold);
-  for (const index of pages) {
+  const mark = layout.correctedMark;
+  for (const index of layout.correctedMarkPages) {
     doc.getPage(index).drawText(mark.text, {
       font,
       size: mark.size,
@@ -393,9 +452,8 @@ async function markCorrected(
  * Single-up years: flatten the WHOLE document first (unfilled copies flatten
  * to blank), then prune to the kept pages — removing pages is trivial once no
  * fields remain, and this sidesteps field-removal quirks in the template's
- * Copy A widgets. PAY-206: `mark` pages (template indexes) get CORRECTED
- * after the flatten and before the prune. No mark → the document is
- * untouched (same bytes).
+ * Copy A widgets. PAY-206: CORRECTED is drawn after the flatten and before
+ * the prune. No mark → the document is untouched (same bytes).
  */
 async function renderPacket(
   doc: PDFDocument,
@@ -404,42 +462,50 @@ async function renderPacket(
   mark: boolean,
 ): Promise<Buffer> {
   doc.getForm().flatten();
-  if (mark) await markCorrected(doc, layout.correctedMarkPages, layout.correctedMark);
+  if (mark) await markCorrected(doc, layout);
   removePagesExcept(doc, keep);
   return Buffer.from(await doc.save());
 }
 
+/** A new document (no template catalog: no script, no open action) titled like `from`. */
+async function cleanDocument(from: PDFDocument): Promise<PDFDocument> {
+  const out = await PDFDocument.create();
+  const title = from.getTitle();
+  if (title) out.setTitle(title);
+  return out;
+}
+
 /**
- * State-box years (S24-D4): flatten each form, mark it CORRECTED when asked
- * (its own template pages), then copy the kept pages into one new document.
- * A copy page of `copies` repeats once per form (form order); any other kept
- * page (notice, instructions) comes once, from form 1. For N forms the
- * employee packet is B×N, Notice, C×N, Instructions, 2×N, Instructions
- * (continued); Copy D is N pages.
+ * Two-up years (S24-D4): flatten each form, mark it CORRECTED when asked
+ * (its own template pages), then copy the kept pages into one new document
+ * — one copyPages per form. A copy page of `copies` repeats once per form
+ * (form order); any other kept page (notice, instructions) comes once, from
+ * form 1. For N forms the employee packet is B×N, Notice, C×N,
+ * Instructions, 2×N, Instructions (continued); Copy D is N pages.
  */
 async function renderForms(
-  input: W2Input,
-  copies: W2Copy[],
+  forms: PDFDocument[],
+  copyPages: readonly number[],
   keep: readonly number[],
   layout: W2Layout,
   mark: boolean,
 ): Promise<Buffer> {
-  const forms = await prepareW2Forms(input, copies);
   for (const doc of forms) {
     doc.getForm().flatten();
-    if (mark) await markCorrected(doc, layout.correctedMarkPages, layout.correctedMark);
+    if (mark) await markCorrected(doc, layout);
   }
   const first = forms[0] as PDFDocument;
-  const copyPages = copies.map((copy) => W2_COPY_PAGES_2026[copy]);
-  const out = await PDFDocument.create();
-  const title = first.getTitle();
-  if (title) out.setTitle(title);
-  for (const index of keep) {
-    const sources = copyPages.includes(index) ? forms : [first];
-    for (const src of sources) {
-      for (const page of await out.copyPages(src, [index])) out.addPage(page);
-    }
-  }
+  const out = await cleanDocument(first);
+  const perForm = keep.filter((i) => copyPages.includes(i));
+  const copied = [
+    await out.copyPages(first, [...keep]),
+    ...(await Promise.all(forms.slice(1).map((doc) => out.copyPages(doc, perForm)))),
+  ];
+  keep.forEach((index, at) => {
+    out.addPage(copied[0]?.[at] as PDFPage);
+    if (!perForm.includes(index)) return;
+    for (const pages of copied.slice(1)) out.addPage(pages[perForm.indexOf(index)] as PDFPage);
+  });
   return Buffer.from(await out.save());
 }
 
@@ -450,11 +516,13 @@ async function renderW2(
   keep: (layout: W2Layout) => readonly number[],
   mark: boolean,
 ): Promise<Buffer> {
-  const layout = w2LayoutFor(input.taxYear);
-  if (hasStateRows(w2FieldMapFor(input.taxYear, copies[0] as W2Copy))) {
-    return renderForms(input, copies, keep(layout), layout, mark);
+  const year = w2YearFor(input.taxYear);
+  const forms = await prepareW2Forms(input, copies);
+  if (!year.twoUp) {
+    return renderPacket(forms[0] as PDFDocument, keep(year.layout), year.layout, mark);
   }
-  return renderPacket(await fillW2Document(input, copies), keep(layout), layout, mark);
+  const copyPages = copies.map((copy) => year.copyPages[copy]);
+  return renderForms(forms, copyPages, keep(year.layout), year.layout, mark);
 }
 
 /**
@@ -489,18 +557,18 @@ const W3_STATE_KEYS = [
 
 /** Filled W-3 document pre-flatten (tests). */
 export async function prepareW3(input: W3Input): Promise<PDFDocument> {
+  const year = w2YearFor(input.taxYear);
   const doc = await PDFDocument.load(templateBytes(input.taxYear, "fw3"));
-  const map = w3FieldMapFor(input.taxYear);
-  const stateBoxes = hasW3StateBoxes(map);
-  if (!stateBoxes && W3_STATE_KEYS.some((k) => input[k] !== null && input[k] !== undefined)) {
+  if (!year.twoUp && W3_STATE_KEYS.some((k) => input[k] !== null && input[k] !== undefined)) {
     throw new W2FormLinesError();
   }
   // Spec 24 S24-D12: from 2026, box c counts W-2 forms, not employees.
   let w2Count = input.employeeCount;
-  if (stateBoxes) {
+  if (year.twoUp) {
     if (input.w2FormCount === undefined) throw new W2FormLinesError();
     w2Count = input.w2FormCount;
   }
+  const map = year.w3Map;
   const form = doc.getForm();
   fillText(form, map.w2Count, String(w2Count));
   fillText(form, map.ein, input.employer.ein ? formatEin(input.employer.ein) : null);
@@ -512,14 +580,15 @@ export async function prepareW3(input: W3Input): Promise<PDFDocument> {
   fillText(form, map.box4SsTax, money(input.box4SsTax));
   fillText(form, map.box5MedicareWages, money(input.box5MedicareWages));
   fillText(form, map.box6MedicareTax, money(input.box6MedicareTax));
-  if (stateBoxes) {
+  if (year.twoUp) {
+    const m = year.w3Map;
     // iw2w3 2026 Box 15: one state → its code and ID; more → "X", no ID.
-    fillText(form, map.box15State, input.box15State);
-    fillText(form, map.box15StateId, input.box15StateId);
-    fillText(form, map.box16StateWages, moneyOrBlank(input.box16StateWages));
-    fillText(form, map.box17StateTax, moneyOrBlank(input.box17StateTax));
-    fillText(form, map.box18LocalWages, moneyOrBlank(input.box18LocalWages));
-    fillText(form, map.box19LocalTax, moneyOrBlank(input.box19LocalTax));
+    fillText(form, m.box15State, input.box15State);
+    fillStateId(form, m.box15StateId, input.box15StateId, year.stateIdWidth.w3);
+    fillText(form, m.box16StateWages, moneyOrBlank(input.box16StateWages));
+    fillText(form, m.box17StateTax, moneyOrBlank(input.box17StateTax));
+    fillText(form, m.box18LocalWages, moneyOrBlank(input.box18LocalWages));
+    fillText(form, m.box19LocalTax, moneyOrBlank(input.box19LocalTax));
   }
 
   // Kind-of-payer "941" + kind-of-employer "None apply" (regular 941 corp,
@@ -531,12 +600,18 @@ export async function prepareW3(input: W3Input): Promise<PDFDocument> {
   return doc;
 }
 
-/** Filled official W-3 for employer records — flattened, one page. */
+/**
+ * Filled official W-3 for employer records — flattened, one page. R6
+ * (security L1): the form page is copied into a new document, so the
+ * template's document JavaScript, open action and /Perms never reach the
+ * output (the attention cover, page 0, is dropped).
+ */
 export async function renderW3Pdf(input: W3Input): Promise<Buffer> {
   const doc = await prepareW3(input);
   doc.getForm().flatten();
-  doc.removePage(0); // attention cover — after flatten, so no widgets dangle
-  return Buffer.from(await doc.save());
+  const out = await cleanDocument(doc);
+  for (const page of await out.copyPages(doc, [W3_FORM_PAGE])) out.addPage(page);
+  return Buffer.from(await out.save());
 }
 
 /** Decoded bytes of one content stream, as latin1 text. */

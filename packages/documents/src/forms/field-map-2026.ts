@@ -46,8 +46,8 @@ export interface W2LocalRowFields {
   box20: string;
 }
 
-/** The 2026 W-2 map of one copy: the 2025 boxes plus two state and two local rows. */
-export interface W2FieldMap2026 extends W2FieldMap {
+/** A two-up W-2 map of one copy (2026 on): the 2025 boxes plus two state and two local rows. */
+export interface W2FieldMapWithStateRows extends W2FieldMap {
   stateRows: readonly [W2StateRowFields, W2StateRowFields];
   localRows: readonly [W2LocalRowFields, W2LocalRowFields];
 }
@@ -59,7 +59,7 @@ export interface W2FieldMap2026 extends W2FieldMap {
  * x195–280, box 17 x282–359, box 18 x361–445, box 19 x447–525, box 20
  * x527–574.
  */
-export function w2FieldMap2026(copy: W2Copy): W2FieldMap2026 {
+export function w2FieldMap2026(copy: W2Copy): W2FieldMapWithStateRows {
   const p = `topmostSubform[0].${copy}[0].${copy}_Top[0]`;
   const f = (n: number) => `f2_${String(n).padStart(2, "0")}[0]`;
   const localRow = (row: 0 | 1): W2LocalRowFields => ({
@@ -127,13 +127,23 @@ export const W2_COPY_PAGES_2026: Readonly<Record<W2Copy, number>> = {
 };
 
 /**
+ * Box 15 state ID widths (pt; widget rect, auditor dump and ours): W-2
+ * f2_32/f2_34 x65.8–193.4 (no MaxLen, DoNotScroll, 8 pt), W-3 f1_24
+ * x79.2–265.4. A long ID is shrunk to fit, never below 6 pt.
+ */
+export const W2_STATE_ID_WIDTH_2026 = 127.6;
+export const W3_STATE_ID_WIDTH_2026 = 186.2;
+
+/**
  * fw2 2026 page layout. Employee packet: Copy B, Notice to Employee, Copy C,
  * Instructions for Employee, Copy 2, Instructions (continued); admin: Copy D.
- * CORRECTED goes on Copies B, C and 2 only ("2026 General Instructions for
- * Forms W-2 and W-3", Corrections, p.28: the employee's new copies B, C and
- * 2, never Copy A). The mark's place was re-checked on this template: box a
- * is still y732–744 and the printed labels start at y≈747, so 14 pt text at
- * x38/y762 stays clear of every widget and label on pages 3/5/7 (Copy D's
+ * CORRECTED goes on Copies B, C and 2 only — "2026 General Instructions for
+ * Forms W-2 and W-3", Corrections, p.28 (printed page number, checked on the
+ * PDF footer): the employer writes "CORRECTED" on the employee's new copies
+ * (B, C, and 2), and "Do not write “CORRECTED” on Copy A of Form W-2."
+ * The mark's place was re-checked on this template: box a is still
+ * y732–744 and the printed labels start at y≈747, so 14 pt text at x38/y762
+ * stays clear of every widget and label on pages 3/5/7 (Copy D's
  * VOID box at y740–750 is never marked).
  */
 export const W2_LAYOUT_2026 = {

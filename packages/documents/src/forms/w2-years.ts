@@ -3,10 +3,11 @@
  * tax year. Every renderer looks its year up here, so a template year without
  * an entry fails loudly instead of inheriting another year's field names or
  * CORRECTED coordinates. Adding a year = a field-map module and one entry in
- * each table below (plus the templates.ts registry entry).
+ * the table below (plus the templates.ts registry entry).
  */
 
 import {
+  W2_COPY_PAGES_2025,
   W2_LAYOUT_2025,
   W3_FIELD_MAP,
   w2FieldMap,
@@ -14,10 +15,13 @@ import {
   type W2FieldMap,
 } from "./field-map-2025.js";
 import {
+  W2_COPY_PAGES_2026,
   W2_LAYOUT_2026,
+  W2_STATE_ID_WIDTH_2026,
   W3_FIELD_MAP_2026,
+  W3_STATE_ID_WIDTH_2026,
   w2FieldMap2026,
-  type W2FieldMap2026,
+  type W2FieldMapWithStateRows,
 } from "./field-map-2026.js";
 
 /** 0-indexed fw2 template pages a renderer keeps or marks for one tax year. */
@@ -40,48 +44,68 @@ export interface W2Layout {
 /** A W-3 map; years with boxes 15–19 add their fields. */
 export type W3FieldMap = typeof W3_FIELD_MAP | typeof W3_FIELD_MAP_2026;
 
-const W2_LAYOUTS: Readonly<Record<number, W2Layout>> = {
-  2025: W2_LAYOUT_2025,
-  2026: W2_LAYOUT_2026,
+interface W2YearBase {
+  layout: W2Layout;
+  /** 0-indexed fw2 page of each filled copy. */
+  copyPages: Readonly<Record<W2Copy, number>>;
+}
+
+/**
+ * Everything a renderer needs for one fw2/fw3 year. `twoUp` is the one
+ * branch: single-up years (2025) fill one template load and prune; two-up
+ * years (2026 on) fill the upper W-2 of each copy page, one template load per
+ * form (S24-D4), and carry state/local rows and W-3 boxes 15–19.
+ */
+export type W2Year =
+  | (W2YearBase & {
+      twoUp: false;
+      w2Map: (copy: W2Copy) => W2FieldMap;
+      w3Map: typeof W3_FIELD_MAP;
+    })
+  | (W2YearBase & {
+      twoUp: true;
+      w2Map: (copy: W2Copy) => W2FieldMapWithStateRows;
+      w3Map: typeof W3_FIELD_MAP_2026;
+      /** Box 15 state ID field widths (pt). */
+      stateIdWidth: { w2: number; w3: number };
+    });
+
+const W2_YEARS: Readonly<Record<number, W2Year>> = {
+  2025: {
+    twoUp: false,
+    layout: W2_LAYOUT_2025,
+    copyPages: W2_COPY_PAGES_2025,
+    w2Map: w2FieldMap,
+    w3Map: W3_FIELD_MAP,
+  },
+  2026: {
+    twoUp: true,
+    layout: W2_LAYOUT_2026,
+    copyPages: W2_COPY_PAGES_2026,
+    w2Map: w2FieldMap2026,
+    w3Map: W3_FIELD_MAP_2026,
+    stateIdWidth: { w2: W2_STATE_ID_WIDTH_2026, w3: W3_STATE_ID_WIDTH_2026 },
+  },
 };
 
-const W2_MAPS: Readonly<Record<number, (copy: W2Copy) => W2FieldMap | W2FieldMap2026>> = {
-  2025: w2FieldMap,
-  2026: w2FieldMap2026,
-};
-
-const W3_MAPS: Readonly<Record<number, W3FieldMap>> = {
-  2025: W3_FIELD_MAP,
-  2026: W3_FIELD_MAP_2026,
-};
+/** The W-2/W-3 setup of `year`. Throws for a year without one. */
+export function w2YearFor(year: number): W2Year {
+  const entry = W2_YEARS[year];
+  if (!entry) throw new Error(`no W-2/W-3 field map or layout for tax year ${year}`);
+  return entry;
+}
 
 /** The fw2 page layout of `year`. Throws for a year without one. */
 export function w2LayoutFor(year: number): W2Layout {
-  const layout = W2_LAYOUTS[year];
-  if (!layout) throw new Error(`no W-2 page layout for tax year ${year}`);
-  return layout;
+  return w2YearFor(year).layout;
 }
 
 /** The W-2 field map of one copy for `year`. Throws for a year without one. */
-export function w2FieldMapFor(year: number, copy: W2Copy): W2FieldMap | W2FieldMap2026 {
-  const map = W2_MAPS[year];
-  if (!map) throw new Error(`no W-2 field map for tax year ${year}`);
-  return map(copy);
+export function w2FieldMapFor(year: number, copy: W2Copy): W2FieldMap | W2FieldMapWithStateRows {
+  return w2YearFor(year).w2Map(copy);
 }
 
 /** The W-3 field map of `year`. Throws for a year without one. */
 export function w3FieldMapFor(year: number): W3FieldMap {
-  const map = W3_MAPS[year];
-  if (!map) throw new Error(`no W-3 field map for tax year ${year}`);
-  return map;
-}
-
-/** True when the map has the state and local rows (boxes 15–20). */
-export function hasStateRows(map: W2FieldMap | W2FieldMap2026): map is W2FieldMap2026 {
-  return "stateRows" in map;
-}
-
-/** True when the W-3 map has boxes 15–19. */
-export function hasW3StateBoxes(map: W3FieldMap): map is typeof W3_FIELD_MAP_2026 {
-  return "box15State" in map;
+  return w2YearFor(year).w3Map;
 }
