@@ -135,8 +135,12 @@ async function clearFilings() {
 }
 
 // Every test starts from the same state, whatever order the tests run in:
-// no state IDs, no w2_w3 filings, the synthetic EIN on the company.
+// no state IDs, no w2_w3 filings, no pay runs, the synthetic EIN on the
+// company. Runs left by "needed lists ..." (NC tax without an ID, a legacy
+// run with tax) would block the 2026 W-2s under Spec 24 PR-2 and refuse the
+// W27 mark-filed when the file runs shuffled.
 beforeEach(async () => {
+  await t.pglite.exec("TRUNCATE payroll_entries, payroll_runs RESTART IDENTITY CASCADE;");
   await clearStateIds();
   await clearFilings();
   await t.db.update(company).set({ ein: encryptField(EIN, t.config.encryptionKey) });
