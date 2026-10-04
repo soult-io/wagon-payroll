@@ -64,6 +64,7 @@ import { electronicW2Channel, readW2Contact, reconsentNeededFor } from "../filin
 import { undeliveredW2Notices } from "../filings/w2-furnish.js";
 import { PDF_RATE_LIMIT, refuseCrossSite } from "../plugins/fetch-site.js";
 import { FilingServiceError } from "../filings/shared.js";
+import { localDate } from "../payroll/run-dates.js";
 import {
   type FurnishingView,
   furnishAndRender,
@@ -186,7 +187,7 @@ export function registerAdminAnnualFormRoutes(app: FastifyInstance, deps: Deps):
     const furnishing = await furnishingViews({ db, config }, q.data.year, figures);
     return {
       year: q.data.year,
-      available: isW2Available(q.data.year),
+      available: isW2Available(q.data.year, localDate(new Date(), config.appTz)),
       availableOn: w2AvailableOn(q.data.year),
       // PAY-162 (D3): the official W-2/W-3 form is bundled for the year.
       formAvailable: hasTemplate(q.data.year, "fw2") && hasTemplate(q.data.year, "fw3"),

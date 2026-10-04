@@ -350,6 +350,13 @@ onMounted(async () => {
         <!-- S23a / S23b: a year still to come (OD5). -->
         <p v-if="upcomingText" style="margin: 0">{{ upcomingText }}</p>
 
+        <!-- R3-2: an agreement to the earlier terms is still active — it can be
+             withdrawn here whatever else the card shows. -->
+        <p v-if="outdated" class="small" style="margin: 0">
+          You agreed to the earlier terms for online W-2s on {{ longDate(w2Consent.consentedAt) }}. ·
+          <a href="#" @click.prevent="confirmWithdraw">Withdraw my agreement</a>
+        </p>
+
         <!-- N5: the agreed state first — "Withdraw my agreement" stays reachable
              even if the W-2 contact is later incomplete. -->
         <!-- Agreed: S26 + S27. -->

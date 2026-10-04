@@ -83,7 +83,8 @@ export function registerAdminSettingsRoutes(app: FastifyInstance, deps: Deps): v
     };
   });
 
-  app.put("/api/admin/company", { preHandler: admin }, async (req, reply) => {
+  // R3-6: it can send mail to every consenter (F1) — refused cross-site.
+  app.put("/api/admin/company", { preHandler: [refuseCrossSite, admin] }, async (req, reply) => {
     const body = z
       .object({
         legalName: z.string().trim().min(1).max(200),
@@ -95,13 +96,14 @@ export function registerAdminSettingsRoutes(app: FastifyInstance, deps: Deps): v
     if (!body.success)
       return reply.code(400).send({ error: "invalid_body", details: body.error.issues });
 
-    const rows = await db.select().from(company).limit(1);
-    const before = rows[0];
-    if (!before) return reply.code(404).send({ error: "no_company" });
-
     // F1 ((j)(3)(vii)): the update, its audit row and any W-2 contact change
-    // mail (the contact uses the company address) commit together.
+    // mail (the contact uses the company address) commit together. R3-3: the
+    // row is read inside the transaction FOR UPDATE, so two saves of the same
+    // new address compare against each other's result (one mail).
     const updated = await db.transaction(async (tx) => {
+      const locked = await tx.select().from(company).limit(1).for("update");
+      const before = locked[0];
+      if (!before) return null;
       const rows = await tx
         .update(company)
         .set({
@@ -135,6 +137,7 @@ export function registerAdminSettingsRoutes(app: FastifyInstance, deps: Deps): v
       await notifyIfContactAddressChanged(tx, config, before, rows[0]!);
       return rows;
     });
+    if (updated === null) return reply.code(404).send({ error: "no_company" });
     return {
       company: {
         id: updated[0]!.id,

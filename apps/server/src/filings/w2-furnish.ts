@@ -142,7 +142,8 @@ export async function markFurnishedOnPaper(
 ): Promise<{ corrected: boolean }> {
   return deps.db.transaction(async (tx) => {
     await lockEmployee(tx, employeeId);
-    if (!isW2Available(year)) {
+    // R3-5: the company-local date, like every other January gate.
+    if (!isW2Available(year, localDate(new Date(), deps.config.appTz))) {
       throw new FilingServiceError(
         "invalid_transition",
         `W-2 for ${year} becomes available on ${w2AvailableOn(year)}`,
@@ -557,7 +558,7 @@ export async function furnishCorrectionIfNeeded(
   config: AppConfig,
   employeeId: number,
   taxYear: number,
-  today: string = todayIso(),
+  today: string = localDate(new Date(), config.appTz),
 ): Promise<CorrectionFollowUp | null> {
   if (!isW2Available(taxYear, today)) return null;
   const rows = await furnishingRows(tx, employeeId, taxYear);

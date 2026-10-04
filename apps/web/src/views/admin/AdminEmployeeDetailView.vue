@@ -561,7 +561,19 @@ function signInEmailErrorText(err: unknown): string | null {
   return null;
 }
 
-function signInEmailChangedNotice(out: { changed: boolean; pendingEnrollment: boolean }) {
+function signInEmailChangedNotice(out: {
+  changed: boolean;
+  pendingEnrollment: boolean;
+  sessionsRevoked: boolean;
+}) {
+  if (out.changed && !out.sessionsRevoked) {
+    // R3-1: the email changed, but the employee may still be signed in somewhere.
+    notify.stickyInfo(
+      "Sign-in email changed",
+      "Couldn't sign the employee out everywhere — use Reset login: Settings → Users → Reset for this employee.",
+    );
+    return;
+  }
   if (out.changed && out.pendingEnrollment) {
     // S-H1: their old setup link no longer works — nothing is re-sent automatically.
     notify.stickyInfo(

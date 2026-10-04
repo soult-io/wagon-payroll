@@ -121,7 +121,12 @@ export function w2AvailableOn(year: number): string {
   return `${year + 1}-01-01`;
 }
 
-export function isW2Available(year: number, today: string = todayIso()): boolean {
+/**
+ * PAY-208 (R3-5): `today` is the company-local ISO date
+ * (localDate(now, config.appTz)) — every January gate passes it; there is
+ * no UTC default.
+ */
+export function isW2Available(year: number, today: string): boolean {
   return today >= w2AvailableOn(year);
 }
 
@@ -1377,7 +1382,7 @@ export async function w2InputWithBoxes(
   opts: { today?: string; requireBundledForm?: boolean } = {},
 ): Promise<W2InputWithBoxes> {
   const { db, config } = deps;
-  if (!isW2Available(year, opts.today)) {
+  if (!isW2Available(year, opts.today ?? localDate(new Date(), config.appTz))) {
     throw new FilingServiceError(
       "invalid_transition",
       `W-2 for ${year} becomes available on ${w2AvailableOn(year)}`,
@@ -1492,7 +1497,7 @@ export async function w3InputFor(
   opts: { today?: string; requireBundledForm?: boolean } = {},
 ): Promise<W3Input> {
   const { db, config } = deps;
-  if (!isW2Available(year, opts.today)) {
+  if (!isW2Available(year, opts.today ?? localDate(new Date(), config.appTz))) {
     throw new FilingServiceError(
       "invalid_transition",
       `W-3 for ${year} becomes available on ${w2AvailableOn(year)}`,
@@ -1562,11 +1567,7 @@ async function myIssuedYears(db: Db, userId: string): Promise<number[]> {
  * W-2 years available to this user RIGHT NOW: their own issued runs, gated
  * to January of the following year, newest first.
  */
-export async function listMyW2Years(
-  db: Db,
-  userId: string,
-  today: string = todayIso(),
-): Promise<number[]> {
+export async function listMyW2Years(db: Db, userId: string, today: string): Promise<number[]> {
   return (await myIssuedYears(db, userId))
     .filter((year) => isW2Available(year, today))
     .sort((a, b) => b - a);
@@ -1580,7 +1581,7 @@ export async function listMyW2Years(
 export async function myUpcomingW2Year(
   db: Db,
   userId: string,
-  today: string = todayIso(),
+  today: string,
 ): Promise<number | null> {
   const upcoming = (await myIssuedYears(db, userId)).filter((y) => !isW2Available(y, today));
   return upcoming.length > 0 ? Math.max(...upcoming) : null;

@@ -477,7 +477,8 @@ export function registerAdminEmployeeRoutes(app: FastifyInstance, deps: Deps): v
    * S-H1 revocation of every outstanding setup link, the masked audit row
    * and the notice to the new and the old address. False when another
    * change took the address first (S-L1: unique violation, no detail
-   * logged). After the commit, S-M2: every session of the user ends.
+   * logged). After the commit, S-M2: every session of the user ends
+   * (R3-1: sessionsRevoked false when that fails).
    */
   async function applySignInEmailChange(c: {
     employeeId: number;
@@ -486,7 +487,7 @@ export function registerAdminEmployeeRoutes(app: FastifyInstance, deps: Deps): v
     newEmail: string;
     actorId: string;
     headers: Headers;
-  }): Promise<boolean> {
+  }): Promise<{ sessionsRevoked: boolean } | null> {
     const rendered = signInEmailChanged(await templateContext(db, config));
     try {
       await db.transaction(async (tx) => {
@@ -512,13 +513,22 @@ export function registerAdminEmployeeRoutes(app: FastifyInstance, deps: Deps): v
         await tx.insert(emailOutbox).values([notice, { ...notice, recipientEmail: c.oldEmail }]);
       });
     } catch (err) {
-      if (isUniqueViolation(err)) return false;
+      if (isUniqueViolation(err)) return null;
       throw err;
     }
-    const ctx = await auth.$context;
-    await ctx.internalAdapter.deleteUserSessions(c.userId);
-    await writeAuthEvent(db, AUTH_EVENT.sessionRevoked, c.userId, requestContext(c.headers));
-    return true;
+    // R3-1: the change stands even when ending the sessions fails — the
+    // admin is told (sessionsRevoked: false); the log names the error class
+    // only (never its message, which may carry an address).
+    try {
+      const ctx = await auth.$context;
+      await ctx.internalAdapter.deleteUserSessions(c.userId);
+      await writeAuthEvent(db, AUTH_EVENT.sessionRevoked, c.userId, requestContext(c.headers));
+      return { sessionsRevoked: true };
+    } catch (err) {
+      const cls = err instanceof Error ? err.constructor.name || "Error" : typeof err;
+      console.error(`[auth] sign-in email change: session revocation failed (${cls})`);
+      return { sessionsRevoked: false };
+    }
   }
 
   /**
@@ -553,7 +563,9 @@ export function registerAdminEmployeeRoutes(app: FastifyInstance, deps: Deps): v
       if (await emailTakenByOther(newEmail, userId)) {
         return reply.code(409).send({ error: "email_exists" });
       }
-      if (oldEmail.toLowerCase() === newEmail) return { changed: false, pendingEnrollment };
+      if (oldEmail.toLowerCase() === newEmail) {
+        return { changed: false, pendingEnrollment, sessionsRevoked: false };
+      }
       const done = await applySignInEmailChange({
         employeeId,
         userId,
@@ -563,7 +575,7 @@ export function registerAdminEmployeeRoutes(app: FastifyInstance, deps: Deps): v
         headers: toHeaders(req),
       });
       if (!done) return reply.code(409).send({ error: "email_exists" });
-      return { changed: true, pendingEnrollment };
+      return { changed: true, pendingEnrollment, sessionsRevoked: done.sessionsRevoked };
     },
   );
 }

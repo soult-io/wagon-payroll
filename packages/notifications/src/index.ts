@@ -692,7 +692,7 @@ export function w2ConsentWithdrawn(
   const parts = [
     `This confirms that you withdrew your agreement to get your W-2s online. It takes effect on ${longIsoDate(data.effectiveOn)}.`,
     `From that date, ${ctx.companyName} will give you your W-2s on paper.`,
-    `W-2s given to you online before that date don't change. Each one stays available through October 15 of the year after its tax year: sign in at ${ctx.appUrl}, open ${PAYSLIPS_NAV_LABEL}, and find "${W2_CARD_HEADING}".${still ? ` ${still}` : ""}`,
+    `W-2s given to you online before that date don't change. Each one stays available through at least October 15 of the year after its tax year: sign in at ${ctx.appUrl}, open ${PAYSLIPS_NAV_LABEL}, and find "${W2_CARD_HEADING}".${still ? ` ${still}` : ""}`,
     `To get your W-2s online again, sign in, open ${PAYSLIPS_NAV_LABEL}, and agree to the terms.`,
     data.contact
       ? `Questions, or didn't ask for this? Contact ${data.contact.name}: ${contactLine(data.contact)}.`

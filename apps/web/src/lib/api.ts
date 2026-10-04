@@ -836,7 +836,7 @@ export const adminEmployeesApi = {
     }>(`/api/admin/employees/${employeeId}/w2-consent/withdraw`, {}),
   /** PAY-208 (D-A) — change the employee's sign-in email (needs a recent sign-in). */
   changeSignInEmail: (employeeId: number, email: string) =>
-    put<{ changed: boolean; pendingEnrollment: boolean }>(
+    put<{ changed: boolean; pendingEnrollment: boolean; sessionsRevoked: boolean }>(
       `/api/admin/employees/${employeeId}/sign-in-email`,
       { email },
     ),
