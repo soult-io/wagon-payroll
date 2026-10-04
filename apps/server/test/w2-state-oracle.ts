@@ -50,6 +50,11 @@ export function money(cents: number): string {
   return `${whole}.${frac < 10 ? "0" : ""}${frac}`;
 }
 
+/** Signed integer cents -> "-50.00" / "12.34": fixture entry amounts only (refund runs). */
+export function signedMoney(cents: number): string {
+  return cents < 0 ? `-${money(-cents)}` : money(cents);
+}
+
 /** Last day of the month of an ISO date. */
 export function monthEnd(isoMonth: string): string {
   const y = Number(isoMonth.slice(0, 4));

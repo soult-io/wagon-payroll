@@ -236,8 +236,9 @@ describe("W03 move mid-period (K3, I2)", () => {
   it("boundary: a move on periodStart is not inside the period; a move on periodEnd is", () => {
     const runs = [monthly("2026-03", CA, 1234)];
     const at = (d: string) =>
-      planW2StateLines(input("b", runs, { CA: "entered" }, { box1Cents: 500_000, moves: [d] }))
-        .issues;
+      planW2StateLines(
+        input("b", runs, { CA: "entered" }, { box1Cents: 500_000, moves: ["2024-01-01", d] }),
+      ).issues;
     expect({
       onStart: at("2026-03-01"),
       onEnd: at("2026-03-31"),
@@ -583,7 +584,7 @@ describe("W35 internal_mismatch (M3): never throws, {code, severity} only", () =
       ...months(2026, 1, 2).map((m) => monthly(m, null, 3000)),
       ...months(2026, 3, 12).map((m) => monthly(m, st("MD", "progressive", true), 0)),
     ];
-    const inp = input("p1", runs, { MD: null }, { moves: ["2026-05-10"] });
+    const inp = input("p1", runs, { MD: null }, { moves: ["2024-01-01", "2026-05-10"] });
     inp.runs[5]!.localsUnreadable = true;
     const plan = planW2StateLines(inp);
     const allowed = new Set(["code", "severity", "state", "date", "runs"]);
@@ -622,5 +623,93 @@ describe("purity", () => {
     const fwd = input("ro", jon, { CA: "entered", NY: "ein_default" });
     const rev = { ...fwd, runs: [...fwd.runs].reverse() };
     expect(planW2StateLines(rev)).toEqual(planW2StateLines(fwd));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review round (2026-10-04)
+// ---------------------------------------------------------------------------
+
+describe("review R-hire: the employee's first work-state row is a hire, not a move (K3)", () => {
+  // `moves` carries every work-state row of the employee (all years); the
+  // earliest effectiveFrom is where the employee started, so it never
+  // raises period_spans_move, even when it falls inside a run's period.
+  const runs = () => [
+    monthly("2026-03", CA, 1234, { grossCents: 250_000 }),
+    ...months(2026, 4, 12).map((m) => monthly(m, CA, 1234)),
+  ];
+  const box1Cents = 250_000 + 9 * 500_000;
+
+  it("hired 2026-03-15 inside the Mar 1-31 period: no period_spans_move", () => {
+    const plan = planW2StateLines(
+      input("hire", runs(), { CA: "entered" }, { box1Cents, moves: ["2026-03-15"] }),
+    );
+    expect(plan.issues).toEqual([]);
+  });
+
+  it("hired 2026-03-15, then a real move on 2026-06-10: one period_spans_move for 2026-06-10 only", () => {
+    const plan = planW2StateLines(
+      input("hire2", runs(), { CA: "entered" }, { box1Cents, moves: ["2026-06-10", "2026-03-15"] }),
+    );
+    expect(plan.issues).toEqual([
+      { code: "period_spans_move", severity: "info", state: "CA", date: "2026-06-10" },
+    ]);
+  });
+
+  it("a first row from an earlier year plus a move inside a 2026 period still raises it", () => {
+    const plan = planW2StateLines(
+      input("hire3", runs(), { CA: "entered" }, { box1Cents, moves: ["2024-07-01", "2026-03-15"] }),
+    );
+    expect(plan.issues).toEqual([
+      { code: "period_spans_move", severity: "info", state: "CA", date: "2026-03-15" },
+    ]);
+  });
+});
+
+describe("review R-negative: net negative box 17 for the year is a block (PAY-162 code)", () => {
+  // Refunds exceed withholding: 12.34 withheld in January, a February
+  // adjustment run with 0.00 gross refunds 50.00 -> box 17 = 1234 - 5000
+  // = -3766 cents. A W-2 money box is unsigned (iw2w3 2026; PAY-162 D2).
+  const runs = () => [
+    monthly("2026-01", CA, 1234),
+    monthly("2026-02", CA, -5000, { grossCents: 0 }),
+  ];
+
+  it("one negative_amount block carrying the state; nothing else on a CA line with an ID", () => {
+    const plan = planW2StateLines(input("neg", runs(), { CA: "entered" }, { box1Cents: 500_000 }));
+    expect(plan.issues).toEqual([{ code: "negative_amount", severity: "block", state: "CA" }]);
+  });
+
+  it("zero box 17 is not negative; -1 cent is", () => {
+    const zero = planW2StateLines(
+      input(
+        "z",
+        [monthly("2026-01", CA, 100), monthly("2026-02", CA, -100, { grossCents: 0 })],
+        { CA: "entered" },
+        { box1Cents: 500_000 },
+      ),
+    );
+    const minusOne = planW2StateLines(
+      input(
+        "m",
+        [monthly("2026-01", CA, 100), monthly("2026-02", CA, -101, { grossCents: 0 })],
+        { CA: "entered" },
+        { box1Cents: 500_000 },
+      ),
+    );
+    expect({ zero: zero.issues, minusOne: minusOne.issues }).toEqual({
+      zero: [],
+      minusOne: [{ code: "negative_amount", severity: "block", state: "CA" }],
+    });
+  });
+
+  it("only the negative state is flagged on a two-state W-2", () => {
+    const two = [...runs(), monthly("2026-03", st("IL"), 2000)];
+    const plan = planW2StateLines(
+      input("neg2", two, { CA: "entered", IL: "entered" }, { box1Cents: 1_000_000 }),
+    );
+    expect(plan.issues.filter((i) => i.code === "negative_amount")).toEqual([
+      { code: "negative_amount", severity: "block", state: "CA" },
+    ]);
   });
 });

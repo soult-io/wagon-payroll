@@ -664,6 +664,76 @@ describe("GET defaults and needed", () => {
 // W28 / K8 — no state ID leaves through exports or the W-2 figures
 // ---------------------------------------------------------------------------
 
+/**
+ * W28 / K8 leak scan (auditor, review round 2026-10-04). A body leaks when it
+ * carries a state ID value (plain, either synthetic ID, or a mask), or a
+ * state ID key or column in any spelling: state_id, stateId, state-id,
+ * STATE_ID, idMasked. Allowed: the Spec 24 issue codes that END in
+ * "_state_id" (missing_state_id, missing_state_id_zero_tax) and the list
+ * field `stateIdSource` (which source, never the value). JSON bodies are
+ * also walked key by key, so a renamed key cannot hide behind a value.
+ */
+function stateIdLeaks(body: string): string[] {
+  const leaks: string[] = [];
+  for (const value of ["00000001", "123456789012", "••••"]) {
+    if (body.includes(value)) leaks.push(`value ${value}`);
+  }
+  const allowed = body
+    .replaceAll("missing_state_id_zero_tax", "")
+    .replaceAll("missing_state_id", "")
+    .replaceAll("stateIdSource", "");
+  const key = /state[_\s-]?id|idmasked/i;
+  if (key.test(allowed)) leaks.push(`key ${key.exec(allowed)?.[0]}`);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    parsed = undefined;
+  }
+  const walk = (v: unknown): void => {
+    if (Array.isArray(v)) {
+      for (const item of v) walk(item);
+      return;
+    }
+    if (v === null || typeof v !== "object") return;
+    for (const [k, child] of Object.entries(v)) {
+      if (k !== "stateIdSource" && key.test(k)) leaks.push(`json key ${k}`);
+      walk(child);
+    }
+  };
+  walk(parsed);
+  return leaks;
+}
+
+describe("W28 leak scan self-check", () => {
+  it("flags every leak shape and passes the allowed issue codes and stateIdSource", () => {
+    expect({
+      clean: stateIdLeaks(
+        JSON.stringify({
+          issues: [{ code: "missing_state_id" }, { code: "missing_state_id_zero_tax" }],
+          stateLines: [{ stateIdSource: null }],
+        }),
+      ),
+      snake: stateIdLeaks('{"state_id":"x"}').length > 0,
+      camel: stateIdLeaks('{"stateId":"x"}').length > 0,
+      upper: stateIdLeaks("STATE_ID,amount\n").length > 0,
+      masked: stateIdLeaks('{"idMasked":"x"}').length > 0,
+      mask: stateIdLeaks('{"a":"••••0001"}').length > 0,
+      value: stateIdLeaks('{"a":"00000001"}').length > 0,
+      codePlusKey: stateIdLeaks('{"code":"missing_state_id","stateId":"x"}').length > 0,
+    }).toEqual({
+      clean: [],
+      snake: true,
+      camel: true,
+      upper: true,
+      masked: true,
+      mask: true,
+      value: true,
+      codePlusKey: true,
+    });
+  });
+});
+
 describe("W28 no state ID in exports or figures", () => {
   it("/api/export responses and the W-2 list never carry a state ID", async () => {
     await clearStateIds();
@@ -683,10 +753,7 @@ describe("W28 no state ID in exports or figures", () => {
     const w2 = await api("GET", "/api/admin/annual-forms/w2?year=2026");
     bodies.push(w2.body);
     for (const body of bodies) {
-      expect(body).not.toContain("00000001");
-      expect(body).not.toContain("123456789012");
-      // The column name; the Spec 24 issue code missing_state_id is not a leak.
-      expect(body).not.toMatch(/(?<![a-z_])state_id/);
+      expect(stateIdLeaks(body), body.slice(0, 200)).toEqual([]);
     }
   });
 });

@@ -1143,3 +1143,75 @@ describe("P1 PII stays out of the figures path", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Review round (2026-10-04)
+// ---------------------------------------------------------------------------
+
+describe("review R-hire: a mid-period hire is not a move (integration)", () => {
+  let hireOnly = 0;
+  let hireThenMove = 0;
+  const runs = (): FxRun[] => [
+    monthly("2026-03", CA, 600, { grossCents: 250_000 }),
+    ...months(2026, 4, 12).map((m) => monthly(m, CA, 1234)),
+  ];
+  const s = scenario(async (env) => {
+    await enterStateId(env, "CA");
+    hireOnly = await createEmployee(env, "Hire Only");
+    await workState(env, hireOnly, "CA", "2026-03-15");
+    await insertRuns(env, hireOnly, runs());
+    hireThenMove = await createEmployee(env, "Hire Then Move");
+    await workState(env, hireThenMove, "CA", "2026-03-15", "2026-06-09");
+    await workState(env, hireThenMove, "NV", "2026-06-10");
+    await insertRuns(env, hireThenMove, runs());
+  });
+
+  it("first row 2026-03-15 inside Mar 1-31: no issue; a second row 2026-06-10 inside the June run: one period_spans_move", async () => {
+    const a = await rowOf(s.env, 2026, hireOnly);
+    const b = await rowOf(s.env, 2026, hireThenMove);
+    expect({ hireOnly: stateView(a), hireThenMove: stateView(b) }).toEqual({
+      hireOnly: expView(runs(), 2026, { CA: "entered" }, []),
+      hireThenMove: expView(runs(), 2026, { CA: "entered" }, [
+        { code: "period_spans_move", severity: "info", state: "CA", date: "2026-06-10" },
+      ]),
+    });
+  });
+});
+
+describe("review R-negative: net negative box 17 holds the W-2 (clock 2027-01-05)", () => {
+  let id = 0;
+  // 12.34 withheld in January; a February adjustment run (0.00 gross)
+  // refunds 50.00 -> CA box 17 = 1234 - 5000 = -3766 cents.
+  const runs = (): FxRun[] => [
+    monthly("2026-01", CA, 1234),
+    monthly("2026-02", CA, -5000, { grossCents: 0 }),
+  ];
+  const s = scenario(
+    async (env) => {
+      await enterStateId(env, "CA");
+      id = await createEmployee(env, "Refund Negative");
+      await insertRuns(env, id, runs());
+    },
+    { now: AFTER_YEAR_END },
+  );
+
+  it("list 200: blocked, negative_amount block with state CA", async () => {
+    const l = await list(s.env, 2026);
+    expect(l.status).toBe(200);
+    const row = l.json.w2s.find((r) => r.employeeId === id) as ListRow;
+    expect({
+      blocked: row.blocked,
+      negative: (row.issues as { code: string }[]).filter((i) => i.code === "negative_amount"),
+    }).toEqual({
+      blocked: true,
+      negative: [{ code: "negative_amount", severity: "block", state: "CA" }],
+    });
+  });
+
+  it("Copy D and W-3 -> 409 w2_not_ready [negative_amount]", async () => {
+    const d = await get(s.env, `/api/admin/annual-forms/w2/${id}/pdf?year=2026`);
+    const w = await get(s.env, "/api/admin/annual-forms/w3/pdf?year=2026");
+    const body = { error: "w2_not_ready", issues: ["negative_amount"] };
+    expect([d.statusCode, d.json(), w.statusCode, w.json()]).toEqual([409, body, 409, body]);
+  });
+});

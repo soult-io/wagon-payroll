@@ -24,7 +24,7 @@ import { encryptField } from "../src/crypto/field-encryption.js";
 import { snapshotHash } from "../src/payroll/snapshot.js";
 import { createTestApp, type TestContext } from "./helpers.js";
 import { inviteAndOnboard, login, sessionHeader, TEST_PASSWORD } from "./flow-helpers.js";
-import { entriesOf, type FxRun, money } from "./w2-state-oracle.js";
+import { entriesOf, type FxRun, signedMoney } from "./w2-state-oracle.js";
 
 export const SYNTHETIC_EIN = "00-0000001";
 
@@ -248,7 +248,7 @@ export async function insertRun(env: Env, employeeId: number, r: FxRun): Promise
     Object.entries(entriesOf(r)).map(([category, cents]) => ({
       runId: run.id,
       category,
-      amount: money(cents),
+      amount: signedMoney(cents),
     })),
   );
   return { id: run.id, publicId: run.publicId, payDate: r.payDate };
