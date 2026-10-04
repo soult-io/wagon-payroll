@@ -14,7 +14,9 @@
  * a copy with those figures (w2_furnishings, append-only). `boxes_hash`
  * covers boxes 1-6 in integer cents (v1, tax years before 2026) or boxes 1-6
  * plus formCount and the state lines (v2, Spec 24 PR-2 brief §4, from
- * 2026); it never leaves the database. No state ID enters any hash.
+ * 2026); it never leaves the database. No state ID VALUE enters any hash:
+ * v2 covers what box 15 prints by its source and, for an entered ID, the
+ * SHA-256 of the stored ciphertext (PR-3 R3).
  */
 
 import { and, desc, eq, inArray } from "drizzle-orm";
@@ -49,6 +51,8 @@ export interface W2HashFigures extends W2BoxesCents {
     box17Cents: number | null;
     form: number;
     row: number;
+    stateIdSource: string | null;
+    stateIdDigest: string | null;
   }[];
 }
 
@@ -104,12 +108,22 @@ function int(v: unknown): number {
   throw notCents();
 }
 
+function strOrNull(v: unknown): string | null {
+  if (v === null || typeof v === "string") return v;
+  throw notCents();
+}
+
 /**
  * The furnishing hash of one employee-year, by tax year (hashVersionFor):
  * v1 = w2BoxesHash (byte-identical for years before 2026); v2 = boxes 1-6 +
- * formCount + every state line {state, form, row, box16, box17} in line
- * order + localLines (always [] from Spec 24). Other keys of `figures`
- * (names, issues, stateIdSource) never enter it. Integers or null only;
+ * formCount + every state line {state, form, row, box16, box17,
+ * stateIdSource, stateIdDigest} in line order + localLines (always [] from
+ * Spec 24). PR-3 R3: box 15 is covered by its source and the digest of the
+ * entered ID's stored ciphertext — not the value, so the hash stays pure (no
+ * key, no decrypt) and a changed ID makes the next furnishing CORRECTED (a
+ * re-entered identical value gets a new IV: a spurious CORRECTED, accepted).
+ * Changed in place: no v2 row existed in production. Other keys of
+ * `figures` (names, issues) never enter it. Amounts are integers or null;
  * anything else throws a fixed TypeError.
  */
 export function w2FiguresHash(employeeId: number, taxYear: number, figures: W2HashFigures): string {
@@ -122,6 +136,8 @@ export function w2FiguresHash(employeeId: number, taxYear: number, figures: W2Ha
       row: int(l.row),
       box16: intOrNull(l.box16Cents),
       box17: intOrNull(l.box17Cents),
+      stateIdSource: strOrNull(l.stateIdSource),
+      stateIdDigest: strOrNull(l.stateIdDigest),
     };
   });
   return worksheetHash({

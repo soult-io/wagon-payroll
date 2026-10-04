@@ -23,7 +23,7 @@ import {
   taxFilings,
   w2Furnishings,
 } from "@payroll/db";
-import { hasTemplate, type W2Input } from "@payroll/documents";
+import { hasTemplate, renderW2EmployeePacket } from "@payroll/documents";
 import { EVENT_TYPE, w2Changed as tplW2Changed } from "@payroll/notifications";
 import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
@@ -88,17 +88,21 @@ interface Deps {
 // ---------------------------------------------------------------------------
 
 /**
- * R2/R7: build the employee packet input for the CURRENT figures and record
- * the furnishing BEFORE any byte leaves: lock → figures → insert, one
- * transaction. A failed insert fails the request; no copy leaves without a
- * record. Returns the input and whether the packet must say CORRECTED.
+ * R2/R7: build the employee packet for the CURRENT figures, record the
+ * furnishing and render the PDF in ONE transaction: lock → figures → insert
+ * → render. The row commits only when the PDF bytes exist (PR-3 R2): a
+ * render failure rolls the row back, and no copy leaves without a record.
+ * Rendering takes no lock, so the lock order (employee advisory lock →
+ * FILING_CLOSE_LOCK → SYNC_LOCK) is unchanged; the employee lock is held for
+ * the render (about a second). CORRECTED when the employee may hold a copy
+ * with other figures.
  */
-export async function furnishForRender(
+export async function furnishAndRender(
   deps: Deps,
   employeeId: number,
   year: number,
   furnishing: { method: "employee_download" | "admin_print"; actorId: string },
-): Promise<{ input: W2Input; corrected: boolean }> {
+): Promise<Buffer> {
   return deps.db.transaction(async (tx) => {
     await lockEmployee(tx, employeeId);
     const { input, boxes } = await w2InputWithBoxes(
@@ -114,7 +118,7 @@ export async function furnishForRender(
       method: furnishing.method,
       actorId: furnishing.actorId,
     });
-    return { input, corrected };
+    return renderW2EmployeePacket(input, { corrected });
   });
 }
 

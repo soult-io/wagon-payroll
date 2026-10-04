@@ -17,7 +17,6 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { and, eq } from "drizzle-orm";
 import { employees } from "@payroll/db";
-import { renderW2EmployeePacket } from "@payroll/documents";
 import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
 import type { Guards } from "../plugins/guards.js";
@@ -30,7 +29,7 @@ import {
 import { FilingServiceError } from "../filings/shared.js";
 import {
   electronicAccessAfterWithdrawal,
-  furnishForRender,
+  furnishAndRender,
   isMyW2Corrected,
 } from "../filings/w2-furnish.js";
 import { localDate } from "../payroll/run-dates.js";
@@ -70,11 +69,10 @@ async function sendW2Pdf(
   try {
     // PAY-162: requireBundledForm stops before any PII is read when the
     // year has no official form.
-    const { input, corrected } = await furnishForRender(deps, employeeId, year, {
+    const pdf = await furnishAndRender(deps, employeeId, year, {
       method: "employee_download",
       actorId,
     });
-    const pdf = await renderW2EmployeePacket(input, { corrected });
     return reply
       .header("content-type", "application/pdf")
       .header("content-disposition", `inline; filename="w2-${year}.pdf"`)
