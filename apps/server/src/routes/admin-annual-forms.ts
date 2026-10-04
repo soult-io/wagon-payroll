@@ -32,6 +32,10 @@
  * state: box 17 total, issued-run withholding, attributed legacy, the
  * amount marked as deposited — UI-only, never hashed — and reconciled; []
  * before 2026 and while any W-2's boxes are withheld). Admin JSON only.
+ *
+ * PAY-208: `consented` is the electronic channel of the listed year; rows
+ * add `consentOutdated` (agreed to earlier terms), the response adds
+ * `reconsentNeeded`, `contactReady` and `undeliveredNotices` (names only).
  */
 
 import type { FastifyInstance } from "fastify";
@@ -56,7 +60,8 @@ import {
 } from "../filings/annual.js";
 import { formatCents } from "@payroll/shared";
 import type { W2Issue } from "../filings/w2-boxes.js";
-import { electronicW2Channel } from "../filings/w2-consent.js";
+import { electronicW2Channel, readW2Contact, reconsentNeededFor } from "../filings/w2-consent.js";
+import { undeliveredW2Notices } from "../filings/w2-furnish.js";
 import { PDF_RATE_LIMIT, refuseCrossSite } from "../plugins/fetch-site.js";
 import { FilingServiceError } from "../filings/shared.js";
 import {
@@ -94,7 +99,12 @@ const NOT_FURNISHED: FurnishingView = {
  * One W-2 list row: box strings (or null), issues, blocked — never cents.
  * PAY-206 (R8): + corrected, correctionToFurnish, furnished, furnishedOn.
  */
-function listRow(f: W2Figures, consented: boolean, furnishing: FurnishingView | undefined) {
+function listRow(
+  f: W2Figures,
+  consented: boolean,
+  consentOutdated: boolean,
+  furnishing: FurnishingView | undefined,
+) {
   const { employeeId, legalName, issues } = f;
   const boxes = f.box1Cents === null ? NULL_BOXES : w2BoxStrings(f);
   return {
@@ -114,6 +124,7 @@ function listRow(f: W2Figures, consented: boolean, furnishing: FurnishingView | 
     issues,
     blocked: isW2Blocked(f),
     consented,
+    consentOutdated,
     ...(furnishing ?? NOT_FURNISHED),
   };
 }
@@ -168,10 +179,10 @@ export function registerAdminAnnualFormRoutes(app: FastifyInstance, deps: Deps):
     } catch (err) {
       return serviceError(err, reply);
     }
-    const electronic = await electronicW2Channel(
-      db,
-      figures.map((f) => f.employeeId),
-    );
+    const ids = figures.map((f) => f.employeeId);
+    // PAY-208: `consented` = the electronic channel of THIS year.
+    const electronic = await electronicW2Channel(db, ids, q.data.year);
+    const outdated = await reconsentNeededFor(db, ids, q.data.year);
     const furnishing = await furnishingViews({ db, config }, q.data.year, figures);
     return {
       year: q.data.year,
@@ -180,11 +191,22 @@ export function registerAdminAnnualFormRoutes(app: FastifyInstance, deps: Deps):
       // PAY-162 (D3): the official W-2/W-3 form is bundled for the year.
       formAvailable: hasTemplate(q.data.year, "fw2") && hasTemplate(q.data.year, "fw3"),
       w2s: figures.map((f) =>
-        listRow(f, electronic.has(f.employeeId), furnishing.get(f.employeeId)),
+        listRow(
+          f,
+          electronic.has(f.employeeId),
+          outdated.has(f.employeeId),
+          furnishing.get(f.employeeId),
+        ),
       ),
       yearIssues,
       notified: (await notifiedYears(db)).includes(q.data.year),
       stateChecks,
+      // PAY-208 (2.2d): employees who must agree to the current terms to
+      // get this year's W-2 online; the W-2 contact (A6) is on file.
+      reconsentNeeded: outdated.size,
+      contactReady: (await readW2Contact(db)).ready,
+      // PAY-208 ((j)(5)(ii)): consented notices of the year that bounced.
+      undeliveredNotices: await undeliveredW2Notices(db, q.data.year),
     };
   });
 

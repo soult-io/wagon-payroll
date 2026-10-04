@@ -47,6 +47,7 @@ import {
   employeeResidences,
   employeeWorkStates,
   type SeedDb,
+  w2DeliveryConsents,
 } from "@payroll/db";
 import { WORKFLOW_EVENTS } from "@payroll/notifications";
 import type { Auth } from "../auth/auth.js";
@@ -64,6 +65,20 @@ import { isCovered, latestCoveredYear, taxTableCoverage } from "../payroll/tax-c
 // ---------------------------------------------------------------------------
 // Fixed QA credentials (FAKE — QA-only, documented in docs/qa.md)
 // ---------------------------------------------------------------------------
+
+/** PAY-208: the QA W-2 contact (synthetic: example.com, a 555-01xx number). */
+const QA_W2_CONTACT = {
+  name: "QA W-2 Desk",
+  phone: "+1 555 0100",
+  email: "w2-desk@example.com",
+  mailingAddress: {
+    line1: "100 Example Street",
+    city: "Springfield",
+    state: "IL",
+    zip: "62701",
+    country: "US",
+  },
+} as const;
 
 /** Spec 24 (PAY-116) PR-4: the QA company's synthetic EIN (00- prefix: never issued). */
 const QA_COMPANY_EIN = "000000001";
@@ -1195,7 +1210,26 @@ export async function seedQaDataset(
     .set({ ein: encryptField(QA_COMPANY_EIN, deps.config.encryptionKey) })
     .where(and(eq(company.id, companyId), isNull(company.ein)));
 
+  // PAY-208: a synthetic W-2 contact (only while none is set — a real one is
+  // never overwritten), so online W-2s are open on QA.
+  await deps.db
+    .update(company)
+    .set({
+      w2ContactName: QA_W2_CONTACT.name,
+      w2ContactPhone: QA_W2_CONTACT.phone,
+      w2ContactEmail: QA_W2_CONTACT.email,
+      w2ContactAddress: QA_W2_CONTACT.mailingAddress,
+    })
+    .where(and(eq(company.id, companyId), isNull(company.w2ContactName)));
+
   const w2 = await seedW2People(deps, companyId, employeeLogin.id);
+  // PAY-208: the QA employee login agreed to the earlier ("2025-01") terms,
+  // so QA shows the "agree to the updated terms" state. Only when no
+  // consent row exists (a choice made on QA is kept).
+  await deps.db
+    .insert(w2DeliveryConsents)
+    .values({ employeeId: w2.carol, disclosureVersion: "2025-01" })
+    .onConflictDoNothing({ target: [w2DeliveryConsents.employeeId] });
   await seedResidences(deps.db, w2, admin.id);
   // PAY-81: anchor everything tax-year dependent on L, the latest covered
   // year, computed now that the personas and their work states exist. A year

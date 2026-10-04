@@ -7,6 +7,11 @@
  * (2^attempts minutes since last_attempt_at); workflow events the user opted
  * out of are marked 'suppressed'; security events bypass settings; 5 attempts
  * → 'failed' + last_error. Dev mode ('log') logs instead of sending.
+ *
+ * PAY-208 (D-A): a row with recipient_email goes to that address instead of
+ * the user-id lookup (the sign-in-email-change notice to the OLD address).
+ * The address is never logged and is cleared once the row is sent or fails
+ * for good.
  */
 
 import { and, asc, eq } from "drizzle-orm";
@@ -103,7 +108,12 @@ export async function drainOutbox(deps: DrainDeps): Promise<DrainResult> {
       log(`[email:dev-log] to user ${row.userId} — ${row.subject}`);
       await db
         .update(emailOutbox)
-        .set({ status: "sent", sentAt: new Date(), attempts: row.attempts + 1 })
+        .set({
+          status: "sent",
+          sentAt: new Date(),
+          attempts: row.attempts + 1,
+          recipientEmail: null,
+        })
         .where(eq(emailOutbox.id, row.id));
       result.logged += 1;
       continue;
@@ -111,7 +121,7 @@ export async function drainOutbox(deps: DrainDeps): Promise<DrainResult> {
 
     try {
       if (!deps.transport) throw new Error("no mail transport configured");
-      const to = await deps.resolveRecipientEmail(row.userId);
+      const to = row.recipientEmail ?? (await deps.resolveRecipientEmail(row.userId));
       if (!to) throw new Error(`no email address for user ${row.userId}`);
       await deps.transport.sendMail({
         from: config.smtp.from,
@@ -127,6 +137,7 @@ export async function drainOutbox(deps: DrainDeps): Promise<DrainResult> {
           sentAt: new Date(),
           attempts: row.attempts + 1,
           lastAttemptAt: new Date(),
+          recipientEmail: null,
         })
         .where(eq(emailOutbox.id, row.id));
       result.sent += 1;
@@ -139,7 +150,7 @@ export async function drainOutbox(deps: DrainDeps): Promise<DrainResult> {
           attempts,
           lastError: message,
           lastAttemptAt: new Date(),
-          ...(attempts >= MAX_ATTEMPTS ? { status: "failed" } : {}),
+          ...(attempts >= MAX_ATTEMPTS ? { status: "failed", recipientEmail: null } : {}),
         })
         .where(eq(emailOutbox.id, row.id));
       result.failed += 1;

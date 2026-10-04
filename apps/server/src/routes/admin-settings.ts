@@ -1,7 +1,8 @@
 /**
  * Admin settings routes (frontend spec /admin/config + /admin/settings):
- * company profile (EIN masked on read) and the audit-log viewers
- * (auth_events + audit_events, paginated, newest first).
+ * company profile (EIN masked on read), the W-2 contact (PAY-208, 26 CFR
+ * 31.6051-1(j)(3)(v)(A)) and the audit-log viewers (auth_events +
+ * audit_events, paginated, newest first).
  */
 
 import type { FastifyInstance } from "fastify";
@@ -12,6 +13,8 @@ import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
 import type { Guards } from "../plugins/guards.js";
 import { encryptField, maskLast4 } from "../crypto/field-encryption.js";
+import { refuseCrossSite } from "../plugins/fetch-site.js";
+import { saveW2Contact, w2ContactForAdmin } from "../filings/w2-consent.js";
 
 interface Deps {
   db: Db;
@@ -26,6 +29,32 @@ const pagination = z.object({
 
 /** IRS EIN format: XX-XXXXXXX (dash optional on input, normalized before storage). */
 const einSchema = z.string().regex(/^\d{2}-?\d{7}$/, "ein must match XX-XXXXXXX");
+
+const companyAddressSchema = z.object({
+  line1: z.string().min(1).max(200),
+  line2: z.string().max(200).optional(),
+  city: z.string().min(1).max(100),
+  state: z.string().min(1).max(100),
+  zip: z.string().min(1).max(20),
+  country: z.string().min(2).max(2),
+});
+
+/**
+ * PAY-208: the W-2 contact. Name or department 1-200; phone 7-30 of digits,
+ * spaces and + ( ) - .; email up to 254; mailing address optional (null =
+ * use the company address).
+ */
+const w2ContactSchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  phone: z
+    .string()
+    .trim()
+    .min(7)
+    .max(30)
+    .regex(/^[0-9+().\-\s]+$/),
+  email: z.string().trim().max(254).pipe(z.email()),
+  mailingAddress: companyAddressSchema.nullable().optional(),
+});
 
 function normalizeEin(ein: string): string {
   const digits = ein.replace("-", "");
@@ -54,16 +83,7 @@ export function registerAdminSettingsRoutes(app: FastifyInstance, deps: Deps): v
     const body = z
       .object({
         legalName: z.string().trim().min(1).max(200),
-        address: z
-          .object({
-            line1: z.string().min(1).max(200),
-            line2: z.string().max(200).optional(),
-            city: z.string().min(1).max(100),
-            state: z.string().min(1).max(100),
-            zip: z.string().min(1).max(20),
-            country: z.string().min(2).max(2),
-          })
-          .optional(),
+        address: companyAddressSchema.optional(),
         // Spec 11 (D19): admin-editable EIN — encrypted at rest, write-only.
         ein: einSchema.optional(),
       })
@@ -114,6 +134,36 @@ export function registerAdminSettingsRoutes(app: FastifyInstance, deps: Deps): v
       },
     };
   });
+
+  /** PAY-208: the W-2 contact as entered + whether online W-2s can open. */
+  app.get("/api/admin/company/w2-contact", { preHandler: admin }, async () => {
+    return { w2Contact: await w2ContactForAdmin(db) };
+  });
+
+  /**
+   * PAY-208: save the W-2 contact. Audited; a real change mails the new
+   * details to every active consenter ((j)(3)(vii)). Refused cross-site.
+   */
+  app.put(
+    "/api/admin/company/w2-contact",
+    { preHandler: [refuseCrossSite, admin] },
+    async (req, reply) => {
+      const body = w2ContactSchema.safeParse(req.body);
+      if (!body.success) {
+        return reply
+          .code(400)
+          .send({ error: "invalid_body", fields: body.error.issues.map((i) => i.path.join(".")) });
+      }
+      const { name, phone, email, mailingAddress } = body.data;
+      const out = await saveW2Contact({ db, config }, req.authUser!.id, {
+        name,
+        phone,
+        email,
+        mailingAddress: mailingAddress ?? null,
+      });
+      return { w2Contact: await w2ContactForAdmin(db), changed: out.changed };
+    },
+  );
 
   app.get("/api/admin/audit/auth-events", { preHandler: admin }, async (req) => {
     const q = pagination.parse(req.query);

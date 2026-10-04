@@ -35,6 +35,8 @@ export const TARGETS = {
       "test/w2-state*.test.ts",
       // PAY-193: filed-return guard (closing-filings, markFiled lock).
       "test/pay-193-*.test.ts",
+      // PAY-208: W-2 consent v2 (terms, channel, notices, contact).
+      "test/pay-208-*.test.ts",
       // Import from src/filings without the module in their names.
       "test/calendar.test.ts",
       "test/mailing-address.test.ts",
