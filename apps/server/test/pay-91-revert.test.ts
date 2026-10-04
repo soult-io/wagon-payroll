@@ -59,17 +59,32 @@ async function schedule(frequency: string, dueDay: number | null): Promise<void>
   );
 }
 
-async function caRows(): Promise<string[]> {
+/**
+ * The CA rows as "kind period amount status[ sup_at]". An open row reads
+ * 'open' only when its status matches the overdue rule (past due AND amount
+ * > 0) evaluated at `asOf` — the same date the last writer used: the `today`
+ * passed to syncDeposits, or `dbToday()` after the revert SQL (which uses
+ * Postgres current_date). Never the real clock against a fixed sync date
+ * (PAY-219: that went red on 2026-10-16 and 2026-11-03).
+ */
+async function caRows(asOf: string): Promise<string[]> {
   const r = await t.pglite.query<{ s: string }>(
     `SELECT period_kind || ' ' || period_start || ' ' || amount || ' ' ||
             CASE WHEN status IN ('pending','overdue')
-                 THEN (CASE WHEN status = (CASE WHEN due_date < current_date AND amount > 0 THEN 'overdue' ELSE 'pending' END)
+                 THEN (CASE WHEN status = (CASE WHEN due_date < $1::date AND amount > 0 THEN 'overdue' ELSE 'pending' END)
                             THEN 'open' ELSE 'open-wrong-status' END)
                  ELSE status END ||
             CASE WHEN superseded_at IS NULL THEN '' ELSE ' sup_at' END AS s
        FROM tax_deposits WHERE jurisdiction = 'CA' ORDER BY period_start, period_kind, id`,
+    [asOf],
   );
   return r.rows.map((x) => x.s);
+}
+
+/** Postgres current_date — the date the revert SQL classifies restored rows with. */
+async function dbToday(): Promise<string> {
+  const r = await t.pglite.query<{ d: string }>(`SELECT current_date::text AS d`);
+  return r.rows[0]!.d;
 }
 
 async function threeRuns(): Promise<number> {
@@ -91,14 +106,14 @@ describe("pay-91-revert.sql", () => {
     );
     await schedule("quarterly", null);
     await syncDeposits({ db: t.db, config: t.config }, { today: "2026-10-01" });
-    expect(await caRows()).toEqual([
+    expect(await caRows("2026-10-01")).toEqual([
       "month 2026-07-01 123.45 deposited",
       "quarter 2026-07-01 253.45 open",
       "month 2026-08-01 123.45 superseded sup_at",
       "month 2026-09-01 130.00 superseded sup_at",
     ]);
     await t.pglite.exec(REVERT);
-    expect(await caRows()).toEqual([
+    expect(await caRows(await dbToday())).toEqual([
       "month 2026-07-01 123.45 deposited",
       "month 2026-08-01 123.45 open",
       "month 2026-09-01 130.00 open",
@@ -111,7 +126,7 @@ describe("pay-91-revert.sql", () => {
     await syncDeposits({ db: t.db, config: t.config }, { today: "2026-09-20" });
     await schedule("monthly", 15);
     await syncDeposits({ db: t.db, config: t.config }, { today: "2026-10-05" });
-    const before = await caRows();
+    const before = await caRows("2026-10-05");
     expect(before).toEqual([
       "month 2026-07-01 123.45 open",
       "quarter 2026-07-01 376.90 superseded sup_at",
@@ -120,7 +135,7 @@ describe("pay-91-revert.sql", () => {
     ]);
     await expect(t.pglite.exec(REVERT)).rejects.toThrow(/month rows replaced a quarter row/);
     await t.pglite.exec("ROLLBACK").catch(() => undefined);
-    expect(await caRows()).toEqual(before);
+    expect(await caRows("2026-10-05")).toEqual(before);
   });
 
   it("T33 shape (quarterly, monthly, quarterly again): month rows back, every quarter row gone", async () => {
@@ -139,7 +154,7 @@ describe("pay-91-revert.sql", () => {
     await schedule("quarterly", null);
     await syncDeposits(deps, { today: "2026-10-06" });
     await t.pglite.exec(REVERT);
-    const after = await caRows();
+    const after = await caRows(await dbToday());
     expect(after.filter((r) => !r.includes("superseded"))).toEqual([
       "month 2026-07-01 123.45 deposited",
       "month 2026-08-01 123.45 open",
@@ -156,10 +171,10 @@ describe("pay-91-revert.sql", () => {
       `INSERT INTO deposit_attachments (deposit_id, filename, size_bytes, data, uploaded_by)
        SELECT id, 'x.pdf', 1, '\\x00'::bytea, 'synthetic' FROM tax_deposits WHERE period_kind = 'quarter'`,
     );
-    const before = await caRows();
+    const before = await caRows("2026-10-01");
     await expect(t.pglite.exec(REVERT)).rejects.toThrow(/quarter row to delete has an attachment/);
     await t.pglite.exec("ROLLBACK").catch(() => undefined);
-    expect(await caRows()).toEqual(before);
+    expect(await caRows("2026-10-01")).toEqual(before);
   });
 
   it("a restored 0.00 month row past its due date is pending, never overdue", async () => {
@@ -186,9 +201,9 @@ describe("pay-91-revert.sql", () => {
     await t.pglite.exec(
       `UPDATE tax_deposits SET status='deposited', deposited_on='2026-10-02' WHERE period_kind='quarter'`,
     );
-    const before = await caRows();
+    const before = await caRows("2026-10-01");
     await expect(t.pglite.exec(REVERT)).rejects.toThrow(/quarter row is deposited/);
     await t.pglite.exec("ROLLBACK").catch(() => undefined);
-    expect(await caRows()).toEqual(before);
+    expect(await caRows("2026-10-01")).toEqual(before);
   });
 });
