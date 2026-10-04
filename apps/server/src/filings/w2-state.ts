@@ -12,7 +12,8 @@
  *    the employee has a run with a state that year.
  *  - A state whose every run has kind 'none' has no line.
  *  - box 16 = Σ gross, box 17 = Σ state tax; NY box 16 = box 1 (R3).
- *  - box 17 < 0 → negative_amount block on that line (W-2 boxes are unsigned).
+ *  - box 16 < 0 or box 17 < 0 → negative_amount block on that line (W-2
+ *    boxes are unsigned; box 16 from PR-3 R2).
  *  - The employee's earliest work-state row is the hire, never a move.
  *  - Lines in state-code order; line i → form floor(i/2)+1, row (i%2)+1.
  *  - Any run with locals (or locals the loader could not read) → one
@@ -212,8 +213,11 @@ function lineIssues(
   const issues: W2Issue[] = [];
   const box17 = line.box17Cents ?? 0;
   // A W-2 money box is unsigned (PAY-162 D2): refunds above the year's
-  // withholding hold the W-2. First of the line's issues (Product Lead).
-  if (box17 < 0) issues.push({ code: "negative_amount", severity: "block", state });
+  // withholding (box 17), or adjustments above the state's wages (box 16,
+  // PR-3 R2), hold the W-2. First of the line's issues (Product Lead).
+  if (box17 < 0 || (line.box16Cents ?? 0) < 0) {
+    issues.push({ code: "negative_amount", severity: "block", state });
+  }
   const source = input.stateIds[state] ?? null;
   if (source === null) {
     // Zero-tax warn only at exactly 0; a negative box 17 still needs the ID.

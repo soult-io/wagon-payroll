@@ -353,13 +353,33 @@ export function hashV1(employeeId: number, taxYear: number, b: ExpBoxes): string
   });
 }
 
-/** Furnishing hash v2 (PR-2 brief §4): boxes 1-6 + formCount + state lines + local lines. */
+/** Box 15 identity of one state for hash v2 (PAY-116 PR-3 round 2, R3). */
+export interface HashStateId {
+  source: "entered" | "ein_default" | null;
+  /** SHA-256 hex of the stored ciphertext ("enc:v1:…") when source is "entered", else null. */
+  digest: string | null;
+}
+
+/** SHA-256 hex of a stored ciphertext string (UTF-8), the R3 box 15 digest. */
+export function ciphertextDigest(stored: string): string {
+  return createHash("sha256").update(stored, "utf8").digest("hex");
+}
+
+/**
+ * Furnishing hash v2 (PR-2 brief §4 + PR-3 round 2 R3): boxes 1-6 +
+ * formCount + state lines {state, form, row, box16, box17, stateIdSource,
+ * stateIdDigest} + local lines. R3: box 15 is covered by its source and,
+ * for an entered ID, the digest of the stored ciphertext (never the value,
+ * never a decrypt). `ids` is keyed by state code; a state not in `ids`
+ * hashes as { source: null, digest: null }.
+ */
 export function hashV2(
   employeeId: number,
   taxYear: number,
   b: ExpBoxes,
   formCount: number,
   lines: readonly ExpLine[],
+  ids: Record<string, HashStateId> = {},
 ): string {
   return canonicalSha({
     v: 2,
@@ -378,6 +398,8 @@ export function hashV2(
       row: l.row,
       box16: l.box16,
       box17: l.box17,
+      stateIdSource: ids[l.state]?.source ?? null,
+      stateIdDigest: ids[l.state]?.digest ?? null,
     })),
     localLines: [],
   });

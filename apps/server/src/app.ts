@@ -8,6 +8,7 @@ import fastifyStatic from "@fastify/static";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadConfig, type AppConfig } from "./config.js";
+import { registerFieldKey } from "./crypto/field-encryption.js";
 import { createDb, type Database } from "./db.js";
 import { createAuth } from "./auth/auth.js";
 import { mountBetterAuth } from "./auth/fastify-mount.js";
@@ -54,6 +55,8 @@ export interface BuildAppDeps {
 
 export async function buildApp(deps: BuildAppDeps = {}) {
   const config = deps.config ?? loadConfig();
+  // Spec 24 (PAY-116) PR-3 R1: W-2 readiness checks probe box 15 / the EIN.
+  registerFieldKey(config.encryptionKey);
   const database = deps.database ?? createDb(config);
   const { db, dialect } = database;
   const auth = createAuth({ config, db, dialect });

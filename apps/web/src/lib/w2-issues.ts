@@ -63,6 +63,15 @@ const ISSUE_TEXT: Record<W2IssueCode, (p: TextParts) => string> = {
     `New York asks for all of ${p.employee}'s ${p.year} wages in box 16, not only the New York part.`,
   period_spans_move: (p) =>
     `${p.employee} changed work state on ${p.date}, partway through a pay period. That whole pay run counts in ${p.state}, where the pay period started.`,
+  // Spec 24 (PAY-116) PR-3 (UX copy, round 2 "R1 copy"). The EIN field sits
+  // on Config → Company tab → "Company profile"; state numbers under "State
+  // tax account numbers" on the same tab.
+  state_id_unreadable: (p) =>
+    `Re-enter your ${p.state} account number. We have a ${p.state} employer account number saved for your company, but we can't read it, so ${p.employee}'s W-2 is on hold. Enter the number again under Company settings, State tax account numbers, then download the W-2 again. If this message is still here after you save, contact support.`,
+  ein_unreadable: (p) =>
+    `Re-enter your company's EIN. We have an EIN saved for your company, but we can't read it, so ${p.employee}'s W-2 is on hold. Enter the EIN again in your Company settings: Config, Company tab, Company profile. Then download the W-2 again. If this message is still here after you save, contact support.`,
+  state_id_too_long: (p) =>
+    `Check your ${p.state} account number. It's too long to fit on Form W-2, so ${p.employee}'s W-2 is on hold. Check the number under Company settings, State tax account numbers, then download the W-2 again.`,
 };
 
 const ISSUE_LABEL: Record<W2IssueCode, string> = {
@@ -84,6 +93,9 @@ const ISSUE_LABEL: Record<W2IssueCode, string> = {
   exempt_reciprocity: "Exempt — check home state",
   ny_all_wages: "New York: all wages",
   period_spans_move: "Moved mid-period",
+  state_id_unreadable: "State number unreadable",
+  ein_unreadable: "EIN unreadable",
+  state_id_too_long: "State ID too long for the form",
 };
 
 /** Short chip label for one issue. */

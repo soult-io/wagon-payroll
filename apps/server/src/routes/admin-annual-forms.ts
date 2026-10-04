@@ -28,12 +28,7 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import {
-  hasTemplate,
-  renderW2AdminCopyD,
-  renderW2EmployeePacket,
-  renderW3Pdf,
-} from "@payroll/documents";
+import { hasTemplate, renderW2AdminCopyD, renderW3Pdf } from "@payroll/documents";
 import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
 import type { Guards } from "../plugins/guards.js";
@@ -55,7 +50,7 @@ import { PDF_RATE_LIMIT, refuseCrossSite } from "../plugins/fetch-site.js";
 import { FilingServiceError } from "../filings/shared.js";
 import {
   type FurnishingView,
-  furnishForRender,
+  furnishAndRender,
   furnishingViews,
   markFurnishedOnPaper,
 } from "../filings/w2-furnish.js";
@@ -225,13 +220,10 @@ export function registerAdminAnnualFormRoutes(app: FastifyInstance, deps: Deps):
       const target = employeeYear(req, reply);
       if (!target) return reply;
       try {
-        const { input, corrected } = await furnishForRender(
-          { db, config },
-          target.employeeId,
-          target.year,
-          { method: "admin_print", actorId: req.authUser!.id },
-        );
-        const pdf = await renderW2EmployeePacket(input, { corrected });
+        const pdf = await furnishAndRender({ db, config }, target.employeeId, target.year, {
+          method: "admin_print",
+          actorId: req.authUser!.id,
+        });
         return reply
           .header("content-type", "application/pdf")
           .header(
@@ -269,19 +261,27 @@ export function registerAdminAnnualFormRoutes(app: FastifyInstance, deps: Deps):
     },
   );
 
-  /** On-demand W-3 transmittal PDF for the year (admin-only). */
-  app.get("/api/admin/annual-forms/w3/pdf", { preHandler: admin }, async (req, reply) => {
-    const q = yearQuery.safeParse(req.query);
-    if (!q.success) return reply.code(400).send({ error: "invalid_year", details: q.error.issues });
-    try {
-      const input = await w3InputFor({ db, config }, q.data.year, { requireBundledForm: true });
-      const pdf = await renderW3Pdf(input);
-      return reply
-        .header("content-type", "application/pdf")
-        .header("content-disposition", `inline; filename="w3-${q.data.year}.pdf"`)
-        .send(pdf);
-    } catch (err) {
-      return serviceError(err, reply);
-    }
-  });
+  /**
+   * On-demand W-3 transmittal PDF for the year (admin-only). PR-3 R7: refused
+   * cross-site / same-site before auth; 20/min per client, like the W-2 PDFs.
+   */
+  app.get(
+    "/api/admin/annual-forms/w3/pdf",
+    { preHandler: [refuseCrossSite, admin], config: { rateLimit: PDF_RATE_LIMIT } },
+    async (req, reply) => {
+      const q = yearQuery.safeParse(req.query);
+      if (!q.success)
+        return reply.code(400).send({ error: "invalid_year", details: q.error.issues });
+      try {
+        const input = await w3InputFor({ db, config }, q.data.year, { requireBundledForm: true });
+        const pdf = await renderW3Pdf(input);
+        return reply
+          .header("content-type", "application/pdf")
+          .header("content-disposition", `inline; filename="w3-${q.data.year}.pdf"`)
+          .send(pdf);
+      } catch (err) {
+        return serviceError(err, reply);
+      }
+    },
+  );
 }

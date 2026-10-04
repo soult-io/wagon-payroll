@@ -23,7 +23,7 @@ import {
   taxFilings,
   w2Furnishings,
 } from "@payroll/db";
-import { hasTemplate, type W2Input } from "@payroll/documents";
+import { hasTemplate, renderW2EmployeePacket } from "@payroll/documents";
 import { EVENT_TYPE, w2Changed as tplW2Changed } from "@payroll/notifications";
 import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
@@ -88,17 +88,21 @@ interface Deps {
 // ---------------------------------------------------------------------------
 
 /**
- * R2/R7: build the employee packet input for the CURRENT figures and record
- * the furnishing BEFORE any byte leaves: lock → figures → insert, one
- * transaction. A failed insert fails the request; no copy leaves without a
- * record. Returns the input and whether the packet must say CORRECTED.
+ * R2/R7: build the employee packet for the CURRENT figures, record the
+ * furnishing and render the PDF in ONE transaction: lock → figures → insert
+ * → render. The row commits only when the PDF bytes exist (PR-3 R2): a
+ * render failure rolls the row back, and no copy leaves without a record.
+ * Rendering takes no lock, so the lock order (employee advisory lock →
+ * FILING_CLOSE_LOCK → SYNC_LOCK) is unchanged; the employee lock is held for
+ * the render (about a second). CORRECTED when the employee may hold a copy
+ * with other figures.
  */
-export async function furnishForRender(
+export async function furnishAndRender(
   deps: Deps,
   employeeId: number,
   year: number,
   furnishing: { method: "employee_download" | "admin_print"; actorId: string },
-): Promise<{ input: W2Input; corrected: boolean }> {
+): Promise<Buffer> {
   return deps.db.transaction(async (tx) => {
     await lockEmployee(tx, employeeId);
     const { input, boxes } = await w2InputWithBoxes(
@@ -114,7 +118,7 @@ export async function furnishForRender(
       method: furnishing.method,
       actorId: furnishing.actorId,
     });
-    return { input, corrected };
+    return renderW2EmployeePacket(input, { corrected });
   });
 }
 
@@ -274,17 +278,34 @@ async function currentHash(
   employeeId: number,
   year: number,
 ): Promise<string | null> {
-  let figures: W2Figures | undefined;
+  const figures = await printableFigures(db, employeeId, year);
+  return figures === null ? null : w2FiguresHash(employeeId, year, figures);
+}
+
+/**
+ * The employee-year's figures when its W-2 can be furnished, else null (no
+ * W-2, unreadable figures or config, or any block issue). Read through
+ * employeeW2Figures, so the PR-3 render checks (state_id_unreadable,
+ * ein_unreadable, state_id_too_long) hold the correction and backfill paths
+ * like every other furnishing path (round 3 H1).
+ */
+async function printableFigures(
+  db: Pick<Db, "select">,
+  employeeId: number,
+  year: number,
+): Promise<ReadableW2Figures | null> {
+  let figures: W2Figures;
   try {
-    figures = (await w2FiguresForYear(db, year)).find((f) => f.employeeId === employeeId);
+    figures = await employeeW2Figures(db, employeeId, year);
   } catch (err) {
     if (err instanceof MissingTaxConfigError || err instanceof AnnualFiguresDefectError) {
       return null;
     }
+    if (err instanceof FilingServiceError && err.code === "not_found") return null;
     throw err;
   }
-  if (!figures || isW2Blocked(figures) || figures.box1Cents === null) return null;
-  return w2FiguresHash(employeeId, year, figures);
+  if (isW2Blocked(figures) || figures.box1Cents === null) return null;
+  return figures as ReadableW2Figures;
 }
 
 // ---------------------------------------------------------------------------
@@ -462,23 +483,14 @@ export async function reconcileW2Furnishings(
 
 const BACKFILLED_KEY = "w2_furnishings_backfilled";
 
-/** The W-2 figures of a year, or [] when its config/figures cannot be read. */
-async function figuresOrNone(db: Pick<Db, "select">, year: number): Promise<W2Figures[]> {
-  try {
-    return await w2FiguresForYear(db, year);
-  } catch (err) {
-    if (err instanceof MissingTaxConfigError || err instanceof AnnualFiguresDefectError) return [];
-    throw err;
-  }
-}
-
 /**
- * One backfill row for the employee-year when it has none. The caller holds
+ * One backfill row for the employee-year when it has none and its W-2 can be
+ * furnished (printableFigures: render checks included). The caller holds
  * the employee lock in `tx`.
  */
 async function backfillOneInTx(tx: Tx, employeeId: number, year: number): Promise<boolean> {
-  const figures = (await figuresOrNone(tx, year)).find((f) => f.employeeId === employeeId);
-  if (!figures || isW2Blocked(figures) || figures.box1Cents === null) return false;
+  const figures = await printableFigures(tx, employeeId, year);
+  if (figures === null) return false;
   if ((await furnishingRows(tx, employeeId, year)).length > 0) return false;
   return recordFurnishing(tx, {
     employeeId,

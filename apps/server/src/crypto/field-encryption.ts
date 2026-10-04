@@ -15,6 +15,25 @@ function keyBytes(key: string): Buffer {
   return createHash("sha256").update(key, "utf8").digest();
 }
 
+let appKey: string | null = null;
+
+/**
+ * Spec 24 (PAY-116) PR-3 R1: register the running app's field key (buildApp,
+ * once per app). Read-only paths that predate a key parameter — the W-2
+ * readiness checks behind isMyW2Ready / yearW2BlockCodes / the W-2 list —
+ * read it through fieldKey(). The key already lives in the app's config for
+ * the whole process; this adds no copy outside memory.
+ */
+export function registerFieldKey(key: string): void {
+  appKey = key;
+}
+
+/** The registered field key; throws (fail closed) when no app registered one. */
+export function fieldKey(): string {
+  if (appKey === null) throw new Error("field encryption key not registered");
+  return appKey;
+}
+
 export function encryptField(plaintext: string, key: string): string {
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", keyBytes(key), iv);

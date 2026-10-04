@@ -428,25 +428,45 @@ export {
 } from "./nec-1099.js";
 
 export {
-  CORRECTED_MARK,
   formatEin,
   pagesWithCorrectedMark,
   prepareW2AdminCopyD,
   prepareW2EmployeePacket,
+  prepareW2Forms,
   prepareW3,
   renderW2AdminCopyD,
   renderW2EmployeePacket,
   renderW3Pdf,
   pdfStructure,
   splitLegalName,
+  stateIdFitsForm,
   W2FormAmountError,
+  W2FormLinesError,
+  W2StateIdTooLongError,
   type FormAddress,
   type W2EmployeePacketOptions,
   type W2Input,
+  type W2LocalLineInput,
+  type W2StateLineInput,
   type W3Input,
 } from "./w2.js";
 
+export type {
+  W2FieldMapWithStateRows,
+  W2LocalRowFields,
+  W2StateRowFields,
+} from "./forms/field-map-2026.js";
+
 export {
+  w2FieldMapFor,
+  w2LayoutFor,
+  w3FieldMapFor,
+  type W2Layout,
+  type W3FieldMap,
+} from "./forms/w2-years.js";
+
+export {
+  CORRECTED_MARK,
   W2_ADMIN_COPIES,
   W2_ADMIN_COPY_D_PAGES,
   W2_CORRECTED_MARK_PAGES,
