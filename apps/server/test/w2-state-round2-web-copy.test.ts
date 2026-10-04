@@ -5,7 +5,8 @@
  *  - the web W2IssueCode union (apps/web/src/lib/api.ts) lists exactly the
  *    server's codes (apps/server/src/filings/w2-boxes.ts);
  *  - w2IssueLabel / w2IssueText (apps/web/src/lib/w2-issues.ts) give a
- *    non-empty, amount-free label and sentence for the three new codes.
+ *    non-empty, amount-free label and sentence for the three new codes
+ *    (the form names "W-2" / "W-3" are allowed; any other digit or "$" is not).
  * Copy per the round-2 spec: state_id_unreadable label "State ID can't be
  * read"; state_id_too_long label "State ID too long for the form". The UX
  * draft may replace the state_id_unreadable / ein_unreadable wording, so only
@@ -38,7 +39,7 @@ describe("web W2IssueCode union and copy cover the round-2 codes", () => {
     }).toEqual({ serverHasNew: [], webEqualsServer: server });
   });
 
-  it("w2IssueLabel / w2IssueText: non-empty, no amount, no digits; settings pointer; state_id_too_long label pinned", async () => {
+  it("w2IssueLabel / w2IssueText: non-empty, no amount, no digits except W-2/W-3; settings pointer; state_id_too_long label pinned", async () => {
     const mod = (await import(resolve(ROOT, "apps/web/src/lib/w2-issues.ts"))) as {
       w2IssueLabel(i: { code: string; severity: string; state?: string }): string;
       w2IssueText(
@@ -54,7 +55,8 @@ describe("web W2IssueCode union and copy cover the round-2 codes", () => {
       out[code] = {
         label: typeof label === "string" && label.length > 0,
         text: typeof text === "string" && text.length > 0,
-        noAmount: !/\$|\d/.test(`${label ?? ""}${text ?? ""}`),
+        // Form names "W-2" / "W-3" are allowed; any other digit or "$" is not.
+        noAmount: !/\$|\d/.test(`${label ?? ""} ${text ?? ""}`.replace(/\bW-[23]\b/g, "")),
         settings: typeof text === "string" && /Company settings/.test(text),
       };
     }
