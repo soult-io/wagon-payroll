@@ -5,7 +5,10 @@
  */
 
 import { stateName } from "@payroll/shared";
+import { useDates } from "../composables/useDates";
 import type { W2FiguresRow, W2Issue, W2IssueCode } from "./api";
+
+const { longDate } = useDates();
 
 /** What an issue sentence may name: the employee, the tax year, the issue's state and date. */
 export interface W2IssueContext {
@@ -114,7 +117,8 @@ export function w2IssueText(issue: W2Issue, ctx: W2IssueContext): string {
     employee: ctx.legalName,
     year: ctx.year,
     state: issue.state ? stateName(issue.state) : "",
-    date: issue.date ?? "",
+    // Spec 24 (PAY-116) PR-4: the owner reads a long date; the key keeps the raw one.
+    date: issue.date ? longDate(issue.date) : "",
   });
 }
 
@@ -132,7 +136,7 @@ export function hasUnreadableTotals(row: Pick<W2FiguresRow, "issues">): boolean 
  * Spec 24 (PAY-116) PR-4 (B3): added after a reconciliation_mismatch line
  * when the State tax check card shows that state's amounts.
  */
-export const RECONCILIATION_POINTER_TEXT = "You can see both amounts in the State tax check below.";
+export const RECONCILIATION_POINTER_TEXT = "You can see both amounts in the State tax check above.";
 
 /** Banner when the year's federal tax settings are missing (409 missing_tax_config). */
 export function missingTaxConfigText(year: number): string {

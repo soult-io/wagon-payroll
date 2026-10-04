@@ -208,7 +208,7 @@ onMounted(async () => {
         >
           <span>
             <strong>{{ w2Label(w2) }}</strong>
-            <span class="muted small">· available since {{ date(w2.availableOn) }}</span>
+            <span class="muted small">{{ " · available since " }}{{ date(w2.availableOn) }}</span>
             <span v-if="w2.corrected" class="muted small" style="display: block">
               This replaces any earlier {{ w2.year }} W-2 you may have. Use this one for your tax
               return.
@@ -217,7 +217,7 @@ onMounted(async () => {
               v-for="line in w2HelpLines(w2)"
               :key="line"
               class="muted small"
-              style="display: block"
+              style="display: block; margin-top: 0.25rem"
             >
               {{ line }}
             </span>
@@ -259,7 +259,7 @@ onMounted(async () => {
           <span>
             <!-- PAY-206: the current figures replace a copy the employee may hold. -->
             <strong>{{ w2Label(w2) }}</strong>
-            <span class="muted small">· available since {{ date(w2.availableOn) }}</span>
+            <span class="muted small">{{ " · available since " }}{{ date(w2.availableOn) }}</span>
             <span v-if="w2.corrected" class="muted small" style="display: block">
               This replaces any earlier {{ w2.year }} W-2 you may have. Use this one for your tax
               return.
@@ -268,7 +268,7 @@ onMounted(async () => {
               v-for="line in w2HelpLines(w2)"
               :key="line"
               class="muted small"
-              style="display: block"
+              style="display: block; margin-top: 0.25rem"
             >
               {{ line }}
             </span>

@@ -280,11 +280,12 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="card stack">
+  <section class="card stack state-ids">
     <h3>State tax account numbers</h3>
-    <p class="muted small">
-      Your state gives you an employer account number when you register for state payroll tax. It
-      goes in box 15 of each W-2.
+    <p class="muted small" style="margin: 0">
+      Your state gives you a withholding account number when you register to withhold state income
+      tax. It goes in box 15 of each W-2. Don't use your state unemployment (UI) account number
+      here.
     </p>
 
     <Skeleton v-if="loading && !list" height="6rem" />
@@ -306,17 +307,26 @@ onBeforeUnmount(() => {
         </Message>
       </template>
 
-      <p v-for="d in list.defaults" :key="d.stateCode" class="small" data-testid="state-id-default">
-        <strong>{{ stateName(d.stateCode) }}:</strong>
-        We're using your EIN ({{ d.idMasked }}) as your {{ stateName(d.stateCode) }} account
-        number. If {{ stateName(d.stateCode) }} gave you a different number, add it below.
+      <div
+        v-for="d in list.defaults"
+        :key="d.stateCode"
+        class="stack"
+        style="gap: 0.25rem"
+        data-testid="state-id-default"
+      >
+        <p class="small" style="margin: 0">
+          <strong>{{ stateName(d.stateCode) }}:</strong>
+          We're using your EIN ({{ d.idMasked }}) as your {{ stateName(d.stateCode) }} account
+          number. If {{ stateName(d.stateCode) }} gave you a different number, add it below.
+        </p>
         <Button
           label="Use a different number"
           text
           size="small"
+          style="align-self: flex-start; padding-left: 0"
           @click="useDifferent(d.stateCode)"
         />
-      </p>
+      </div>
 
       <div v-if="list.stateIds.length" class="table-scroll">
         <DataTable :value="list.stateIds" striped-rows>
@@ -439,6 +449,14 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/*
+ * Spec 24 (PAY-116) PR-4: no extra heading margin inside the .stack card.
+ * Set here, not inline: the heading markup stays "<h3>State tax account
+ * numbers</h3>" (the issue copy points to this label; a test reads it).
+ */
+.state-ids > h3 {
+  margin: 0;
+}
 /*
  * PrimeVue's hover and focus border rules (.p-inputtext:enabled:hover/:focus)
  * outrank .p-inputtext.p-invalid, so an invalid field that has focus or the

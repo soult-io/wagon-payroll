@@ -130,6 +130,10 @@ const w2FormAvailable = ref(true);
 const attentionRows = computed(() =>
   w2Rows.value.filter((r) => r.issues.some((i) => i.severity === "block" || i.severity === "warn")),
 );
+/** Spec 24 (PAY-116) PR-4: year-level holds and warnings, listed under "W-2s that need attention". */
+const yearAttention = computed(() =>
+  w2YearIssues.value.filter((i) => i.severity === "block" || i.severity === "warn"),
+);
 const anyUnreadableTotals = computed(() => w2Rows.value.some(hasUnreadableTotals));
 /** Spec 24 (PAY-116): the year has W-2 state lines (boxes 15–17). */
 const hasStateBoxes = computed(() => (filing.value?.year ?? 0) >= STATE_ID_MIN_YEAR);
@@ -891,9 +895,9 @@ onMounted(async () => {
         </Message>
 
         <DataTable v-if="worksheetW3" :value="worksheetW3Lines" data-key="line" striped-rows>
-          <Column field="line" header="Box" style="width: 4rem" />
+          <Column field="line" header="Box" style="width: 3rem" />
           <Column field="label" header="Description" />
-          <Column field="value" header="Amount" style="width: 10rem; text-align: right" />
+          <Column field="value" header="Amount" style="text-align: right; white-space: nowrap" />
         </DataTable>
         <p v-else class="muted" style="margin: 0">
           {{ anyW2Blocked ? "W-3 not calculated: W-2s on hold" : "W-3 not calculated yet." }}
@@ -902,17 +906,6 @@ onMounted(async () => {
         <p class="muted small" style="margin: 0" data-testid="w3-records-note">{{ W3_RECORDS_NOTE }}</p>
 
         <template v-if="!w2LoadError">
-          <template v-if="w2YearIssues.length">
-            <p
-              v-for="issue in w2YearIssues"
-              :key="w2IssueKey(issue)"
-              class="small"
-              style="margin: 0"
-              data-testid="w2-year-issue"
-            >
-              {{ yearIssueText(issue, filing.year) }}
-            </p>
-          </template>
           <!-- Spec 24 (PAY-116) PR-4 (I3): the state tax check. -->
           <div
             v-if="hasStateBoxes && (stateChecks.length > 0 || anyUnreadableTotals)"
@@ -936,9 +929,31 @@ onMounted(async () => {
               </ul>
             </template>
           </div>
-          <template v-if="attentionRows.length">
+          <template v-if="attentionRows.length || yearAttention.length">
             <h4 id="w2-attention" style="margin: 0">W-2s that need attention</h4>
             <ul class="stack" style="margin: 0; padding-left: 1.25rem" aria-labelledby="w2-attention">
+              <!-- Spec 24 (PAY-116) PR-4: year-level holds and warnings (all W-2s). -->
+              <li v-if="yearAttention.length">
+                <div class="row" style="gap: 0.5rem; align-items: center">
+                  <strong>All {{ filing.year }} W-2s</strong>
+                  <Tag
+                    v-if="yearAttention.some((i) => i.severity === 'block')"
+                    value="On hold"
+                    icon="pi pi-lock"
+                    severity="danger"
+                  />
+                  <Tag v-else value="Please check" icon="pi pi-exclamation-triangle" severity="warn" />
+                </div>
+                <p
+                  v-for="issue in yearAttention"
+                  :key="w2IssueKey(issue)"
+                  class="small"
+                  style="margin: 0.25rem 0 0"
+                  data-testid="w2-year-issue"
+                >
+                  {{ yearIssueText(issue, filing.year) }}
+                </p>
+              </li>
               <li v-for="row in attentionRows" :key="row.employeeId">
                 <div class="row" style="gap: 0.5rem; align-items: center">
                   <strong>{{ row.legalName }}</strong>
@@ -967,42 +982,15 @@ onMounted(async () => {
 
           <h4 style="margin: 0">Employee W-2s</h4>
           <!-- PAY-23: full column titles; the card scrolls horizontally instead
-               of abbreviating or double-wrapping headers. -->
+               of abbreviating or double-wrapping headers. Spec 24 (PAY-116)
+               PR-4: what the owner acts on first (Checks, Delivery, Documents),
+               then the boxes. -->
           <DataTable :value="w2Rows" data-key="employeeId" striped-rows class="w2-table">
             <template #empty><p class="muted">No W-2 employees were paid in {{ filing.year }}.</p></template>
             <Column header="Employee">
               <template #body="{ data }">
                 {{ data.legalName }}
                 <Tag v-if="data.corrected" value="Corrected" severity="info" style="margin-left: 0.25rem" />
-              </template>
-            </Column>
-            <Column header="Wages, tips, other compensation" style="text-align: right">
-              <template #body="{ data }">{{ money(data.box1Wages) }}</template>
-            </Column>
-            <Column header="Federal income tax withheld" style="text-align: right">
-              <template #body="{ data }">{{ money(data.box2FederalWithheld) }}</template>
-            </Column>
-            <Column header="Social Security tax" style="text-align: right">
-              <template #body="{ data }">{{ money(data.box4SsTax) }}</template>
-            </Column>
-            <Column header="Medicare tax" style="text-align: right">
-              <template #body="{ data }">{{ money(data.box6MedicareTax) }}</template>
-            </Column>
-            <!-- Spec 24 (PAY-116) PR-4: boxes 15–17, never the state number or its mask. -->
-            <Column v-if="hasStateBoxes" header="State (boxes 15–17)" style="min-width: 14rem">
-              <template #body="{ data }">
-                <span v-if="!data.stateLines.length" class="muted">No state lines</span>
-                <div v-else class="stack" style="gap: 0.25rem">
-                  <div v-for="line in data.stateLines" :key="`${line.form}:${line.row}`">
-                    <template v-if="data.formCount > 1">W-2 #{{ line.form }} · </template>{{ stateLineText(line) }}
-                    <Tag
-                      v-if="stateIdSourceTag(line.stateIdSource)"
-                      :value="stateIdSourceTag(line.stateIdSource) ?? ''"
-                      :severity="line.stateIdSource === null ? 'warn' : 'secondary'"
-                      style="margin-left: 0.25rem"
-                    />
-                  </div>
-                </div>
               </template>
             </Column>
             <!-- PAY-162: check results — codes rendered as fixed copy, never amounts. -->
@@ -1021,18 +1009,18 @@ onMounted(async () => {
                 <span v-else class="muted">No problems found</span>
               </template>
             </Column>
-            <Column header="Delivery" style="width: 8rem">
+            <!-- PAY-23: status (Delivery) and actions (Documents) stay separate
+                 columns. PAY-206: the delivery channel, then how and when the
+                 latest copy reached the employee. -->
+            <Column header="Delivery" style="min-width: 10rem">
               <template #body="{ data }">
                 <Tag
                   :value="data.consented ? 'electronic' : 'paper'"
                   :severity="data.consented ? 'success' : 'warn'"
                 />
-              </template>
-            </Column>
-            <!-- PAY-206: how and when the latest copy reached the employee. -->
-            <Column header="Given to employee" style="min-width: 10rem">
-              <template #body="{ data }">
-                <span :class="{ muted: data.furnished === 'none' }">{{ furnishedText(data) }}</span>
+                <span :class="{ muted: data.furnished === 'none' }" style="display: block; margin-top: 0.25rem">
+                  {{ furnishedText(data) }}
+                </span>
                 <Tag
                   v-if="data.correctionToFurnish && !data.consented"
                   value="Corrected copy needed"
@@ -1042,12 +1030,12 @@ onMounted(async () => {
               </template>
             </Column>
             <!-- PAY-23: actions live in their own Documents column — "Download
-                 Copy D" reads as an action, not a label. -->
-            <Column header="Documents" style="width: 22rem">
+                 Copy D" reads as an action, not a label. Buttons stack. -->
+            <Column header="Documents" style="min-width: 11rem">
               <template #body="{ data }">
                 <span v-if="data.blocked" class="muted small">On hold – see above</span>
                 <span v-else-if="!w2FormAvailable" class="muted">—</span>
-                <div v-else class="row" style="gap: 0.25rem">
+                <div v-else class="stack" style="gap: 0.25rem">
                   <a
                     :href="adminFilingsApi.w2PdfUrl(data.employeeId, filing.year)"
                     target="_blank"
@@ -1078,6 +1066,35 @@ onMounted(async () => {
                     :loading="markPaperBusy === data.employeeId"
                     @click="markGivenOnPaper(data)"
                   />
+                </div>
+              </template>
+            </Column>
+            <Column header="Wages, tips, other compensation" style="text-align: right">
+              <template #body="{ data }">{{ money(data.box1Wages) }}</template>
+            </Column>
+            <Column header="Federal income tax withheld" style="text-align: right">
+              <template #body="{ data }">{{ money(data.box2FederalWithheld) }}</template>
+            </Column>
+            <Column header="Social Security tax" style="text-align: right">
+              <template #body="{ data }">{{ money(data.box4SsTax) }}</template>
+            </Column>
+            <Column header="Medicare tax" style="text-align: right">
+              <template #body="{ data }">{{ money(data.box6MedicareTax) }}</template>
+            </Column>
+            <!-- Spec 24 (PAY-116) PR-4: boxes 15–17, never the state number or its mask. -->
+            <Column v-if="hasStateBoxes" header="State (boxes 15–17)" style="min-width: 14rem">
+              <template #body="{ data }">
+                <span v-if="!data.stateLines.length" class="muted">No state lines</span>
+                <div v-else class="stack" style="gap: 0.25rem">
+                  <div v-for="line in data.stateLines" :key="`${line.form}:${line.row}`">
+                    <template v-if="data.formCount > 1">W-2 #{{ line.form }} · </template>{{ stateLineText(line) }}
+                    <Tag
+                      v-if="stateIdSourceTag(line.stateIdSource)"
+                      :value="stateIdSourceTag(line.stateIdSource) ?? ''"
+                      :severity="line.stateIdSource === null ? 'warn' : 'secondary'"
+                      style="margin-left: 0.25rem"
+                    />
+                  </div>
                 </div>
               </template>
             </Column>
@@ -1437,6 +1454,10 @@ onMounted(async () => {
 /* Spec 24 (PAY-116) PR-4: amounts wrap as a unit at phone width. */
 .state-check li {
   overflow-wrap: anywhere;
+}
+/* Spec 24 (PAY-116) PR-4: stacked document buttons keep each label on one line. */
+.w2-table :deep(.p-button-label) {
+  white-space: nowrap;
 }
 /* PAY-23: full headers never wrap — the card scrolls horizontally instead. */
 .w2-table :deep(th) {
