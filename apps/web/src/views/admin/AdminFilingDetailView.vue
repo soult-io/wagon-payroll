@@ -938,7 +938,7 @@ onMounted(async () => {
           <Column field="value" header="Amount" style="text-align: right; white-space: nowrap" />
         </DataTable>
         <p v-else class="muted" style="margin: 0">
-          {{ anyW2Blocked ? "W-3 not calculated: W-2s on hold" : "W-3 not calculated yet." }}
+          {{ rowHold ? "W-3 not calculated: W-2s on hold" : "W-3 not calculated yet." }}
         </p>
         <!-- Spec 24 (PAY-116) PR-4 (D-PL1): the W-3 is a records copy. -->
         <p class="muted small" style="margin: 0" data-testid="w3-records-note">{{ W3_RECORDS_NOTE }}</p>
