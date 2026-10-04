@@ -36,8 +36,10 @@ import { effectiveFutaRate } from "@payroll/engine";
 import {
   type FormAddress,
   hasTemplate,
+  stateIdFitsForm,
   W2FormAmountError,
   W2FormLinesError,
+  W2StateIdTooLongError,
   type W2Input,
   type W2LocalLineInput,
   type W2StateLineInput,
@@ -48,15 +50,18 @@ import { formatCents } from "@payroll/shared";
 import type { Db } from "../db.js";
 import { stateWithholdingByYear } from "../deposits/service.js";
 import {
+  EinUnreadableError,
+  einReadable,
+  probeStateIds,
   resolveStateIds,
   type StateIdSource,
   StateIdUnreadableError,
-  stateIdAvailability,
+  stateIdFacts,
 } from "../company/state-ids.js";
 import type { AppConfig } from "../config.js";
 import { templateContext } from "../notify/outbox.js";
 import { w2EmployeeAddressAt } from "../change-requests/address-history.js";
-import { decryptField } from "../crypto/field-encryption.js";
+import { decryptField, fieldKey } from "../crypto/field-encryption.js";
 import { lockEmployee } from "../payroll/locks.js";
 import { furnishCurrent } from "./w2-furnish-core.js";
 import {
@@ -198,6 +203,15 @@ export function annualBlockBody(err: unknown): AnnualBlockBody | null {
     err instanceof W2FormLinesError
   ) {
     return { error: "w2_not_ready", issues: ["internal_mismatch"] };
+  }
+  // Spec 24 (PAY-116) PR-3 R1/R4/R5: box 15 or the EIN cannot be printed.
+  if (err instanceof StateIdUnreadableError) {
+    return { error: "w2_not_ready", issues: ["state_id_unreadable"] };
+  }
+  if (err instanceof EinUnreadableError)
+    return { error: "w2_not_ready", issues: ["ein_unreadable"] };
+  if (err instanceof W2StateIdTooLongError) {
+    return { error: "w2_not_ready", issues: ["state_id_too_long"] };
   }
   if (err instanceof FormNotAvailableError) return { error: "form_not_available", year: err.year };
   return null;
@@ -438,6 +452,11 @@ const WITHHELD_BOXES: W2BoxesWithheld = {
 /** One W-2 state line (boxes 15–17) with where its box 15 ID comes from (never the ID). */
 export interface W2FigureLine extends W2StateLine {
   stateIdSource: StateIdSource | null;
+  /**
+   * PR-3 R3: SHA-256 of the entered ID's stored ciphertext (furnishing hash
+   * only; never in an API body), null for the EIN default or no ID.
+   */
+  stateIdDigest: string | null;
 }
 
 /**
@@ -535,6 +554,8 @@ interface StatePlanContext {
   runs: Map<number, W2StateRun[]>;
   moves: Map<number, { effectiveFrom: string }[]>;
   stateIds: Record<string, StateIdSource | null>;
+  /** PR-3 R3: per state, the digest of the entered ID's ciphertext (or null). */
+  stateIdDigests: Record<string, string | null>;
 }
 
 /** Load the planner inputs of a year ≥ STATE_BOXES_FROM_YEAR; null before it. */
@@ -548,11 +569,19 @@ async function statePlanContext(
   for (const list of runs.values()) {
     for (const r of list) if (r.workState !== null) states.add(r.workState);
   }
+  const facts = await stateIdFacts(db, year, [...states]);
+  const stateIds: Record<string, StateIdSource | null> = {};
+  const stateIdDigests: Record<string, string | null> = {};
+  for (const [state, fact] of Object.entries(facts)) {
+    stateIds[state] = fact.source;
+    stateIdDigests[state] = fact.digest;
+  }
   return {
     year,
     runs,
     moves: await loadWorkStateMoves(db, [...runs.keys()]),
-    stateIds: await stateIdAvailability(db, year, [...states]),
+    stateIds,
+    stateIdDigests,
   };
 }
 
@@ -567,6 +596,15 @@ function planFor(ctx: StatePlanContext, employeeId: number, box1Cents: number): 
     attributions: {},
     moves: ctx.moves.get(employeeId) ?? [],
   });
+}
+
+/** A planner line with its box 15 source and R3 digest. */
+function figureLine(ctx: StatePlanContext, line: W2StateLine): W2FigureLine {
+  return {
+    ...line,
+    stateIdSource: ctx.stateIds[line.state] ?? null,
+    stateIdDigest: ctx.stateIdDigests[line.state] ?? null,
+  };
 }
 
 /**
@@ -591,7 +629,7 @@ function withStateLines(
   return {
     ...boxed,
     issues: [...boxed.issues, ...plan.issues],
-    stateLines: plan.lines.map((l) => ({ ...l, stateIdSource: ctx.stateIds[l.state] ?? null })),
+    stateLines: plan.lines.map((l) => figureLine(ctx, l)),
     localLines: plan.locals,
     formCount: plan.formCount,
   };
@@ -620,7 +658,7 @@ async function stateLinesIn(db: ReadDb, year: number): Promise<W2FigureLine[][]>
     }
     const plan = planFor(ctx, employeeId, box1Cents);
     if (plan.issues.some((i) => i.code === "internal_mismatch")) continue;
-    out.push(plan.lines.map((l) => ({ ...l, stateIdSource: ctx.stateIds[l.state] ?? null })));
+    out.push(plan.lines.map((l) => figureLine(ctx, l)));
   }
   return out;
 }
@@ -847,7 +885,48 @@ export async function w2FiguresWithYearIssues(
 ): Promise<{ figures: W2Figures[]; yearIssues: W2Issue[] }> {
   return inW2Snapshot(db, async (r) => {
     const figures = await w2FiguresForYear(r, year);
-    return { figures, yearIssues: await w2YearIssues(r, year, figures) };
+    const yearIssues = await w2YearIssues(r, year, figures);
+    return { figures: await withRenderChecks(r, year, figures), yearIssues };
+  });
+}
+
+/**
+ * Spec 24 (PAY-116) PR-3 R1/R4/R5: hold every W-2 whose PDF could not print
+ * — an EIN that does not decrypt (ein_unreadable, any year) and, from
+ * STATE_BOXES_FROM_YEAR, a box 15 ID that does not decrypt
+ * (state_id_unreadable) or does not fit the form (state_id_too_long). The
+ * values are probed and discarded (company/state-ids.ts); the issues carry
+ * code, severity and state only. Every readiness and furnishing path reads
+ * figures through here (employeeW2Figures, w2FiguresWithYearIssues,
+ * isMyW2Ready), so no furnishing row is written for such a W-2.
+ */
+async function withRenderChecks(
+  db: ReadDb,
+  year: number,
+  figures: W2Figures[],
+): Promise<W2Figures[]> {
+  if (figures.length === 0) return figures;
+  const key = fieldKey();
+  const [row] = await db.select({ ein: company.ein }).from(company).limit(1);
+  const einOk = einReadable(row?.ein, key);
+  const states = [...new Set(figures.flatMap((f) => f.stateLines.map((l) => l.state)))];
+  // A year without a bundled form prints nothing (form_not_available): only
+  // readability is checked then.
+  const fits = (id: string) => !hasTemplate(year, "fw2") || stateIdFitsForm(year, id);
+  const problems =
+    year >= STATE_BOXES_FROM_YEAR
+      ? await probeStateIds(db, key, year, states, fits)
+      : new Map<string, never>();
+  return figures.map((f) => {
+    const extra: W2Issue[] = [];
+    if (!einOk) extra.push({ code: "ein_unreadable", severity: "block" });
+    for (const state of new Set(f.stateLines.map((l) => l.state))) {
+      const problem = problems.get(state);
+      // An IL/NY default whose EIN does not decrypt: the EIN issue covers it.
+      if (problem === undefined || problem === "ein_unreadable") continue;
+      extra.push({ code: problem, severity: "block", state });
+    }
+    return extra.length === 0 ? f : { ...f, issues: [...f.issues, ...extra] };
   });
 }
 
@@ -1037,7 +1116,20 @@ function formatSsn(plain: string): string {
   return /^(\d{3})(\d{2})(\d{4})$/.exec(plain)?.slice(1).join("-") ?? plain;
 }
 
-/** Company header for official IRS forms: legal name, decrypted EIN, address. */
+/** Decrypt the company EIN; EinUnreadableError (no value, no cause) on failure (R4). */
+function decryptEin(stored: string, key: string): string {
+  try {
+    return decryptField(stored, key);
+  } catch {
+    throw new EinUnreadableError();
+  }
+}
+
+/**
+ * Company header for official IRS forms: legal name, decrypted EIN, address.
+ * PR-3 R4: an EIN that does not decrypt throws EinUnreadableError (W-2/W-3
+ * paths: 409 ein_unreadable).
+ */
 export async function employerBlock(
   db: Pick<Db, "select">,
   config: AppConfig,
@@ -1046,28 +1138,9 @@ export async function employerBlock(
   const row = rows[0];
   return {
     legalName: row?.legalName ?? "Unknown",
-    ein: row?.ein ? decryptField(row.ein, config.encryptionKey) : null,
+    ein: row?.ein ? decryptEin(row.ein, config.encryptionKey) : null,
     address: asAddress(row?.address),
   };
-}
-
-/**
- * Spec 24 (PAY-116) PR-3: decrypt the box 15 IDs of `states` for a PDF of
- * `year` — render time only. A value that does not decrypt (AES-GCM) holds
- * the form as a block issue (state_id_unreadable), never a 500; no value
- * reaches the error.
- */
-async function box15Ids(
-  deps: { db: Pick<Db, "select">; config: AppConfig },
-  year: number,
-  states: readonly string[],
-): Promise<Map<string, string | null>> {
-  try {
-    return await resolveStateIds(deps.db, deps.config.encryptionKey, year, states);
-  } catch (err) {
-    if (err instanceof StateIdUnreadableError) throw new W2BlockedError(["state_id_unreadable"]);
-    throw err;
-  }
 }
 
 /** The W-2's state and local lines as the PDF prints them (IDs decrypted). */
@@ -1076,8 +1149,11 @@ async function pdfLines(
   year: number,
   figures: W2StateFields,
 ): Promise<{ stateLines: W2StateLineInput[]; localLines: W2LocalLineInput[] }> {
-  const ids = await box15Ids(
-    deps,
+  // Render time only. A value that does not decrypt throws
+  // StateIdUnreadableError / EinUnreadableError (409, never a 500).
+  const ids = await resolveStateIds(
+    deps.db,
+    deps.config.encryptionKey,
     year,
     figures.stateLines.map((l) => l.state),
   );
@@ -1178,7 +1254,7 @@ export async function employeeW2Figures(
   if (!figures) {
     throw new FilingServiceError("not_found", `no W-2 for employee ${employeeId} in ${year}`);
   }
-  return figures;
+  return (await withRenderChecks(db, year, [figures]))[0] as W2Figures;
 }
 
 /** PAY-162: the figures of a W-2 that may be issued, or W2BlockedError. */
@@ -1213,7 +1289,11 @@ async function w3StateInput(
       ...local,
     };
   }
-  const id = state === "X" ? null : ((await box15Ids(deps, year, [state])).get(state) ?? null);
+  const id =
+    state === "X"
+      ? null
+      : ((await resolveStateIds(deps.db, deps.config.encryptionKey, year, [state])).get(state) ??
+        null);
   return { ...boxes, box15StateId: id, ...local };
 }
 
@@ -1478,10 +1558,14 @@ export async function yearW2BlockCodes(
 export async function isMyW2Ready(db: Db, employeeId: number, year: number): Promise<boolean> {
   if (!hasTemplate(year, "fw2")) return false;
   try {
-    const figures = (await w2FiguresForYear(db, year)).find((f) => f.employeeId === employeeId);
-    return figures !== undefined && figures.box1Cents !== null && !isW2Blocked(figures);
+    const figures = await employeeW2Figures(db, employeeId, year);
+    return figures.box1Cents !== null && !isW2Blocked(figures);
   } catch (err) {
-    if (err instanceof MissingTaxConfigError || err instanceof AnnualFiguresDefectError) {
+    if (
+      err instanceof MissingTaxConfigError ||
+      err instanceof AnnualFiguresDefectError ||
+      (err instanceof FilingServiceError && err.code === "not_found")
+    ) {
       return false;
     }
     throw err;

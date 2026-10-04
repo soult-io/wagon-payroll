@@ -66,9 +66,12 @@ export type W2IssueCode =
   | "exempt_reciprocity"
   | "ny_all_wages"
   | "period_spans_move"
-  // Spec 24 (PAY-116) PR-3: the box 15 state ID could not be decrypted at
-  // render time (block; raised by the PDF paths only, never listed).
-  | "state_id_unreadable";
+  // Spec 24 (PAY-116) PR-3 (blocks): the box 15 state ID does not decrypt
+  // (state), the company EIN does not decrypt, the box 15 state ID does not
+  // fit the form even at 6 pt (state).
+  | "state_id_unreadable"
+  | "ein_unreadable"
+  | "state_id_too_long";
 
 /**
  * A W-2 check result: code and severity, plus (Spec 24) the state line it

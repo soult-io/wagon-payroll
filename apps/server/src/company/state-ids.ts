@@ -19,6 +19,7 @@
  *   year the change would reach. Audit rows carry `{ idMasked }` only.
  */
 
+import { createHash } from "node:crypto";
 import { and, asc, eq, gt, lte, desc } from "drizzle-orm";
 import { auditEvents, company, companyStateIds, taxFilings } from "@payroll/db";
 import { EIN_DEFAULT_STATES } from "@payroll/shared";
@@ -47,8 +48,8 @@ export function maskStateId(stored: string, key: string): string {
 }
 
 /**
- * Spec 24 (PAY-116) PR-3: a stored box 15 ID (or the EIN behind the IL/NY
- * default) failed to decrypt. Fixed message; never carries the value.
+ * Spec 24 (PAY-116) PR-3: an entered box 15 ID failed to decrypt (AES-GCM).
+ * Fixed message; never carries the value.
  */
 export class StateIdUnreadableError extends Error {
   constructor() {
@@ -57,12 +58,14 @@ export class StateIdUnreadableError extends Error {
   }
 }
 
-/** decryptField, or StateIdUnreadableError (no value, no cause) on failure. */
-function decryptStateValue(stored: string, key: string): string {
-  try {
-    return decryptField(stored, key);
-  } catch {
-    throw new StateIdUnreadableError();
+/**
+ * Spec 24 (PAY-116) PR-3 R4: the company EIN failed to decrypt. Fixed
+ * message; never carries the value.
+ */
+export class EinUnreadableError extends Error {
+  constructor() {
+    super("EIN could not be decrypted");
+    this.name = "EinUnreadableError";
   }
 }
 
@@ -109,8 +112,23 @@ export function stateIdSourceFor(
 }
 
 /**
+ * Decrypt the value box 15 prints from: the entered ID, or the EIN digits
+ * for the IL/NY default. A failure throws the source's fixed-message error
+ * (StateIdUnreadableError / EinUnreadableError), without value or cause.
+ */
+function decryptBox15(stored: string, source: StateIdSource, key: string): string {
+  try {
+    const plain = decryptField(stored, key);
+    return source === "ein_default" ? einDigits(plain) : plain;
+  } catch {
+    throw source === "entered" ? new StateIdUnreadableError() : new EinUnreadableError();
+  }
+}
+
+/**
  * The box 15 ID of `stateCode` for a W-2 of `taxYear` (decrypted).
- * StateIdUnreadableError when the stored value does not decrypt.
+ * StateIdUnreadableError / EinUnreadableError when the stored value does not
+ * decrypt.
  */
 export async function resolveStateId(
   db: Pick<Db, "select">,
@@ -142,17 +160,71 @@ export async function resolveStateId(
     row ? [row.fromTaxYear] : [],
     ein !== null,
   );
-  if (source === "entered" && row) return { source, value: decryptStateValue(row.stateId, key) };
+  if (source === "entered" && row) return { source, value: decryptBox15(row.stateId, source, key) };
   if (source === "ein_default" && ein !== null) {
-    return { source, value: einDigits(decryptStateValue(ein, key)) };
+    return { source, value: decryptBox15(ein, source, key) };
   }
   return { source: null, value: null };
+}
+
+/** Where one state's box 15 comes from for a tax year, and the stored (encrypted) value. */
+interface StoredBox15 {
+  source: StateIdSource | null;
+  /** The entered row's ciphertext, the EIN ciphertext (ein_default), or null. */
+  stored: string | null;
+}
+
+/**
+ * One company read and one state-ID query: per state, the box 15 source for
+ * a W-2 of `taxYear` (the row with the greatest from_tax_year ≤ the year;
+ * else the IL/NY EIN default) and the stored value. Nothing is decrypted.
+ */
+async function storedBox15(
+  db: Pick<Db, "select">,
+  taxYear: number,
+  states: readonly string[],
+): Promise<Map<string, StoredBox15>> {
+  const out = new Map<string, StoredBox15>();
+  if (states.length === 0) return out;
+  const [owner] = await db.select({ id: company.id, ein: company.ein }).from(company).limit(1);
+  const rows = owner
+    ? await db
+        .select({
+          stateCode: companyStateIds.stateCode,
+          fromTaxYear: companyStateIds.fromTaxYear,
+          stateId: companyStateIds.stateId,
+        })
+        .from(companyStateIds)
+        .where(eq(companyStateIds.companyId, owner.id))
+    : [];
+  const ein = storedEin(owner?.ein);
+  for (const state of new Set(states)) {
+    const own = rows.filter((r) => r.stateCode === state);
+    const source = stateIdSourceFor(
+      state,
+      taxYear,
+      own.map((r) => r.fromTaxYear),
+      ein !== null,
+    );
+    let stored: string | null = null;
+    if (source === "entered") {
+      const current = own
+        .filter((r) => r.fromTaxYear <= taxYear)
+        .reduce((a, b) => (b.fromTaxYear > a.fromTaxYear ? b : a));
+      stored = current.stateId;
+    } else if (source === "ein_default") {
+      stored = ein;
+    }
+    out.set(state, { source, stored });
+  }
+  return out;
 }
 
 /**
  * Spec 24 (PAY-116) PR-3: the decrypted box 15 ID of each state for a W-2
  * (or W-3) of `taxYear`, null when the state has none — render time only,
- * never stored or logged. StateIdUnreadableError on a decrypt failure.
+ * never stored or logged. StateIdUnreadableError / EinUnreadableError on a
+ * decrypt failure.
  */
 export async function resolveStateIds(
   db: Pick<Db, "select">,
@@ -161,13 +233,85 @@ export async function resolveStateIds(
   states: readonly string[],
 ): Promise<Map<string, string | null>> {
   const out = new Map<string, string | null>();
-  if (states.length === 0) return out;
-  const [owner] = await db.select({ id: company.id }).from(company).limit(1);
-  for (const stateCode of new Set(states)) {
-    const resolved = owner
-      ? await resolveStateId(db, key, { companyId: owner.id, stateCode, taxYear })
-      : { value: null };
-    out.set(stateCode, resolved.value);
+  for (const [state, { source, stored }] of await storedBox15(db, taxYear, states)) {
+    out.set(state, source !== null && stored !== null ? decryptBox15(stored, source, key) : null);
+  }
+  return out;
+}
+
+/** What keeps a state's box 15 from printing (PR-3 R1, R4, R5). */
+export type Box15Problem = "state_id_unreadable" | "ein_unreadable" | "state_id_too_long";
+
+/**
+ * Spec 24 (PAY-116) PR-3 R1/R5: readiness probe. Decrypts each state's box
+ * 15 value, asks `fits` whether the form can print it, and DISCARDS it: the
+ * value is never stored, returned, logged or hashed. This is the one agreed
+ * exception to "decrypted at render time only" (security condition on
+ * PAY-116, 2026-09-28): the W-2 must be held (block) before any furnishing
+ * when the PDF could not print box 15. Returns the problem states only.
+ */
+export async function probeStateIds(
+  db: Pick<Db, "select">,
+  key: string,
+  taxYear: number,
+  states: readonly string[],
+  fits: (plain: string) => boolean,
+): Promise<Map<string, Box15Problem>> {
+  const out = new Map<string, Box15Problem>();
+  for (const [state, { source, stored }] of await storedBox15(db, taxYear, states)) {
+    if (source === null || stored === null) continue;
+    try {
+      if (!fits(decryptBox15(stored, source, key))) out.set(state, "state_id_too_long");
+    } catch (err) {
+      if (err instanceof StateIdUnreadableError) out.set(state, "state_id_unreadable");
+      else if (err instanceof EinUnreadableError) out.set(state, "ein_unreadable");
+      else throw err;
+    }
+  }
+  return out;
+}
+
+/** True when the stored EIN is absent or decrypts; the value is discarded (R4 probe). */
+export function einReadable(einStored: string | null | undefined, key: string): boolean {
+  const ein = storedEin(einStored);
+  if (ein === null) return true;
+  try {
+    decryptField(ein, key);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Box 15 identity of one state for the furnishing hash (R3). */
+export interface StateIdFact {
+  source: StateIdSource | null;
+  /**
+   * SHA-256 hex of the entered row's stored ciphertext ("enc:v1:…"), null
+   * for the EIN default or no ID. The ciphertext, not the value: the hash
+   * must change when box 15 changes without any decrypt (the value is
+   * decrypted at render time only). A rewrite of the same ID (new IV) also
+   * changes it — a spurious CORRECTED, accepted.
+   */
+  digest: string | null;
+}
+
+/**
+ * Spec 24 (PAY-116): the box 15 source (and R3 digest) of each state for a
+ * W-2 of `taxYear` — never decrypted.
+ */
+export async function stateIdFacts(
+  db: Pick<Db, "select">,
+  taxYear: number,
+  states: readonly string[],
+): Promise<Record<string, StateIdFact>> {
+  const out: Record<string, StateIdFact> = {};
+  for (const [state, { source, stored }] of await storedBox15(db, taxYear, states)) {
+    const digest =
+      source === "entered" && stored !== null
+        ? createHash("sha256").update(stored, "utf8").digest("hex")
+        : null;
+    out[state] = { source, digest };
   }
   return out;
 }
@@ -182,18 +326,7 @@ export async function stateIdAvailability(
   states: readonly string[],
 ): Promise<Record<string, StateIdSource | null>> {
   const out: Record<string, StateIdSource | null> = {};
-  if (states.length === 0) return out;
-  const [owner] = await db.select({ id: company.id, ein: company.ein }).from(company).limit(1);
-  const rows = owner
-    ? await db
-        .select({ stateCode: companyStateIds.stateCode, fromTaxYear: companyStateIds.fromTaxYear })
-        .from(companyStateIds)
-        .where(eq(companyStateIds.companyId, owner.id))
-    : [];
-  for (const state of states) {
-    const years = rows.filter((r) => r.stateCode === state).map((r) => r.fromTaxYear);
-    out[state] = stateIdSourceFor(state, taxYear, years, storedEin(owner?.ein) !== null);
-  }
+  for (const [state, { source }] of await storedBox15(db, taxYear, states)) out[state] = source;
   return out;
 }
 

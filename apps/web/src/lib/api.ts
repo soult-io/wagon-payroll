@@ -1369,7 +1369,11 @@ export type W2IssueCode =
   | "local_tax_ny"
   | "exempt_reciprocity"
   | "ny_all_wages"
-  | "period_spans_move";
+  | "period_spans_move"
+  // Spec 24 (PAY-116) PR-3: box 15 / EIN cannot be printed (blocks).
+  | "state_id_unreadable"
+  | "ein_unreadable"
+  | "state_id_too_long";
 
 export interface W2Issue {
   code: W2IssueCode;
