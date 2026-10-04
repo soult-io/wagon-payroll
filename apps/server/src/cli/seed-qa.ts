@@ -28,9 +28,18 @@ try {
     `  users: ${summary.users.admin.email} (${summary.users.admin.created ? "created" : "already present"}), ` +
       `${summary.users.employee.email} (${summary.users.employee.created ? "created" : "already present"})`,
   );
+  const { payroll } = summary;
+  const year = new Date().toISOString().slice(0, 4);
+  const draft =
+    payroll.draftPeriod === null
+      ? `no current-period draft: ${year} tax tables not installed`
+      : `current-period draft ${payroll.draftPeriod} ${payroll.draftCreated ? "created" : "already present"}`;
   console.log(
-    `  payroll: ${summary.payroll.issued} run(s) issued, ${summary.payroll.existing} already present, ` +
-      `current-period draft ${summary.payroll.draftCreated ? "created" : "already present"}`,
+    `  payroll: ${payroll.issued} run(s) issued, ${payroll.existing} already present, ${draft}`,
+  );
+  console.log(
+    `  tax years: latest covered ${payroll.latestCoveredYear}, ` +
+      `history through ${payroll.historyThrough ?? "none"}`,
   );
   console.log(
     `  change request thread: ${summary.changeRequestCreated ? "created" : "already present"}`,

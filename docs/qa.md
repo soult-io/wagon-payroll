@@ -92,14 +92,27 @@ appears on the QA W-2/W-3 forms, and Illinois and New York use it as their
 W-2 box 15 state number (the EIN default), so Ada's W-2 is not held for a
 missing state number.
 
-**W-2 employees** (payroll history: previous calendar year in full + current
-year through last month, issued through the real draft→approve→issue pipeline
-— figures are engine-exact to the cent):
+**W-2 employees** (payroll history issued through the real
+draft→approve→issue pipeline — figures are engine-exact to the cent). The
+history depends on which tax years have their tables installed. The seed
+finds the latest year, on or before today's year, that has the federal tables
+and a state table for every state a paid W-2 employee works in:
+
+- **Current year covered** (the normal case): the previous calendar year in
+  full + the current year through last month, plus one current-period draft
+  run awaiting approval (Ada's).
+- **Current year not covered** (for example in January, before the new
+  year's tables are added): the latest covered year and the year before it,
+  both in full, and **no** current-period draft. Nothing is issued for a year
+  without tables, and the seed never writes tax tables of its own.
+
+The seed prints the latest covered year, the last issued month and the draft
+period (or "no current-period draft: <year> tax tables not installed").
 
 | Persona | State | Persona coverage |
 | --- | --- | --- |
-| Ada Testworth | IL | W-4 exempt (zero federal withholding); has a state work-state election (flat-rate IL income tax); the ONE current-period draft run awaiting approval is hers |
-| Bob Fakeley | TX | mid-year salary change — two compensation rows ($3,800 → $4,200 effective July 1 of the current year) |
+| Ada Testworth | IL | W-4 exempt (zero federal withholding); has a state work-state election (flat-rate IL income tax); the ONE current-period draft run awaiting approval is hers (only while the current year is covered) |
+| Bob Fakeley | TX | mid-year salary change — $3,800 from 2024-11-01, then a $400 raise every July 1 from 2026 through the latest covered year ($4,200 from 2026-07-01); only the newest row is open-ended |
 | Carol Mockington | WA | pending address change request with a 3-comment thread; carries the `qa-employee` login |
 
 **Contractors (1099):**

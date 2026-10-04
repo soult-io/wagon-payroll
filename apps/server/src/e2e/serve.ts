@@ -144,10 +144,22 @@ const qaSeed = await seedQaDataset({ db, auth, config });
 // `reuseExistingServer` is on outside CI: a boot left over from last month
 // silently invalidates the "previous calendar month" assertions, and this line
 // is what makes that visible in the Playwright output.
+//
+// PAY-81: the history is anchored on the latest tax year whose tables are
+// installed (latestCoveredYear); a year without tables gets no runs and no
+// current-period draft. Both are logged so a shifted-clock run is readable.
 console.log(
   `e2e:serve seeded QA dataset for ${new Date().toISOString().slice(0, 10)}: ` +
-    `${qaSeed.payroll.issued + qaSeed.payroll.existing} issued runs`,
+    `${qaSeed.payroll.issued + qaSeed.payroll.existing} issued runs, ` +
+    `latestCoveredYear ${qaSeed.payroll.latestCoveredYear}, ` +
+    `draft period ${qaSeed.payroll.draftPeriod ?? "none"}`,
 );
+/**
+ * The W-2/W-3 year this boot opens early (below): the latest covered year,
+ * i.e. the current year while its tables are installed, otherwise the last
+ * year with history. Never a year without runs.
+ */
+const w2Year = qaSeed.payroll.latestCoveredYear;
 
 /** Decrypted base32 TOTP secret for a user (same path as test/flow-helpers). */
 async function decryptedTotpSecret(userId: string): Promise<string> {
@@ -302,6 +314,14 @@ writeFileSync(
       admin: { email: ADMIN.email, password: ADMIN_PASSWORD, totpSecret: adminTotpSecret },
       employee: { email: EMPLOYEE.email, inviteUrl: empInvite.setupLink },
       run: { publicId: runPublicId },
+      // PAY-81: from the QA seed's own summary (years and months only), so
+      // specs never derive these from a clock.
+      qa: {
+        latestCoveredYear: qaSeed.payroll.latestCoveredYear,
+        historyThrough: qaSeed.payroll.historyThrough,
+        draftPeriod: qaSeed.payroll.draftPeriod,
+        w2Year,
+      },
     },
     null,
     2,
@@ -333,12 +353,14 @@ await syncFilings({ db, config });
 await syncAnnualFilings({ db, config });
 
 // Spec 24 (PAY-116) PR-4 e2e fixture (ephemeral boot only, never the QA
-// seed): a W-2/W-3 row for the CURRENT calendar year, so the browser can
-// see the state lines, the state tax check and the filing checklist before
-// the year closes (the scheduler creates the row only from January 1 of the
-// next year). Status not_started; the worksheet comes from the same refresh
-// the daily tick runs. PDFs still answer 409 until the year closes.
-await upsertAnnualFiling(db, "w2_w3", new Date().getFullYear(), {
+// seed): a W-2/W-3 row for `w2Year`, so the browser can see the state lines,
+// the state tax check and the filing checklist before the year closes (the
+// scheduler creates the row only from January 1 of the next year). Status
+// not_started; the worksheet comes from the same refresh the daily tick runs.
+// PDFs still answer 409 until the year closes. When the current year's tables
+// are missing (PAY-81), w2Year is the closed year L: syncAnnualFilings already
+// made that row and upsertAnnualFiling never downgrades its status.
+await upsertAnnualFiling(db, "w2_w3", w2Year, {
   status: "not_started",
   createdBy: "e2e",
 });

@@ -5,17 +5,22 @@
  *
  * Persona inventory (see docs/qa.md for the full table):
  * - 3 W-2 employees — varied work states; Ada (W-4 exempt), Bob (mid-year
- *   salary change, two compensation rows), Carol (pending address change
- *   request with a comment thread + the QA employee login).
+ *   salary change: a raise every July 1 from 2026 through the latest covered
+ *   tax year), Carol (pending address change request with a comment thread +
+ *   the QA employee login).
  * - 2 domestic 1099 contractors — Dave (YTD payments above the NEC threshold,
  *   form required) and Erin (below threshold, backup withholding on).
  * - 2 international contractors — Frida (clean W-8BEN) and Gustav (us_days_log
  *   → 1042-S review flag, W-8 expiring inside the 30-day renewal window).
- * - Issued payroll history: the previous calendar year in full + the current
- *   year through last month ("2 years of history"), computed through the REAL
- *   run pipeline (generateDraft → approve → issue) so entries and snapshots
- *   are exactly what the engine produces, to the cent. One draft run for the
- *   current period is left awaiting approval (Ada).
+ * - Issued payroll history anchored on L, the latest tax year whose tables
+ *   are installed (payroll/tax-coverage.ts): when L is the current year, the
+ *   previous calendar year in full + the current year through last month
+ *   ("2 years of history") and one draft run for the current period left
+ *   awaiting approval (Ada). When the current year's tables are missing,
+ *   (L−1) and L in full and no current-period draft (PAY-81). Computed
+ *   through the REAL run pipeline (generateDraft → approve → issue) so entries
+ *   and snapshots are exactly what the engine produces, to the cent. The seed
+ *   never writes tax tables of its own.
  * - Recurring invoice templates incl. one approved-but-unpaid generated
  *   invoice for the previous period (payment-due reminder fodder).
  * - QA logins with fixed documented credentials + fixed TOTP secrets (QA-only,
@@ -38,7 +43,6 @@ import {
   notificationSettings,
   payrollRuns,
   seedDatabase,
-  taxConfig,
   w4Elections,
   employeeResidences,
   employeeWorkStates,
@@ -55,6 +59,7 @@ import { generateDraft, monthlyPeriod, transitionRun, type Period } from "../pay
 import { syncDeposits } from "../deposits/service.js";
 import { syncAnnualFilings } from "../filings/annual.js";
 import { syncFilings } from "../filings/service.js";
+import { isCovered, latestCoveredYear, taxTableCoverage } from "../payroll/tax-coverage.js";
 
 // ---------------------------------------------------------------------------
 // Fixed QA credentials (FAKE — QA-only, documented in docs/qa.md)
@@ -120,17 +125,23 @@ interface YearMonth {
 }
 
 /**
- * Issued-history months: the previous calendar year in full plus the current
- * year through last month (spec 14 §2 "2 years of issued payroll history" —
- * spanning two calendar years, which is also exactly the span the seeded tax
- * configs cover).
+ * Issued-history months (spec 14 §2 "2 years of issued payroll history"),
+ * anchored on `latest` = L, the latest covered tax year (defaults to today's
+ * year):
+ * - L = today's year: the previous calendar year in full plus the current
+ *   year through last month.
+ * - L < today's year (the current year's tables are not installed): (L−1)
+ *   and L in full. Nothing from an uncovered year.
+ * The caller drops L−1 when that year is not covered either.
  */
-export function historyMonths(today: string): YearMonth[] {
+export function historyMonths(today: string, latest?: number): YearMonth[] {
   const year = Number(today.slice(0, 4));
   const month = Number(today.slice(5, 7));
+  const L = latest ?? year;
+  const lastMonthOfL = L === year ? month - 1 : 12;
   const months: YearMonth[] = [];
-  for (let m = 1; m <= 12; m++) months.push({ year: year - 1, month: m });
-  for (let m = 1; m < month; m++) months.push({ year, month: m });
+  for (let m = 1; m <= 12; m++) months.push({ year: L - 1, month: m });
+  for (let m = 1; m <= lastMonthOfL; m++) months.push({ year: L, month: m });
   return months;
 }
 
@@ -448,9 +459,7 @@ async function seedW2People(
   deps: QaDeps,
   companyId: number,
   employeeUserId: string,
-  today: string,
 ): Promise<W2Ids> {
-  const year = Number(today.slice(0, 4));
   const ids = {} as W2Ids;
   for (const persona of W2_PERSONAS) {
     const withLogin = persona.key === "carol" ? { ...persona, userId: employeeUserId } : persona;
@@ -460,43 +469,80 @@ async function seedW2People(
   await ensureCompensation(deps.db, ids.ada, [
     { periodAmount: "4000.00", effectiveFrom: "2024-11-01", effectiveTo: null },
   ]);
-  // Bob: mid-year salary change — two compensation rows (spec 14 §2).
-  await ensureCompensation(deps.db, ids.bob, [
-    { periodAmount: "3800.00", effectiveFrom: "2024-11-01", effectiveTo: `${year}-07-01` },
-    { periodAmount: "4200.00", effectiveFrom: `${year}-07-01`, effectiveTo: null },
-  ]);
+  // Bob's compensation is the raise ladder (seedBobLadder), written once the
+  // latest covered tax year is known.
   await ensureCompensation(deps.db, ids.carol, [
     { periodAmount: "5000.00", effectiveFrom: "2024-11-01", effectiveTo: null },
   ]);
-
-  // Ada: W-4 exempt — an election per history year, renewed annually. The
-  // renewal deadline is Feb 16 of the following year: a Feb 15 payment is
-  // still exempt, a Feb 16 one is not (Spec 26 (PAY-173) D3 step 3; resolveW4
-  // judges the lapse by the pay date).
-  const w4Rows = (federalExempt: boolean) => [
-    {
-      taxYear: year - 1,
-      federalExempt,
-      effectiveFrom: `${year - 1}-01-01`,
-      filedDate: `${year - 2}-12-15`,
-      renewalDeadline: federalExempt ? `${year}-02-16` : null,
-    },
-    {
-      taxYear: year,
-      federalExempt,
-      effectiveFrom: `${year}-01-01`,
-      filedDate: `${year - 1}-12-15`,
-      renewalDeadline: federalExempt ? `${year + 1}-02-16` : null,
-    },
-  ];
-  await ensureW4(deps.db, ids.ada, w4Rows(true));
-  await ensureW4(deps.db, ids.bob, w4Rows(false));
-  await ensureW4(deps.db, ids.carol, w4Rows(false));
 
   // Ensure Ada has an IL work-state election
   await ensureWorkState(deps.db, ids.ada, "IL", "2024-11-01");
 
   return ids;
+}
+
+/**
+ * Bob's mid-year salary change (spec 14 §2; PAY-81 D-B1): a raise ladder on
+ * fixed years so the change stays inside every history window and a
+ * persistent QA database never gets an overlapping row. Base 3800.00 from
+ * 2024-11-01; for each year Y from 2026 through L a raise on Y-07-01 to
+ * 3800.00 + 400.00 × (Y − 2025). Only the newest row is open-ended. When L
+ * moves up, the open row is closed in place (effective_to set, same id) before
+ * the next row is inserted, so the compensation_no_overlap constraint holds.
+ * At L = 2026 this is exactly [2024-11-01, 2026-07-01) 3800.00 and
+ * [2026-07-01, open) 4200.00.
+ */
+async function seedBobLadder(db: Db, bobId: number, L: number): Promise<void> {
+  const steps: { from: string; amount: string }[] = [{ from: "2024-11-01", amount: "3800.00" }];
+  for (let y = 2026; y <= L; y++) {
+    steps.push({ from: `${y}-07-01`, amount: `${3800 + 400 * (y - 2025)}.00` });
+  }
+  for (const [i, step] of steps.entries()) {
+    const to = steps[i + 1]?.from ?? null;
+    const found = await db
+      .select({ id: compensation.id, effectiveTo: compensation.effectiveTo })
+      .from(compensation)
+      .where(and(eq(compensation.employeeId, bobId), eq(compensation.effectiveFrom, step.from)))
+      .limit(1);
+    const row = found[0];
+    if (!row) {
+      await db.insert(compensation).values({
+        employeeId: bobId,
+        frequency: "monthly",
+        periodAmount: step.amount,
+        effectiveFrom: step.from,
+        effectiveTo: to,
+      });
+    } else if (row.effectiveTo === null && to !== null) {
+      await db.update(compensation).set({ effectiveTo: to }).where(eq(compensation.id, row.id));
+    }
+  }
+}
+
+/**
+ * W-4 elections for every year from L−1 through today's year (same field
+ * rules each year). Ada is exempt, renewed annually: the renewal deadline is
+ * Feb 16 of the following year, so a Feb 15 payment is still exempt and a
+ * Feb 16 one is not (Spec 26 (PAY-173) D3 step 3; resolveW4 judges the lapse
+ * by the pay date).
+ */
+async function seedW4s(db: Db, w2: W2Ids, L: number, year: number): Promise<void> {
+  const rows = (federalExempt: boolean) => {
+    const out = [];
+    for (let y = L - 1; y <= year; y++) {
+      out.push({
+        taxYear: y,
+        federalExempt,
+        effectiveFrom: `${y}-01-01`,
+        filedDate: `${y - 1}-12-15`,
+        renewalDeadline: federalExempt ? `${y + 1}-02-16` : null,
+      });
+    }
+    return out;
+  };
+  await ensureW4(db, w2.ada, rows(true));
+  await ensureW4(db, w2.bob, rows(false));
+  await ensureW4(db, w2.carol, rows(false));
 }
 
 // ---------------------------------------------------------------------------
@@ -557,16 +603,32 @@ async function ensureIssuedRun(
   return "issued";
 }
 
+export interface QaPayrollSummary {
+  issued: number;
+  existing: number;
+  draftCreated: boolean;
+  /** L: the latest tax year on or before today's year whose tables are installed. */
+  latestCoveredYear: number;
+  /** "YYYY-MM" of the last issued history month; null when none. */
+  historyThrough: string | null;
+  /** "YYYY-MM" of the current-period draft; null when today's year is not covered. */
+  draftPeriod: string | null;
+}
+
 async function seedPayrollHistory(
   deps: QaDeps,
   w2: W2Ids,
   adminId: string,
   today: string,
-): Promise<{ issued: number; existing: number; draftCreated: boolean }> {
+  L: number,
+): Promise<QaPayrollSummary> {
   let issued = 0;
   let existing = 0;
+  // L is covered by definition; L−1 only when its tables are installed too.
+  const previousCovered = isCovered(await taxTableCoverage(deps.db, L - 1));
+  const months = historyMonths(today, L).filter((m) => m.year === L || previousCovered);
   for (const employeeId of [w2.ada, w2.bob, w2.carol]) {
-    for (const { year, month } of historyMonths(today)) {
+    for (const { year, month } of months) {
       const outcome = await ensureIssuedRun(
         deps,
         employeeId,
@@ -578,18 +640,34 @@ async function seedPayrollHistory(
     }
   }
 
+  const last = months.at(-1);
+  const historyThrough = last ? `${last.year}-${pad2(last.month)}` : null;
+
   // ONE draft run awaiting approval for the current period (spec 14 §2) — the
-  // e2e scheduler spec asserts it in the admin approvals UI (read-only).
+  // e2e scheduler spec asserts it in the admin approvals UI (read-only). Only
+  // while the current year's tax tables are installed (owner decision
+  // 2026-10-05, PAY-81): otherwise there is no current-period draft.
   const year = Number(today.slice(0, 4));
   const month = Number(today.slice(5, 7));
-  const period = monthlyPeriod(year, month, 15);
-  const found = await findRun(deps.db, w2.ada, period.periodStart);
   let draftCreated = false;
-  if (!found) {
-    await generateDraft(deps, { employeeId: w2.ada, period, createdBy: adminId });
-    draftCreated = true;
+  let draftPeriod: string | null = null;
+  if (L === year) {
+    const period = monthlyPeriod(year, month, 15);
+    draftPeriod = `${year}-${pad2(month)}`;
+    const found = await findRun(deps.db, w2.ada, period.periodStart);
+    if (!found) {
+      await generateDraft(deps, { employeeId: w2.ada, period, createdBy: adminId });
+      draftCreated = true;
+    }
   }
-  return { issued, existing, draftCreated };
+  return {
+    issued,
+    existing,
+    draftCreated,
+    latestCoveredYear: L,
+    historyThrough,
+    draftPeriod,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1044,30 +1122,13 @@ export interface QaSeedSummary {
   };
   w2: W2Ids;
   contractors: ContractorIds;
-  payroll: { issued: number; existing: number; draftCreated: boolean };
+  payroll: QaPayrollSummary;
   changeRequestCreated: boolean;
 }
 
 export interface QaSeedOptions {
   /** YYYY-MM-DD — fixed in tests; defaults to the real current date. */
   today?: string;
-}
-
-/** Guard the precondition the dataset relies on; the error says the rest. */
-async function assertTaxYearSeeded(db: Db, year: number): Promise<void> {
-  const rows = await db
-    .select({ taxYear: taxConfig.taxYear })
-    .from(taxConfig)
-    .where(and(eq(taxConfig.jurisdiction, "federal"), eq(taxConfig.taxYear, year)))
-    .limit(1);
-  if (rows.length === 0) {
-    throw new Error(
-      `qa seed: no federal tax config for ${year}. The QA dataset generates a ` +
-        `current-period payroll run, so the bundled tax tables must cover the ` +
-        `current year. Add ${year} to packages/db/src/seed.ts (and its state ` +
-        `tables) before this date rolls around.`,
-    );
-  }
 }
 
 export async function seedQaDataset(
@@ -1084,7 +1145,6 @@ export async function seedQaDataset(
   const today = opts.today ?? todayIso();
   // Reference data (company, tax tables, pay schedule) — idempotent.
   await seedDatabase(deps.db as unknown as SeedDb);
-  await assertTaxYearSeeded(deps.db, Number(today.slice(0, 4)));
 
   const admin = await ensureQaUser(deps, QA_ADMIN);
   const employeeLogin = await ensureQaUser(deps, QA_EMPLOYEE_LOGIN);
@@ -1100,9 +1160,24 @@ export async function seedQaDataset(
     .set({ ein: encryptField(QA_COMPANY_EIN, deps.config.encryptionKey) })
     .where(and(eq(company.id, companyId), isNull(company.ein)));
 
-  const w2 = await seedW2People(deps, companyId, employeeLogin.id, today);
+  const w2 = await seedW2People(deps, companyId, employeeLogin.id);
   await seedResidences(deps.db, w2, admin.id);
-  const payroll = await seedPayrollHistory(deps, w2, admin.id, today);
+  // PAY-81: anchor everything tax-year dependent on L, the latest covered
+  // year, computed now that the personas and their work states exist. A year
+  // without installed tables never aborts the seed and never gets runs.
+  const year = Number(today.slice(0, 4));
+  const L = await latestCoveredYear(deps.db, year);
+  if (L === null) {
+    throw new Error(
+      `qa seed: no installed tax year on or before ${year}. The QA dataset ` +
+        `issues payroll only for years whose federal and state tax tables are ` +
+        `installed. Run the database seed (packages/db/src/seed.ts) so the ` +
+        `bundled tax tables are present, then re-run the QA seed.`,
+    );
+  }
+  await seedBobLadder(deps.db, w2.bob, L);
+  await seedW4s(deps.db, w2, L, year);
+  const payroll = await seedPayrollHistory(deps, w2, admin.id, today, L);
   // PAY-9: compute the deposit schedule from the issued history so the admin
   // Tax deposits page has rows immediately (the daily tick keeps it fresh).
   await syncDeposits(deps, { today });
