@@ -152,3 +152,7 @@ reporting — see [SECURITY.md](SECURITY.md).
 ## License
 
 [AGPL-3.0](LICENSE)
+
+`packages/documents/assets/forms/*`: official IRS forms, U.S. Government works,
+public domain (17 U.S.C. §105); SHA-256-pinned in
+`packages/documents/src/forms/templates.ts`.

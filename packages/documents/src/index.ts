@@ -439,12 +439,34 @@ export {
   renderW3Pdf,
   pdfStructure,
   splitLegalName,
+  prepareW2Forms,
   W2FormAmountError,
+  W2FormLinesError,
   type FormAddress,
   type W2EmployeePacketOptions,
   type W2Input,
+  type W2LocalLineInput,
+  type W2StateLineInput,
   type W3Input,
 } from "./w2.js";
+
+export {
+  W2_COPY_PAGES_2026,
+  W2_LAYOUT_2026,
+  W3_FIELD_MAP_2026,
+  w2FieldMap2026,
+  type W2FieldMap2026,
+  type W2LocalRowFields,
+  type W2StateRowFields,
+} from "./forms/field-map-2026.js";
+
+export {
+  w2FieldMapFor,
+  w2LayoutFor,
+  w3FieldMapFor,
+  type W2Layout,
+  type W3FieldMap,
+} from "./forms/w2-years.js";
 
 export {
   W2_ADMIN_COPIES,
@@ -452,6 +474,7 @@ export {
   W2_CORRECTED_MARK_PAGES,
   W2_EMPLOYEE_COPIES,
   W2_EMPLOYEE_PAGES,
+  W2_LAYOUT_2025,
   W3_CHECKBOXES,
   W3_FIELD_MAP,
   W3_FORM_PAGE,

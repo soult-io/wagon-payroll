@@ -29,12 +29,26 @@ export type W2Copy = "CopyB" | "CopyC" | "Copy2" | "CopyD";
 export const W2_EMPLOYEE_PAGES = [3, 4, 5, 6, 7, 8] as const;
 /**
  * PAY-206: 0-indexed template pages of the employee's Copies B, C and 2 —
- * the only pages that carry "CORRECTED" (iw2w3 p.28). Instruction pages,
- * Copy D and the W-3 are never marked.
+ * the only pages that carry "CORRECTED" (2025 General Instructions for Forms
+ * W-2 and W-3, p.28). Instruction pages, Copy D and the W-3 are never marked.
  */
 export const W2_CORRECTED_MARK_PAGES = [3, 5, 7] as const;
+/**
+ * PAY-206: the CORRECTED mark — Helvetica-Bold 14 pt in the top margin,
+ * left-aligned with the form's left edge. Clear of every AcroForm widget
+ * (the highest, box a, sits at y 732-744 on a 612 x 792 page).
+ */
+export const CORRECTED_MARK = { text: "CORRECTED", size: 14, x: 38, y: 762 } as const;
 /** 0-indexed pages kept for the admin per-employee Copy D packet. */
 export const W2_ADMIN_COPY_D_PAGES = [9] as const;
+
+/** fw2 2025 page layout (PAY-19, PAY-206). */
+export const W2_LAYOUT_2025 = {
+  employeePages: W2_EMPLOYEE_PAGES,
+  adminCopyDPages: W2_ADMIN_COPY_D_PAGES,
+  correctedMarkPages: W2_CORRECTED_MARK_PAGES,
+  correctedMark: CORRECTED_MARK,
+} as const;
 
 /** Semantic W-2 boxes → AcroForm field paths for one copy. */
 export interface W2FieldMap {

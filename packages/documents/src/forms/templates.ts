@@ -7,9 +7,11 @@
  * Adding a new tax year = drop the year's PDFs (fw2.pdf / fw3.pdf / f940.pdf
  * / f941.pdf) into assets/forms/<year>/, add a registry entry with its
  * checksums, and (if the IRS moved fields) a new field-map module next to
- * field-map-2025.ts / f941-field-map.ts / f940-field-map.ts. A year may
- * bundle only the forms that exist for it (e.g. 2026 currently bundles f941
- * only).
+ * field-map-2025.ts / field-map-2026.ts / f941-field-map.ts /
+ * f940-field-map.ts. A year may bundle only the forms that exist for it.
+ *
+ * The bundled PDFs are official IRS forms: works of the U.S. Government,
+ * public domain (17 U.S.C. §105).
  */
 
 import { createHash } from "node:crypto";
@@ -37,9 +39,15 @@ const TEMPLATES: Record<number, TemplateEntry> = {
     f940Sha256: "575bb0d645ff613574c9b58506c6e0f7cbdc757c85ebc3e766ffc59fd5709d7c",
     f941Sha256: "efe78a2db0487f66ab233aae0d63b1179c36d15505bc1ed053682320a2a76b62",
   },
-  // Form 941 Rev. March 2026 (irs.gov/pub/irs-pdf/f941.pdf). W-2/W-3 2026
-  // templates land with the year-end annual-forms work.
+  // Form 941 Rev. March 2026 (irs.gov/pub/irs-pdf/f941.pdf).
+  // Spec 24 (PAY-116): "2026 Form W-2" from irs.gov/pub/irs-prior/fw2--2026.pdf
+  // (file metadata CreationDate 2026-08-12) and "2026 Form W-3" from
+  // irs.gov/pub/irs-prior/fw3--2026.pdf (CreationDate 2025-10-27), both
+  // downloaded 2026-10-04. Pinned from irs-prior, not irs-pdf: irs-pdf/fw2.pdf
+  // switches to the 2027 form once it is final. No Form 940 for 2026 yet.
   2026: {
+    fw2Sha256: "61eca7c81f16d3965819fe1f31be4fe68c1b2887a81f51172f1d2ed2b2b9f087",
+    fw3Sha256: "2df15f40431bd52814cbac85d9843102b09a640b6fe558f201e5214ff1890656",
     f941Sha256: "38a3d8cf7a455101d52543c8c48e66202bc25c189ead878627e35c797c88e2ad",
   },
 };
