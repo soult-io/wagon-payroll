@@ -63,6 +63,7 @@ import { and, eq } from "drizzle-orm";
 import {
   appSettings,
   company,
+  companyStateIds,
   emailOutbox,
   notificationSettings,
   stateTaxConfigs,
@@ -72,6 +73,7 @@ import {
 import * as notifications from "@payroll/notifications";
 import { renderPayslipPdf, type PayslipSnapshot } from "@payroll/documents";
 import { drainOutbox } from "../src/notify/outbox.js";
+import { encryptField } from "../src/crypto/field-encryption.js";
 import { cents, monthPeriod, gen, runRow, snap } from "./pay-date-helpers.js";
 import { oracleRun2026, oracleYear } from "./pay-193-oracle.js";
 import {
@@ -107,6 +109,18 @@ let env: L4Env;
 
 beforeAll(async () => {
   env = await bootL4({ adminEmail: "pay-193-l4-api-admin@test.dev", logLevel: "trace" });
+  // Spec 24 (PAY-116) S24-D3: a 2026 W-2 with IL tax withheld and no box 15
+  // ID source is blocked (missing_state_id). The IL fixtures here exercise
+  // the late-issue and W-2 follow-up paths, so the company has a synthetic
+  // IL withholding account number (FEIN + 000 sequence, IL-941 format).
+  const [co] = await env.t.db.select({ id: company.id }).from(company).limit(1);
+  await env.t.db.insert(companyStateIds).values({
+    companyId: co!.id,
+    stateCode: "IL",
+    fromTaxYear: 2026,
+    stateId: encryptField("000000001000", env.t.config.encryptionKey),
+    createdBy: "test",
+  });
 }, 180_000);
 
 afterAll(async () => {

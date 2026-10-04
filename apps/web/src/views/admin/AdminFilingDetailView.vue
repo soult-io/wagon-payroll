@@ -38,6 +38,7 @@ import {
   type TaxAdjustmentRow,
   type TaxFilingRow,
   type W2FiguresRow,
+  type W2Issue,
   type Worksheet940,
   type Worksheet941,
   type WorksheetRecomputePreview,
@@ -52,6 +53,7 @@ import {
   hasUnreadableTotals,
   STALE_TOTALS_TEXT,
   w2BlockedText,
+  w2IssueKey,
   w2IssueLabel,
   w2IssueText,
   w2LoadErrorText,
@@ -71,6 +73,8 @@ const filing = ref<TaxFilingRow | null>(null);
 const adjustments = ref<TaxAdjustmentRow[]>([]);
 /** PAY-11: per-employee W-2 figures for the W-2/W-3 detail (no PII). */
 const w2Rows = ref<W2FiguresRow[]>([]);
+/** Spec 24 (PAY-116): year-level issues (a state's W-2 tax vs its pay runs). */
+const w2YearIssues = ref<W2Issue[]>([]);
 /** PAY-24: uploaded confirmation/evidence documents (metadata only). */
 const attachments = ref<FilingAttachment[]>([]);
 /** PAY-25: past worksheet corrections (audit trail on the detail page). */
@@ -80,13 +84,21 @@ const filed = computed(() => filing.value?.status === "filed");
 /** PAY-162: the year whose federal tax settings are missing (409 on load). */
 const missingConfigYear = ref<number | null>(null);
 /** PAY-162: any W-2 of the year blocked → the W-3 is held too. */
-const anyW2Blocked = computed(() => w2Rows.value.some((r) => r.blocked));
+const anyW2Blocked = computed(
+  () =>
+    w2Rows.value.some((r) => r.blocked) || w2YearIssues.value.some((i) => i.severity === "block"),
+);
 /** PAY-162: the W-2 list failed to load — hold everything that depends on it. */
 const w2LoadError = ref(false);
 /** PAY-162 (D3): the official W-2/W-3 form is bundled for the year. */
 const w2FormAvailable = ref(true);
-/** PAY-162: W-2s with any issue, for the "need attention" list. */
-const attentionRows = computed(() => w2Rows.value.filter((r) => r.issues.length > 0));
+/**
+ * PAY-162: W-2s with a block or warn issue, for the "need attention" list.
+ * Info issues (e.g. period_spans_move) are notes, not something to fix.
+ */
+const attentionRows = computed(() =>
+  w2Rows.value.filter((r) => r.issues.some((i) => i.severity === "block" || i.severity === "warn")),
+);
 const anyUnreadableTotals = computed(() => w2Rows.value.some(hasUnreadableTotals));
 /** PAY-206: any W-2 corrected after the employee got it (SSA note). */
 const anyW2Corrected = computed(() => w2Rows.value.some((r) => r.corrected));
@@ -138,7 +150,9 @@ function markGivenOnPaper(row: W2FiguresRow): void {
       markPaperBusy.value = row.employeeId;
       try {
         await adminFilingsApi.w2MarkGivenOnPaper(row.employeeId, year);
-        w2Rows.value = (await adminFilingsApi.w2List(year)).w2s;
+        const list = await adminFilingsApi.w2List(year);
+        w2Rows.value = list.w2s;
+        w2YearIssues.value = list.yearIssues;
         notify.success(`${row.legalName}'s corrected W-2 is marked as given.`);
       } catch (err) {
         notify.error(err, "Could not mark the W-2 as given");
@@ -200,6 +214,7 @@ async function load() {
   loading.value = true;
   missingConfigYear.value = null;
   w2Rows.value = [];
+  w2YearIssues.value = [];
   w2LoadError.value = false;
   w2FormAvailable.value = true;
   try {
@@ -212,6 +227,7 @@ async function load() {
       try {
         const list = await adminFilingsApi.w2List(res.filing.year);
         w2Rows.value = list.w2s;
+        w2YearIssues.value = list.yearIssues;
         w2FormAvailable.value = list.formAvailable;
       } catch {
         w2LoadError.value = true;
@@ -828,6 +844,17 @@ onMounted(async () => {
         </p>
 
         <template v-if="!w2LoadError">
+          <template v-if="w2YearIssues.length">
+            <p
+              v-for="issue in w2YearIssues"
+              :key="w2IssueKey(issue)"
+              class="small"
+              style="margin: 0"
+              data-testid="w2-year-issue"
+            >
+              {{ w2IssueText(issue, { legalName: "", year: filing.year }) }}
+            </p>
+          </template>
           <template v-if="attentionRows.length">
             <h4 id="w2-attention" style="margin: 0">W-2s that need attention</h4>
             <ul class="stack" style="margin: 0; padding-left: 1.25rem" aria-labelledby="w2-attention">
@@ -842,8 +869,13 @@ onMounted(async () => {
                   />
                   <Tag v-else value="Please check" icon="pi pi-exclamation-triangle" severity="warn" />
                 </div>
-                <p v-for="issue in row.issues" :key="issue.code" class="small" style="margin: 0.25rem 0 0">
-                  {{ w2IssueText(issue) }}
+                <p
+                  v-for="issue in row.issues"
+                  :key="w2IssueKey(issue)"
+                  class="small"
+                  style="margin: 0.25rem 0 0"
+                >
+                  {{ w2IssueText(issue, { legalName: row.legalName, year: filing.year }) }}
                 </p>
               </li>
             </ul>
@@ -878,9 +910,11 @@ onMounted(async () => {
                 <div v-if="data.issues.length" class="row" style="gap: 0.25rem; flex-wrap: wrap">
                   <Tag
                     v-for="issue in data.issues"
-                    :key="issue.code"
+                    :key="w2IssueKey(issue)"
                     :value="w2IssueLabel(issue)"
-                    :severity="issue.severity === 'block' ? 'danger' : 'warn'"
+                    :severity="
+                      issue.severity === 'block' ? 'danger' : issue.severity === 'info' ? 'info' : 'warn'
+                    "
                   />
                 </div>
                 <span v-else class="muted">No problems found</span>

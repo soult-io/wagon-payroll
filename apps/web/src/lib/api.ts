@@ -1315,7 +1315,18 @@ export interface Worksheet940 {
   balanceDue: string;
 }
 
-/** PAY-11 — W-3 transmittal aggregate worksheet. */
+/** Spec 24 (PAY-116) — one state's W-3 reconciliation row (R9). */
+export interface WorksheetW3State {
+  state: string;
+  w2Lines: number;
+  box16: string;
+  box17: string;
+  runWithholding: string;
+  attributedLegacy: string;
+  reconciled: boolean;
+}
+
+/** PAY-11 — W-3 transmittal aggregate worksheet. Spec 24: state keys for 2026+. */
 export interface WorksheetW3 {
   form: "w2_w3";
   year: number;
@@ -1326,6 +1337,14 @@ export interface WorksheetW3 {
   box4SsTax: string;
   box5MedicareWages: string;
   box6MedicareTax: string;
+  /** Spec 24 — W-3 box c: number of W-2 forms. */
+  w2FormCount?: number;
+  /** Spec 24 — one state code, "X" for several, null for none. */
+  box15State?: string | null;
+  box16StateWages?: string;
+  box17StateTax?: string;
+  states?: WorksheetW3State[];
+  blockedEmployees?: number;
 }
 
 export type FilingWorksheet = Worksheet941 | Worksheet940 | WorksheetW3;
@@ -1338,11 +1357,40 @@ export type W2IssueCode =
   | "box4_without_box3"
   | "box6_without_box5"
   | "box4_off_rate"
-  | "box6_off_rate";
+  | "box6_off_rate"
+  // Spec 24 (PAY-116): W-2 state lines.
+  | "legacy_state_runs"
+  | "missing_state_id"
+  | "reconciliation_mismatch"
+  | "local_boxes_pending"
+  | "missing_state_id_zero_tax"
+  | "legacy_runs_without_state"
+  | "local_tax_md"
+  | "local_tax_ny"
+  | "exempt_reciprocity"
+  | "ny_all_wages"
+  | "period_spans_move";
 
 export interface W2Issue {
   code: W2IssueCode;
-  severity: "block" | "warn";
+  severity: "block" | "warn" | "info";
+  /** Spec 24 — the state line the issue belongs to. */
+  state?: string;
+  /** Spec 24 — legacy_state_runs only: the runs without a work state that carry state tax. */
+  runs?: { runPublicId: string; payDate: string; stateTax: string }[];
+  /** Spec 24 — period_spans_move only: the work-state change date. */
+  date?: string;
+}
+
+/** Spec 24 (PAY-116) — one W-2 state line (boxes 15–17); never the state ID. */
+export interface W2StateLineRow {
+  state: string;
+  /** null = empty (second row of a state). */
+  box16: string | null;
+  box17: string | null;
+  form: number;
+  row: 1 | 2;
+  stateIdSource: "entered" | "ein_default" | null;
 }
 
 /**
@@ -1359,6 +1407,12 @@ export interface W2FiguresRow {
   box4SsTax: string | null;
   box5MedicareWages: string | null;
   box6MedicareTax: string | null;
+  /** Spec 24 — state lines (empty before 2026). */
+  stateLines: W2StateLineRow[];
+  /** Spec 24 — always empty (local boxes come later). */
+  localLines: never[];
+  /** Spec 24 — W-2 forms for this employee (two state lines per form). */
+  formCount: number;
   issues: W2Issue[];
   blocked: boolean;
   /** PAY-19 — active electronic-delivery consent on file. */
@@ -1516,6 +1570,8 @@ export const adminFilingsApi = {
       /** PAY-162: the official W-2/W-3 form is bundled for the year. */
       formAvailable: boolean;
       w2s: W2FiguresRow[];
+      /** Spec 24 — year-level issues (reconciliation_mismatch per state). */
+      yearIssues: W2Issue[];
     }>(`/api/admin/annual-forms/w2?year=${year}`),
   w2PdfUrl: (employeeId: number, year: number) =>
     `/api/admin/annual-forms/w2/${employeeId}/pdf?year=${year}`,

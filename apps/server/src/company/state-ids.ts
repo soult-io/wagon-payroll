@@ -60,6 +60,15 @@ export function maskEinDefault(einStored: string, key: string): string {
   }
 }
 
+/**
+ * The company's stored (encrypted) EIN, or null when there is none. An empty
+ * string is no EIN: the IL/NY default must never print blank digits. The one
+ * place every box 15 path decides "has an EIN".
+ */
+export function storedEin(value: string | null | undefined): string | null {
+  return value === undefined || value === null || value === "" ? null : value;
+}
+
 function isEinDefaultState(stateCode: string): boolean {
   return (EIN_DEFAULT_STATES as readonly string[]).includes(stateCode);
 }
@@ -86,7 +95,7 @@ export async function resolveStateId(
   query: { companyId: number; stateCode: string; taxYear: number },
 ): Promise<{ source: StateIdSource | null; value: string | null }> {
   const rows = await db
-    .select({ stateId: companyStateIds.stateId })
+    .select({ stateId: companyStateIds.stateId, fromTaxYear: companyStateIds.fromTaxYear })
     .from(companyStateIds)
     .where(
       and(
@@ -98,15 +107,95 @@ export async function resolveStateId(
     .orderBy(desc(companyStateIds.fromTaxYear))
     .limit(1);
   const row = rows[0];
-  if (row) return { source: "entered", value: decryptField(row.stateId, key) };
-  if (!isEinDefaultState(query.stateCode)) return { source: null, value: null };
   const [companyRow] = await db
     .select({ ein: company.ein })
     .from(company)
     .where(eq(company.id, query.companyId))
     .limit(1);
-  if (!companyRow?.ein) return { source: null, value: null };
-  return { source: "ein_default", value: einDigits(companyRow.ein, key) };
+  const ein = storedEin(companyRow?.ein);
+  const source = stateIdSourceFor(
+    query.stateCode,
+    query.taxYear,
+    row ? [row.fromTaxYear] : [],
+    ein !== null,
+  );
+  if (source === "entered" && row) return { source, value: decryptField(row.stateId, key) };
+  if (source === "ein_default" && ein !== null) return { source, value: einDigits(ein, key) };
+  return { source: null, value: null };
+}
+
+/**
+ * Spec 24 (PAY-116) PR-2: the box 15 ID source of each state for a W-2 of
+ * `taxYear` — availability only, never decrypted (no value leaves here).
+ */
+export async function stateIdAvailability(
+  db: Pick<Db, "select">,
+  taxYear: number,
+  states: readonly string[],
+): Promise<Record<string, StateIdSource | null>> {
+  const out: Record<string, StateIdSource | null> = {};
+  if (states.length === 0) return out;
+  const [owner] = await db.select({ id: company.id, ein: company.ein }).from(company).limit(1);
+  const rows = owner
+    ? await db
+        .select({ stateCode: companyStateIds.stateCode, fromTaxYear: companyStateIds.fromTaxYear })
+        .from(companyStateIds)
+        .where(eq(companyStateIds.companyId, owner.id))
+    : [];
+  for (const state of states) {
+    const years = rows.filter((r) => r.stateCode === state).map((r) => r.fromTaxYear);
+    out[state] = stateIdSourceFor(state, taxYear, years, storedEin(owner?.ein) !== null);
+  }
+  return out;
+}
+
+/** The IL/NY states still using the EIN default for some year from `fromYear`. Pure. */
+export function einDefaults(
+  fromYear: number,
+  yearsByState: ReadonlyMap<string, readonly number[]>,
+  hasEin: boolean,
+): string[] {
+  if (!hasEin) return [];
+  return EIN_DEFAULT_STATES.filter(
+    (s) => stateIdSourceFor(s, fromYear, yearsByState.get(s) ?? [], true) === "ein_default",
+  );
+}
+
+export interface NeededStateId {
+  stateCode: string;
+  taxYear: number;
+  reason: "tax_withheld" | "wages_only";
+}
+
+/**
+ * The states on any W-2 line without a box 15 ID, one entry per (state,
+ * year): tax_withheld when any such line shows box 17 > 0. Sorted by state
+ * code (code-point), then year. Pure.
+ */
+export function neededStates(
+  yearLines: readonly {
+    taxYear: number;
+    lines: readonly {
+      state: string;
+      box17Cents: number | null;
+      stateIdSource: StateIdSource | null;
+    }[];
+  }[],
+): NeededStateId[] {
+  const byKey = new Map<string, NeededStateId>();
+  for (const { taxYear, lines } of yearLines) {
+    for (const line of lines) {
+      if (line.stateIdSource !== null) continue;
+      const key = `${line.state}:${taxYear}`;
+      const entry = byKey.get(key) ?? { stateCode: line.state, taxYear, reason: "wages_only" };
+      if ((line.box17Cents ?? 0) > 0) entry.reason = "tax_withheld";
+      byKey.set(key, entry);
+    }
+  }
+  return [...byKey.values()].sort(
+    (a, b) =>
+      (a.stateCode < b.stateCode ? -1 : a.stateCode > b.stateCode ? 1 : 0) || a.taxYear - b.taxYear,
+  );
 }
 
 // ---------------------------------------------------------------------------

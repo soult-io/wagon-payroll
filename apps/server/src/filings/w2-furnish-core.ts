@@ -12,7 +12,9 @@
  *
  * A W-2 counts as furnished from the earliest moment the employee could hold
  * a copy with those figures (w2_furnishings, append-only). `boxes_hash`
- * covers boxes 1-6 in integer cents; it never leaves the database.
+ * covers boxes 1-6 in integer cents (v1, tax years before 2026) or boxes 1-6
+ * plus formCount and the state lines (v2, Spec 24 PR-2 brief §4, from
+ * 2026); it never leaves the database. No state ID enters any hash.
  */
 
 import { and, desc, eq, inArray } from "drizzle-orm";
@@ -20,6 +22,7 @@ import { w2Furnishings } from "@payroll/db";
 import type { Db } from "../db.js";
 import { worksheetHash } from "./shared.js";
 import type { W2BoxesCents } from "./w2-boxes.js";
+import { STATE_BOXES_FROM_YEAR } from "./w2-state.js";
 
 /** How a W-2 reached (or could reach) the employee. */
 export type FurnishMethod =
@@ -29,8 +32,25 @@ export type FurnishMethod =
   | "paper_handed"
   | "backfill";
 
-/** Version of the figures hash (v1 = boxes 1-6). */
+/** Version of the v1 figures hash (boxes 1-6); kept as the v1 alias. */
 export const W2_HASH_VERSION = 1;
+
+/** The figures hash version of a tax year: 2 from STATE_BOXES_FROM_YEAR (state lines), else 1. */
+export function hashVersionFor(taxYear: number): 1 | 2 {
+  return taxYear >= STATE_BOXES_FROM_YEAR ? 2 : 1;
+}
+
+/** The figures a furnishing hash covers (W2Figures with printable boxes). */
+export interface W2HashFigures extends W2BoxesCents {
+  formCount: number;
+  stateLines: readonly {
+    state: string;
+    box16Cents: number | null;
+    box17Cents: number | null;
+    form: number;
+    row: number;
+  }[];
+}
 
 const BOX_KEYS = [
   "box1Cents",
@@ -68,11 +88,78 @@ export function w2BoxesHash(employeeId: number, taxYear: number, boxes: W2BoxesC
   });
 }
 
+/** Fixed-message TypeError: never echoes the offending value. */
+function notCents(): TypeError {
+  return new TypeError("w2FiguresHash: figures must be integer cents");
+}
+
+function intOrNull(v: unknown): number | null {
+  if (v === null) return null;
+  if (typeof v === "number" && Number.isSafeInteger(v)) return v;
+  throw notCents();
+}
+
+function int(v: unknown): number {
+  if (typeof v === "number" && Number.isSafeInteger(v)) return v;
+  throw notCents();
+}
+
+/**
+ * The furnishing hash of one employee-year, by tax year (hashVersionFor):
+ * v1 = w2BoxesHash (byte-identical for years before 2026); v2 = boxes 1-6 +
+ * formCount + every state line {state, form, row, box16, box17} in line
+ * order + localLines (always [] from Spec 24). Other keys of `figures`
+ * (names, issues, stateIdSource) never enter it. Integers or null only;
+ * anything else throws a fixed TypeError.
+ */
+export function w2FiguresHash(employeeId: number, taxYear: number, figures: W2HashFigures): string {
+  if (hashVersionFor(taxYear) === 1) return w2BoxesHash(employeeId, taxYear, figures);
+  const stateLines = figures.stateLines.map((l) => {
+    if (typeof l.state !== "string") throw notCents();
+    return {
+      state: l.state,
+      form: int(l.form),
+      row: int(l.row),
+      box16: intOrNull(l.box16Cents),
+      box17: intOrNull(l.box17Cents),
+    };
+  });
+  return worksheetHash({
+    v: 2,
+    employeeId,
+    taxYear,
+    box1: int(figures.box1Cents),
+    box2: int(figures.box2Cents),
+    box3: int(figures.box3Cents),
+    box4: int(figures.box4Cents),
+    box5: int(figures.box5Cents),
+    box6: int(figures.box6Cents),
+    formCount: int(figures.formCount),
+    stateLines,
+    // Spec 24 emits no local lines; PAY-171 extends the canonical object.
+    localLines: [],
+  });
+}
+
 export interface FurnishingRef {
   id: number;
   boxesHash: string;
   furnishedAt: Date;
   method: string;
+  /** The row's hash version; a row of another version never matches (CORRECTED). */
+  hashVersion?: number;
+}
+
+/** The row carries `currentHash` under the expected hash version. */
+function sameFigures(
+  r: { boxesHash: string; hashVersion?: number },
+  currentHash: string,
+  version: number | undefined,
+): boolean {
+  if (version !== undefined && r.hashVersion !== undefined && r.hashVersion !== version) {
+    return false;
+  }
+  return r.boxesHash === currentHash;
 }
 
 export interface FurnishingState<R extends FurnishingRef = FurnishingRef> {
@@ -113,12 +200,14 @@ export function latestRow<R extends { id: number; method: string }>(
 export function furnishingState<R extends FurnishingRef>(
   rows: readonly R[],
   currentHash: string,
-  opts: { consented: boolean },
+  opts: { consented: boolean; version?: number },
 ): FurnishingState<R> {
   const latest = latestRow(rows);
-  const corrected = rows.some((r) => r.boxesHash !== currentHash);
-  const deliveredCurrent = (method: FurnishMethod) =>
-    latestRow(rows, method)?.boxesHash === currentHash;
+  const corrected = rows.some((r) => !sameFigures(r, currentHash, opts.version));
+  const deliveredCurrent = (method: FurnishMethod) => {
+    const row = latestRow(rows, method);
+    return row !== null && sameFigures(row, currentHash, opts.version);
+  };
   const delivered = opts.consented
     ? deliveredCurrent("portal_notice")
     : deliveredCurrent("paper_handed") || deliveredCurrent("portal_notice");
@@ -130,9 +219,16 @@ export function furnishingState<R extends FurnishingRef>(
   };
 }
 
-/** `corrected` alone: some furnishing (any method) carried other figures. */
-export function isCorrected(rows: readonly { boxesHash: string }[], currentHash: string): boolean {
-  return rows.some((r) => r.boxesHash !== currentHash);
+/**
+ * `corrected` alone: some furnishing (any method) carried other figures. With
+ * `version`, a row of another hash version counts as other figures.
+ */
+export function isCorrected(
+  rows: readonly { boxesHash: string; hashVersion?: number }[],
+  currentHash: string,
+  version?: number,
+): boolean {
+  return rows.some((r) => !sameFigures(r, currentHash, version));
 }
 
 /** Review round D9: the access window's last day lives in @payroll/shared. */
@@ -209,29 +305,33 @@ export async function recordFurnishing(
     .orderBy(desc(w2Furnishings.id))
     .limit(1);
   if (last[0]?.boxesHash === row.boxesHash) return false;
-  await tx.insert(w2Furnishings).values({ ...row, hashVersion: W2_HASH_VERSION });
+  await tx.insert(w2Furnishings).values({ ...row, hashVersion: hashVersionFor(row.taxYear) });
   return true;
 }
 
 /**
- * Record that the employee was furnished the CURRENT figures (`boxes`) by
+ * Record that the employee was furnished the CURRENT figures (`figures`) by
  * `method`. The row's `corrected` flag is the state before the write (the
  * copy furnished now is CORRECTED when an earlier one carried other
  * figures). Caller: inside a transaction that took lockEmployee and read
- * `boxes` after the lock (R10).
+ * `figures` after the lock (R10).
  */
 export async function furnishCurrent(
   tx: Pick<Db, "select" | "insert">,
   row: {
     employeeId: number;
     taxYear: number;
-    boxes: W2BoxesCents;
+    figures: W2HashFigures;
     method: FurnishMethod;
     actorId: string | null;
   },
 ): Promise<{ corrected: boolean; inserted: boolean }> {
-  const hash = w2BoxesHash(row.employeeId, row.taxYear, row.boxes);
-  const corrected = isCorrected(await furnishingRows(tx, row.employeeId, row.taxYear), hash);
+  const hash = w2FiguresHash(row.employeeId, row.taxYear, row.figures);
+  const corrected = isCorrected(
+    await furnishingRows(tx, row.employeeId, row.taxYear),
+    hash,
+    hashVersionFor(row.taxYear),
+  );
   const inserted = await recordFurnishing(tx, {
     employeeId: row.employeeId,
     taxYear: row.taxYear,

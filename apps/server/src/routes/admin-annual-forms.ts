@@ -18,6 +18,12 @@
  * missing_tax_config; a blocked W-2 answers 409 w2_not_ready on every PDF
  * route; a year with no bundled official form answers 409
  * form_not_available before any PII is read. No body ever carries an amount.
+ *
+ * Spec 24 (PAY-116) PR-2: list rows carry stateLines (box 15 state, box 16/17
+ * strings or null, form, row, the ID's source — never the ID or its mask),
+ * localLines [] and formCount; the response carries yearIssues (year-level
+ * reconciliation_mismatch per state). Only legacy_state_runs issues carry
+ * amounts (admin JSON only).
  */
 
 import type { FastifyInstance } from "fastify";
@@ -38,10 +44,12 @@ import {
   type W2Figures,
   w2AvailableOn,
   w2BoxStrings,
-  w2FiguresForYear,
+  w2FiguresWithYearIssues,
   w2InputFor,
+  w2YearIssues,
   w3InputFor,
 } from "../filings/annual.js";
+import { formatCents } from "@payroll/shared";
 import { electronicW2Channel } from "../filings/w2-consent.js";
 import { PDF_RATE_LIMIT, refuseCrossSite } from "../plugins/fetch-site.js";
 import { FilingServiceError } from "../filings/shared.js";
@@ -87,6 +95,16 @@ function listRow(f: W2Figures, consented: boolean, furnishing: FurnishingView | 
     employeeId,
     legalName,
     ...boxes,
+    stateLines: f.stateLines.map((l) => ({
+      state: l.state,
+      box16: l.box16Cents === null ? null : formatCents(l.box16Cents),
+      box17: l.box17Cents === null ? null : formatCents(l.box17Cents),
+      form: l.form,
+      row: l.row,
+      stateIdSource: l.stateIdSource,
+    })),
+    localLines: [],
+    formCount: f.formCount,
     issues,
     blocked: isW2Blocked(f),
     consented,
@@ -135,8 +153,9 @@ export function registerAdminAnnualFormRoutes(app: FastifyInstance, deps: Deps):
     const q = yearQuery.safeParse(req.query);
     if (!q.success) return reply.code(400).send({ error: "invalid_year", details: q.error.issues });
     let figures: W2Figures[];
+    let yearIssues: Awaited<ReturnType<typeof w2YearIssues>>;
     try {
-      figures = await w2FiguresForYear(db, q.data.year);
+      ({ figures, yearIssues } = await w2FiguresWithYearIssues(db, q.data.year));
     } catch (err) {
       return serviceError(err, reply);
     }
@@ -154,6 +173,7 @@ export function registerAdminAnnualFormRoutes(app: FastifyInstance, deps: Deps):
       w2s: figures.map((f) =>
         listRow(f, electronic.has(f.employeeId), furnishing.get(f.employeeId)),
       ),
+      yearIssues,
     };
   });
 
