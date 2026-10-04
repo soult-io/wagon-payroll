@@ -37,14 +37,22 @@ import {
   type FormAddress,
   hasTemplate,
   W2FormAmountError,
+  W2FormLinesError,
   type W2Input,
+  type W2LocalLineInput,
+  type W2StateLineInput,
   type W3Input,
 } from "@payroll/documents";
 import { EVENT_TYPE, w2Available as tplW2Available } from "@payroll/notifications";
 import { formatCents } from "@payroll/shared";
 import type { Db } from "../db.js";
 import { stateWithholdingByYear } from "../deposits/service.js";
-import { type StateIdSource, stateIdAvailability } from "../company/state-ids.js";
+import {
+  resolveStateIds,
+  type StateIdSource,
+  StateIdUnreadableError,
+  stateIdAvailability,
+} from "../company/state-ids.js";
 import type { AppConfig } from "../config.js";
 import { templateContext } from "../notify/outbox.js";
 import { w2EmployeeAddressAt } from "../change-requests/address-history.js";
@@ -184,7 +192,11 @@ export type AnnualBlockBody =
 export function annualBlockBody(err: unknown): AnnualBlockBody | null {
   if (err instanceof MissingTaxConfigError) return { error: "missing_tax_config", year: err.year };
   if (err instanceof W2BlockedError) return { error: "w2_not_ready", issues: err.issues };
-  if (err instanceof AnnualFiguresDefectError || err instanceof W2FormAmountError) {
+  if (
+    err instanceof AnnualFiguresDefectError ||
+    err instanceof W2FormAmountError ||
+    err instanceof W2FormLinesError
+  ) {
     return { error: "w2_not_ready", issues: ["internal_mismatch"] };
   }
   if (err instanceof FormNotAvailableError) return { error: "form_not_available", year: err.year };
@@ -745,6 +757,26 @@ function sumStateLines(figures: readonly ReadableW2Figures[]) {
   return { per, forms, w16, w17 };
 }
 
+/** W-3 box c and boxes 15–17 (S24-D12, R6), from the printed W-2 lines. */
+type W3StateBoxes = Pick<
+  W3StateSection,
+  "w2FormCount" | "box15State" | "box16StateWages" | "box17StateTax"
+>;
+
+function w3StateBoxes(sums: ReturnType<typeof sumStateLines>): W3StateBoxes {
+  const { per, forms, w16, w17 } = sums;
+  if (!Number.isSafeInteger(w16) || !Number.isSafeInteger(w17)) {
+    throw new AnnualFiguresDefectError();
+  }
+  const lineStates = [...per.keys()];
+  return {
+    w2FormCount: forms,
+    box15State: lineStates.length > 1 ? "X" : (lineStates[0] ?? null),
+    box16StateWages: formatCents(w16),
+    box17StateTax: formatCents(w17),
+  };
+}
+
 /**
  * Spec 24 §7 / S24-D10 / S24-D12: W-3 box c, boxes 15–17 and the per-state
  * reconciliation against the issued runs' state withholding (deposits
@@ -756,20 +788,18 @@ async function w3StateSection(
   year: number,
   figures: readonly ReadableW2Figures[],
 ): Promise<W3StateSection> {
-  const { per, forms, w16, w17 } = sumStateLines(figures);
+  const sums = sumStateLines(figures);
+  const boxes = w3StateBoxes(sums);
+  const { per } = sums;
   const runs = await stateWithholdingByYear(db, year);
-  const lineStates = [...per.keys()];
   for (const [state, cents] of runs) {
     if (cents !== 0 && !per.has(state)) per.set(state, { lines: 0, b16: 0, b17: 0 });
   }
   const codes = [...per.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-  const values = [w16, w17, ...[...per.values()].flatMap((p) => [p.b16, p.b17])];
+  const values = [...per.values()].flatMap((p) => [p.b16, p.b17]);
   if (values.some((v) => !Number.isSafeInteger(v))) throw new AnnualFiguresDefectError();
   return {
-    w2FormCount: forms,
-    box15State: lineStates.length > 1 ? "X" : (lineStates[0] ?? null),
-    box16StateWages: formatCents(w16),
-    box17StateTax: formatCents(w17),
+    ...boxes,
     states: codes.map((state) => {
       const p = per.get(state) as StateAcc;
       const run = runs.get(state) ?? 0;
@@ -1021,6 +1051,55 @@ export async function employerBlock(
   };
 }
 
+/**
+ * Spec 24 (PAY-116) PR-3: decrypt the box 15 IDs of `states` for a PDF of
+ * `year` — render time only. A value that does not decrypt (AES-GCM) holds
+ * the form as a block issue (state_id_unreadable), never a 500; no value
+ * reaches the error.
+ */
+async function box15Ids(
+  deps: { db: Pick<Db, "select">; config: AppConfig },
+  year: number,
+  states: readonly string[],
+): Promise<Map<string, string | null>> {
+  try {
+    return await resolveStateIds(deps.db, deps.config.encryptionKey, year, states);
+  } catch (err) {
+    if (err instanceof StateIdUnreadableError) throw new W2BlockedError(["state_id_unreadable"]);
+    throw err;
+  }
+}
+
+/** The W-2's state and local lines as the PDF prints them (IDs decrypted). */
+async function pdfLines(
+  deps: { db: Pick<Db, "select">; config: AppConfig },
+  year: number,
+  figures: W2StateFields,
+): Promise<{ stateLines: W2StateLineInput[]; localLines: W2LocalLineInput[] }> {
+  const ids = await box15Ids(
+    deps,
+    year,
+    figures.stateLines.map((l) => l.state),
+  );
+  return {
+    stateLines: figures.stateLines.map((l) => ({
+      state: l.state,
+      stateId: ids.get(l.state) ?? null,
+      box16: l.box16Cents === null ? null : formatCents(l.box16Cents),
+      box17: l.box17Cents === null ? null : formatCents(l.box17Cents),
+      form: l.form,
+      row: l.row,
+    })),
+    localLines: figures.localLines.map((l) => ({
+      locality: l.locality,
+      box18: formatCents(l.box18Cents),
+      box19: formatCents(l.box19Cents),
+      form: l.form,
+      row: l.row,
+    })),
+  };
+}
+
 /** A W-2 PDF input with the integer-cent figures it was built from (PAY-206 hash). */
 export interface W2InputWithBoxes {
   input: W2Input;
@@ -1033,6 +1112,8 @@ export interface W2InputWithBoxes {
  * the January availability gate; not_found when the employee has no W-2 for
  * the year (no issued runs, or a contractor). PAY-206: `deps.db` may be a
  * transaction holding the employee lock; the boxes come back in cents.
+ * Spec 24 (PAY-116) PR-3: + the state lines (box 15 IDs decrypted here),
+ * local lines and form count; none before STATE_BOXES_FROM_YEAR.
  */
 export async function w2InputWithBoxes(
   deps: { db: Pick<Db, "select">; config: AppConfig },
@@ -1071,6 +1152,8 @@ export async function w2InputWithBoxes(
     // Box d control number = the employee ID (D5).
     controlNumber: String(employee.id),
     ...w2BoxStrings(boxes),
+    ...(await pdfLines(deps, year, boxes)),
+    formCount: boxes.formCount,
   };
   return { input, boxes };
 }
@@ -1106,6 +1189,34 @@ export function readableBoxes(figures: W2Figures): ReadableW2Figures {
   return figures;
 }
 
+/**
+ * Spec 24 (PAY-116) PR-3: W-3 box c and boxes 15–19 for a year with state
+ * boxes. Box 15 (iw2w3 2026): one state → its code and the employer's state
+ * ID (decrypted here, render time only); more than one → "X" and no ID.
+ * No state line → boxes 15–17 blank. Boxes 18–19 stay blank (Spec 25).
+ */
+async function w3StateInput(
+  deps: Deps,
+  year: number,
+  figures: readonly ReadableW2Figures[],
+): Promise<Partial<W3Input>> {
+  const boxes = w3StateBoxes(sumStateLines(figures));
+  const local = { box18LocalWages: null, box19LocalTax: null };
+  const state = boxes.box15State;
+  if (state === null) {
+    return {
+      w2FormCount: boxes.w2FormCount,
+      box15State: null,
+      box15StateId: null,
+      box16StateWages: null,
+      box17StateTax: null,
+      ...local,
+    };
+  }
+  const id = state === "X" ? null : ((await box15Ids(deps, year, [state])).get(state) ?? null);
+  return { ...boxes, box15StateId: id, ...local };
+}
+
 /** Assemble the W-3 transmittal PDF input (admin-only; company PII only). */
 export async function w3InputFor(
   deps: Deps,
@@ -1131,12 +1242,14 @@ export async function w3InputFor(
     throw new W2BlockedError(["reconciliation_mismatch"]);
   }
   if (opts.requireBundledForm && !hasTemplate(year, "fw3")) throw new FormNotAvailableError(year);
-  const totals = w3Totals(readableFigures(figures));
+  const readable = readableFigures(figures);
+  const totals = w3Totals(readable);
   return {
     taxYear: year,
     employer: await employerBlock(db, config),
     employeeCount: totals.employeeCount,
     ...w2BoxStrings(totals),
+    ...(year < STATE_BOXES_FROM_YEAR ? {} : await w3StateInput(deps, year, readable)),
   };
 }
 

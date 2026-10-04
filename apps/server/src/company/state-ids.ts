@@ -9,7 +9,8 @@
  * - `resolveStateId`: the ID a W-2 of `taxYear` uses — the row with the
  *   greatest from_tax_year ≤ the year; else, for IL and NY, the company EIN
  *   digits while the company has an EIN; else none. Decrypts: render time
- *   only (the EIN doctrine).
+ *   only (the EIN doctrine). A value that fails to decrypt (AES-GCM) throws
+ *   StateIdUnreadableError, which carries no value (PR-3).
  * - `writeStateId` / `deleteStateId`: the filed-year check (L9) and the write
  *   share one transaction that first takes the w2_w3 filing advisory lock
  *   (also taken by markFiled) and locks the w2_w3 tax_filings rows
@@ -26,7 +27,6 @@ import type { Db } from "../db.js";
 import { FILING_CLOSE_LOCK } from "../filings/shared.js";
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
-type Reader = Db | Tx;
 
 export type StateIdSource = "entered" | "ein_default";
 
@@ -46,15 +46,35 @@ export function maskStateId(stored: string, key: string): string {
   }
 }
 
+/**
+ * Spec 24 (PAY-116) PR-3: a stored box 15 ID (or the EIN behind the IL/NY
+ * default) failed to decrypt. Fixed message; never carries the value.
+ */
+export class StateIdUnreadableError extends Error {
+  constructor() {
+    super("state ID could not be decrypted");
+    this.name = "StateIdUnreadableError";
+  }
+}
+
+/** decryptField, or StateIdUnreadableError (no value, no cause) on failure. */
+function decryptStateValue(stored: string, key: string): string {
+  try {
+    return decryptField(stored, key);
+  } catch {
+    throw new StateIdUnreadableError();
+  }
+}
+
 /** The IL/NY default: the 9 EIN digits (IL sequence omitted = "000"). */
-function einDigits(einStored: string, key: string): string {
-  return decryptField(einStored, key).replace(/\D/g, "");
+function einDigits(einPlain: string): string {
+  return einPlain.replace(/\D/g, "");
 }
 
 /** Masked EIN default for the settings screen; never throws. */
 export function maskEinDefault(einStored: string, key: string): string {
   try {
-    return maskPlainStateId(einDigits(einStored, key));
+    return maskPlainStateId(einDigits(decryptField(einStored, key)));
   } catch {
     return MASK;
   }
@@ -88,9 +108,12 @@ export function stateIdSourceFor(
   return null;
 }
 
-/** The box 15 ID of `stateCode` for a W-2 of `taxYear` (decrypted). */
+/**
+ * The box 15 ID of `stateCode` for a W-2 of `taxYear` (decrypted).
+ * StateIdUnreadableError when the stored value does not decrypt.
+ */
 export async function resolveStateId(
-  db: Reader,
+  db: Pick<Db, "select">,
   key: string,
   query: { companyId: number; stateCode: string; taxYear: number },
 ): Promise<{ source: StateIdSource | null; value: string | null }> {
@@ -119,9 +142,34 @@ export async function resolveStateId(
     row ? [row.fromTaxYear] : [],
     ein !== null,
   );
-  if (source === "entered" && row) return { source, value: decryptField(row.stateId, key) };
-  if (source === "ein_default" && ein !== null) return { source, value: einDigits(ein, key) };
+  if (source === "entered" && row) return { source, value: decryptStateValue(row.stateId, key) };
+  if (source === "ein_default" && ein !== null) {
+    return { source, value: einDigits(decryptStateValue(ein, key)) };
+  }
   return { source: null, value: null };
+}
+
+/**
+ * Spec 24 (PAY-116) PR-3: the decrypted box 15 ID of each state for a W-2
+ * (or W-3) of `taxYear`, null when the state has none — render time only,
+ * never stored or logged. StateIdUnreadableError on a decrypt failure.
+ */
+export async function resolveStateIds(
+  db: Pick<Db, "select">,
+  key: string,
+  taxYear: number,
+  states: readonly string[],
+): Promise<Map<string, string | null>> {
+  const out = new Map<string, string | null>();
+  if (states.length === 0) return out;
+  const [owner] = await db.select({ id: company.id }).from(company).limit(1);
+  for (const stateCode of new Set(states)) {
+    const resolved = owner
+      ? await resolveStateId(db, key, { companyId: owner.id, stateCode, taxYear })
+      : { value: null };
+    out.set(stateCode, resolved.value);
+  }
+  return out;
 }
 
 /**
