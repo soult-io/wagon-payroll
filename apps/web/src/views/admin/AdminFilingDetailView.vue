@@ -61,6 +61,7 @@ import {
   hasUnreadableTotals,
   RECONCILIATION_POINTER_TEXT,
   STALE_TOTALS_TEXT,
+  yearIssueStatesText,
   w2BlockedText,
   w2IssueKey,
   w2IssueLabel,
@@ -84,6 +85,7 @@ import {
   W2_DOWNLOAD_STEP,
   W3_ON_HOLD_TEXT,
   W3_RECORDS_NOTE,
+  W3_STATE_CHECK_HOLD_TEXT,
   w3WorksheetLines,
 } from "../../lib/w2-filing";
 
@@ -119,6 +121,14 @@ const anyW2Blocked = computed(
   () =>
     w2Rows.value.some((r) => r.blocked) || w2YearIssues.value.some((i) => i.severity === "block"),
 );
+/** Spec 24 (PAY-116) PR-4 round 4: a W-2 itself is on hold. */
+const rowHold = computed(() => w2Rows.value.some((r) => r.blocked));
+/** Round 4: the year's block issues (a state's W-2 tax vs its issued pay runs). */
+const yearBlockIssues = computed(() => w2YearIssues.value.filter((i) => i.severity === "block"));
+/** Round 4: only the year-level state tax check holds the W-3 (every W-2 can be downloaded). */
+const yearOnly = computed(() => !rowHold.value && yearBlockIssues.value.length > 0);
+/** Round 4: states of the year's holds; "*" when an issue names no state. */
+const heldStates = computed(() => new Set(yearBlockIssues.value.map((i) => i.state ?? "*")));
 /** PAY-162: the W-2 list failed to load — hold everything that depends on it. */
 const w2LoadError = ref(false);
 /** PAY-162 (D3): the official W-2/W-3 form is bundled for the year. */
@@ -153,6 +163,13 @@ function applyW2List(list: Awaited<ReturnType<typeof adminFilingsApi.w2List>>): 
   w2FormAvailable.value = list.formAvailable;
   w2Notified.value = list.notified;
   stateChecks.value = list.stateChecks;
+}
+
+/** Round 4: the row has a state line in a state whose year-level tax check holds the W-3. */
+function inHeldState(row: W2FiguresRow): boolean {
+  const held = heldStates.value;
+  if (held.size === 0) return false;
+  return row.stateLines.some((l) => held.has("*") || held.has(l.state));
 }
 
 /** PR-4 (B3): a reconciliation_mismatch line points to the State tax check when it shows that state. */
@@ -224,7 +241,11 @@ function markGivenOnPaper(row: W2FiguresRow): void {
   });
 }
 /** PAY-162: warnings stand but nothing is on hold. */
-const warnOnlyCount = computed(() => (anyW2Blocked.value ? 0 : attentionRows.value.length));
+const warnOnlyCount = computed(() =>
+  anyW2Blocked.value
+    ? 0
+    : attentionRows.value.length + yearAttention.value.filter((i) => i.severity === "warn").length,
+);
 /** PAY-162 (D1): a W-2/W-3 filing cannot be recorded while held. */
 /**
  * PAY-162 (D1): why a W-2/W-3 filing cannot be recorded yet, or null. The
@@ -235,6 +256,9 @@ const markFiledHeldReason = computed<string | null>(() => {
   if (filing.value?.formType !== "w2_w3") return null;
   if (w2LoadError.value) {
     return "Reload the page to check whether any W-2 is on hold before recording this filing.";
+  }
+  if (yearOnly.value) {
+    return "You can record this filing once the state tax on your W-2s matches your issued pay runs.";
   }
   if (anyW2Blocked.value) return "You can record this filing once no W-2s are on hold.";
   if (!filing.value.worksheet) {
@@ -832,7 +856,9 @@ onMounted(async () => {
           </h3>
           <!-- PAY-23: the W-3 action belongs with the W-3 card, not the W-2 list. -->
           <template v-if="!w2LoadError">
-            <span v-if="anyW2Blocked" class="muted small">{{ W3_ON_HOLD_TEXT }}</span>
+            <span v-if="anyW2Blocked" class="muted small">{{
+              yearOnly ? W3_STATE_CHECK_HOLD_TEXT : W3_ON_HOLD_TEXT
+            }}</span>
             <a
               v-else-if="w2FormAvailable && worksheetW3"
               :href="adminFilingsApi.w3PdfUrl(filing.year)"
@@ -849,7 +875,13 @@ onMounted(async () => {
         </Message>
         <Message v-else-if="anyW2Blocked" severity="error" :closable="false" data-testid="w2-blocked-banner">
           <div class="stack">
-            <span>{{ w2BlockedText(filing.year, w2Notified) }}</span>
+            <span>{{
+              w2BlockedText(
+                filing.year,
+                w2Notified,
+                yearOnly ? yearIssueStatesText(yearBlockIssues) : undefined,
+              )
+            }}</span>
             <span v-if="anyUnreadableTotals">{{ STALE_TOTALS_TEXT }}</span>
           </div>
         </Message>
@@ -894,7 +926,13 @@ onMounted(async () => {
           {{ box15MissingIdText(box15MissingState) }}
         </Message>
 
-        <DataTable v-if="worksheetW3" :value="worksheetW3Lines" data-key="line" striped-rows>
+        <DataTable
+          v-if="worksheetW3"
+          :value="worksheetW3Lines"
+          data-key="line"
+          striped-rows
+          class="w3-table"
+        >
           <Column field="line" header="Box" style="width: 3rem" />
           <Column field="label" header="Description" />
           <Column field="value" header="Amount" style="text-align: right; white-space: nowrap" />
@@ -935,10 +973,10 @@ onMounted(async () => {
               <!-- Spec 24 (PAY-116) PR-4: year-level holds and warnings (all W-2s). -->
               <li v-if="yearAttention.length">
                 <div class="row" style="gap: 0.5rem; align-items: center">
-                  <strong>All {{ filing.year }} W-2s</strong>
+                  <strong>{{ yearIssueStatesText(yearAttention, true) }} tax on your {{ filing.year }} W-2s</strong>
                   <Tag
                     v-if="yearAttention.some((i) => i.severity === 'block')"
-                    value="On hold"
+                    value="Holds the W-3"
                     icon="pi pi-lock"
                     severity="danger"
                   />
@@ -996,7 +1034,11 @@ onMounted(async () => {
             <!-- PAY-162: check results — codes rendered as fixed copy, never amounts. -->
             <Column header="Checks" style="min-width: 10rem">
               <template #body="{ data }">
-                <div v-if="data.issues.length" class="row" style="gap: 0.25rem; flex-wrap: wrap">
+                <div
+                  v-if="data.issues.length || inHeldState(data)"
+                  class="row"
+                  style="gap: 0.25rem; flex-wrap: wrap"
+                >
                   <Tag
                     v-for="issue in data.issues"
                     :key="w2IssueKey(issue)"
@@ -1005,6 +1047,8 @@ onMounted(async () => {
                       issue.severity === 'block' ? 'danger' : issue.severity === 'info' ? 'info' : 'warn'
                     "
                   />
+                  <!-- Round 4: the year's state tax check for a state on this W-2. -->
+                  <Tag v-if="inHeldState(data)" value="State tax doesn't match" severity="warn" />
                 </div>
                 <span v-else class="muted">No problems found</span>
               </template>
@@ -1454,6 +1498,13 @@ onMounted(async () => {
 /* Spec 24 (PAY-116) PR-4: amounts wrap as a unit at phone width. */
 .state-check li {
   overflow-wrap: anywhere;
+}
+/* Spec 24 (PAY-116) PR-4: the W-3 totals fit a phone without side scrolling. */
+@media (max-width: 480px) {
+  .w3-table :deep(th),
+  .w3-table :deep(td) {
+    padding-inline: 0.5rem;
+  }
 }
 /* Spec 24 (PAY-116) PR-4: stacked document buttons keep each label on one line. */
 .w2-table :deep(.p-button-label) {

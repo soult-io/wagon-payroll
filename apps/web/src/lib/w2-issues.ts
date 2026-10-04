@@ -50,8 +50,10 @@ const ISSUE_TEXT: Record<W2IssueCode, (p: TextParts) => string> = {
     `Add your ${p.state} account number. ${p.employee}'s W-2 shows ${p.state} tax withheld, so it needs your ${p.state} employer account number, and we don't have it yet. Add it under Config → Company → State tax account numbers. This hold clears once it's saved.`,
   legacy_state_runs: (p) =>
     `Some of ${p.employee}'s ${p.year} pay runs were made before the app kept track of work states, and they include state tax. We can't tell which state that tax belongs to, and we won't guess. Contact support to finish this W-2.`,
-  reconciliation_mismatch: (p) =>
-    `The ${p.state} tax on your W-2s doesn't match the ${p.state} tax on your issued pay runs. Don't send these forms yet. Contact support.`,
+  reconciliation_mismatch: (p) => {
+    const s = p.state || "state";
+    return `The ${s} tax on your W-2s doesn't match the ${s} tax on your issued pay runs. Don't send these forms yet. Contact support.`;
+  },
   local_boxes_pending: (p) =>
     `${p.employee}'s ${p.year} pay runs include local tax, and the app can't put local tax on a W-2 yet, so this W-2 is on hold. Don't fill in or hand out this W-2 by hand. Contact support.`,
   missing_state_id_zero_tax: (p) =>
@@ -144,11 +146,33 @@ export function missingTaxConfigText(year: number): string {
 }
 
 /**
+ * Spec 24 (PAY-116) PR-4 round 4: the state names of year-level issues,
+ * sorted by code (code-point) and joined " and "; "state" ("State" with
+ * `capital`) when no issue names a state.
+ */
+export function yearIssueStatesText(issues: readonly W2Issue[], capital = false): string {
+  const codes = [...new Set(issues.flatMap((i) => (i.state ? [i.state] : [])))].sort((a, b) =>
+    a < b ? -1 : a > b ? 1 : 0,
+  );
+  if (codes.length === 0) return capital ? "State" : "state";
+  return codes.map(stateName).join(" and ");
+}
+
+/**
  * Banner when any W-2 of the year is blocked (the W-3, filing and notices are
  * held). Spec 24 (PAY-116) PR-4 (I4): the last sentence depends on whether
  * the year's "your W-2 is ready" email already went out (`notified`).
+ * Round 4: `yearOnlyStates` given = no W-2 is held itself, only the year's
+ * state tax check ({States} text, see yearIssueStatesText).
  */
-export function w2BlockedText(year: number, notified: boolean): string {
+export function w2BlockedText(year: number, notified: boolean, yearOnlyStates?: string): string {
+  if (yearOnlyStates !== undefined) {
+    const body = `The ${yearOnlyStates} tax on your ${year} W-2s doesn't match your issued pay runs. Until that's fixed, you can't download the W-3 or record this filing. Each W-2 can still be downloaded, but don't file or hand out ${year} W-2s yet. You'll find the details under "W-2s that need attention" below.`;
+    const notice = notified
+      ? `Employees already got the "your W-2 is ready" email for ${year} and can still download their W-2s, so contact support soon.`
+      : `Employees haven't been told their ${year} W-2s are ready. We'll email the employees who get their W-2 online once this is fixed.`;
+    return `${body} ${notice}`;
+  }
   const body = `Some ${year} W-2s are on hold. You'll find them under "W-2s that need attention" below. Until every one is fixed, you can't download the W-3 or record this filing. Don't file or hand out W-2s for ${year} yet.`;
   const notice = notified
     ? `Employees already got the "your W-2 is ready" email for ${year}. Anyone whose W-2 is on hold can't download it until it's fixed, so fix the items below soon.`

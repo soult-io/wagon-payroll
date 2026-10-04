@@ -77,8 +77,14 @@ const stateOptions = Object.entries(STATE_NAMES)
   .sort((a, b) => (a.label < b.label ? -1 : 1));
 
 const yearMissing = computed(() => fromTaxYear.value === null);
+/**
+ * Spec 24 (PAY-116) PR-4 round 4: no save before the list loaded — the
+ * "W-2s already given out" confirm needs its furnished counts.
+ */
+const listReady = computed(() => list.value !== null && !loadError.value);
 const canSave = computed(
   () =>
+    listReady.value &&
     stateCode.value !== "" &&
     typed.value.trim() !== "" &&
     fromTaxYear.value !== null &&
@@ -353,7 +359,7 @@ onBeforeUnmount(() => {
           </Column>
         </DataTable>
       </div>
-      <p v-else class="muted small">No state account numbers on file yet.</p>
+      <p v-else class="muted small" style="margin: 0">No state account numbers on file yet.</p>
     </template>
 
     <div class="form-grid">

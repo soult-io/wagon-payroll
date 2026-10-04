@@ -248,6 +248,10 @@ export const W3_RECORDS_NOTE =
 /** The W-3 card header while any W-2 is on hold. */
 export const W3_ON_HOLD_TEXT = "Your W-3 can be made once every W-2 below is ready.";
 
+/** Round 4: the W-3 card header when only the year's state tax check holds it. */
+export const W3_STATE_CHECK_HOLD_TEXT =
+  "Your W-3 can be made once the state tax check below matches.";
+
 /** The "Mark as filed" dialog lead sentence. */
 export function markFiledLeadText(formType: string, formLabel: string, period: string): string {
   if (formType === "w2_w3") {
