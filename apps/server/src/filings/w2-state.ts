@@ -12,6 +12,8 @@
  *    the employee has a run with a state that year.
  *  - A state whose every run has kind 'none' has no line.
  *  - box 16 = Σ gross, box 17 = Σ state tax; NY box 16 = box 1 (R3).
+ *  - box 17 < 0 → negative_amount block on that line (W-2 boxes are unsigned).
+ *  - The employee's earliest work-state row is the hire, never a move.
  *  - Lines in state-code order; line i → form floor(i/2)+1, row (i%2)+1.
  *  - Any run with locals (or locals the loader could not read) → one
  *    local_boxes_pending block; plan locals are always [] here.
@@ -62,7 +64,7 @@ export interface W2StateInput {
   stateIds: Record<string, W2StateIdSource>;
   /** runPublicId → state (S24-D7; {} until PR-5). */
   attributions: Record<string, string>;
-  /** Work-state rows, for period_spans_move only. */
+  /** Every work-state row of the employee (all years), for period_spans_move only. */
   moves: { effectiveFrom: string }[];
 }
 
@@ -109,8 +111,11 @@ function mismatchPlan(): W2StatePlan {
   };
 }
 
-/** Every amount is a safe integer and the runs' gross adds up to box 1. */
-function amountsConsistent(input: W2StateInput): boolean {
+/**
+ * Every amount is a safe integer, the runs' gross adds up to box 1, and every
+ * per-state line sum (box 16 gross, box 17 tax) stays a safe integer.
+ */
+function amountsConsistent(input: W2StateInput, g: Grouped): boolean {
   if (!Number.isSafeInteger(input.box1Cents)) return false;
   let gross = 0;
   for (const r of input.runs) {
@@ -119,7 +124,23 @@ function amountsConsistent(input: W2StateInput): boolean {
     }
     gross += r.grossCents;
   }
-  return Number.isSafeInteger(gross) && gross === input.box1Cents;
+  if (!Number.isSafeInteger(gross) || gross !== input.box1Cents) return false;
+  for (const group of g.byState.values()) {
+    const sums = lineSums(group);
+    if (!Number.isSafeInteger(sums.gross) || !Number.isSafeInteger(sums.tax)) return false;
+  }
+  return true;
+}
+
+/** Σ gross (box 16, non-NY) and Σ state tax (box 17) of one state's runs. */
+function lineSums(group: StateGroup): { gross: number; tax: number } {
+  let gross = 0;
+  let tax = 0;
+  for (const { run } of group.runs) {
+    gross += run.grossCents;
+    tax += run.stateTaxCents;
+  }
+  return { gross, tax };
 }
 
 interface StateGroup {
@@ -173,9 +194,12 @@ function yearIssues(input: W2StateInput, g: Grouped): W2Issue[] {
   return issues;
 }
 
-/** Distinct move dates, ascending. */
+/**
+ * Distinct move dates, ascending. The earliest work-state row (all years) is
+ * where the employee started — a hire, never a move (K3) — so it is dropped.
+ */
 function moveDates(input: W2StateInput): string[] {
-  return [...new Set(input.moves.map((m) => m.effectiveFrom))].sort(cmp);
+  return [...new Set(input.moves.map((m) => m.effectiveFrom))].sort(cmp).slice(1);
 }
 
 function lineIssues(
@@ -186,12 +210,17 @@ function lineIssues(
 ): W2Issue[] {
   const { state } = line;
   const issues: W2Issue[] = [];
+  const box17 = line.box17Cents ?? 0;
+  // A W-2 money box is unsigned (PAY-162 D2): refunds above the year's
+  // withholding hold the W-2. First of the line's issues (Product Lead).
+  if (box17 < 0) issues.push({ code: "negative_amount", severity: "block", state });
   const source = input.stateIds[state] ?? null;
   if (source === null) {
+    // Zero-tax warn only at exactly 0; a negative box 17 still needs the ID.
     issues.push(
-      (line.box17Cents ?? 0) > 0
-        ? { code: "missing_state_id", severity: "block", state }
-        : { code: "missing_state_id_zero_tax", severity: "warn", state },
+      box17 === 0
+        ? { code: "missing_state_id_zero_tax", severity: "warn", state }
+        : { code: "missing_state_id", severity: "block", state },
     );
   }
   if (state === "MD") issues.push({ code: "local_tax_md", severity: "warn", state });
@@ -212,19 +241,13 @@ function lineIssues(
 /** Plan one employee-year's W-2 state lines. Pure; never throws. */
 export function planW2StateLines(input: W2StateInput): W2StatePlan {
   try {
-    if (!amountsConsistent(input)) return mismatchPlan();
     const g = groupRuns(input);
+    if (!amountsConsistent(input, g)) return mismatchPlan();
     const states = [...g.byState.keys()]
       .filter((s) => !(g.byState.get(s)?.runs ?? []).every((r) => r.kind === "none"))
       .sort(cmp);
     const lines: W2StateLine[] = states.map((state, i) => {
-      const runs = g.byState.get(state)?.runs ?? [];
-      let gross = 0;
-      let tax = 0;
-      for (const { run } of runs) {
-        gross += run.grossCents;
-        tax += run.stateTaxCents;
-      }
+      const { gross, tax } = lineSums(g.byState.get(state) ?? { runs: [] });
       return {
         state,
         box16Cents: state === "NY" ? input.box1Cents : gross,
