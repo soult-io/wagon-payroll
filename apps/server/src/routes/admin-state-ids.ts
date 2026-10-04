@@ -41,7 +41,7 @@ import {
   writeStateId,
 } from "../company/state-ids.js";
 import { w2StateLinesForYear } from "../filings/annual.js";
-import { type FurnishedStateCount, furnishedStateCounts } from "../filings/w2-furnish.js";
+import { furnishedStateCounts } from "../filings/w2-furnish.js";
 import { actorOf, NOT_FOUND, safeIssues } from "./params.js";
 
 interface Deps {
@@ -123,12 +123,7 @@ export function registerAdminStateIdRoutes(app: FastifyInstance, deps: Deps): vo
 
     const needed = await neededFromPlanner();
 
-    let furnished: FurnishedStateCount[] = [];
-    try {
-      furnished = await furnishedStateCounts(db);
-    } catch {
-      app.log.warn("[state-ids] furnished: the W-2 state lines could not be planned");
-    }
+    const furnished = await furnishedStateCounts(db);
 
     return { stateIds, defaults, needed, furnished };
   });

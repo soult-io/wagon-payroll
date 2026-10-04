@@ -7,7 +7,13 @@
 
 import { stateName, W2_TWO_UP_FROM_YEAR } from "@payroll/shared";
 import { useMoney } from "../composables/useMoney";
-import type { W2StateCheck, W2StateLineRow, WorksheetW3 } from "./api";
+import type {
+  StateIdFurnished,
+  StateIdRow,
+  W2StateCheck,
+  W2StateLineRow,
+  WorksheetW3,
+} from "./api";
 
 const { money } = useMoney();
 
@@ -80,28 +86,27 @@ export function box15MissingIdText(state: string): string {
   return `Your W-2s and W-3 show ${name} in box 15 with no ${name} account number, because we don't have one on file. That's fine if ${name} never gave you one. If it did, add it under Config → Company → State tax account numbers before you file.`;
 }
 
-/** One furnished count from GET /api/admin/company/state-ids. */
-export interface FurnishedCount {
-  stateCode: string;
-  taxYear: number;
-  employees: number;
-}
-
 /** A saved (or about to be saved) state ID row: its state and first tax year. */
-export interface StateIdTarget {
-  stateCode: string;
-  fromTaxYear: number;
+export type StateIdTarget = Pick<StateIdRow, "stateCode" | "fromTaxYear">;
+
+/**
+ * The first tax year of the state's next saved row after `target`, or null
+ * when no later row exists (the row at `target` then covers every later year).
+ */
+export function nextRowYear(rows: readonly StateIdTarget[], target: StateIdTarget): number | null {
+  const later = rows
+    .filter((r) => r.stateCode === target.stateCode && r.fromTaxYear > target.fromTaxYear)
+    .map((r) => r.fromTaxYear);
+  return later.length === 0 ? null : Math.min(...later);
 }
 
 /** The furnished entries a row at `target` covers: its state, from its year up to the next row's. */
 function coveredEntries(
-  furnished: readonly FurnishedCount[],
+  furnished: readonly StateIdFurnished[],
   rows: readonly StateIdTarget[],
   target: StateIdTarget,
-): FurnishedCount[] {
-  const next = rows
-    .filter((r) => r.stateCode === target.stateCode && r.fromTaxYear > target.fromTaxYear)
-    .reduce((min, r) => Math.min(min, r.fromTaxYear), Number.POSITIVE_INFINITY);
+): StateIdFurnished[] {
+  const next = nextRowYear(rows, target) ?? Number.POSITIVE_INFINITY;
   return furnished.filter(
     (f) =>
       f.stateCode === target.stateCode &&
@@ -117,7 +122,7 @@ function coveredEntries(
  * row's fromTaxYear).
  */
 export function affectedEmployees(
-  furnished: readonly FurnishedCount[],
+  furnished: readonly StateIdFurnished[],
   rows: readonly StateIdTarget[],
   target: StateIdTarget,
 ): number {
@@ -126,7 +131,7 @@ export function affectedEmployees(
 
 /** The affected tax years, ascending ("2026", "2026 and 2027"). */
 export function affectedYearsText(
-  furnished: readonly FurnishedCount[],
+  furnished: readonly StateIdFurnished[],
   rows: readonly StateIdTarget[],
   target: StateIdTarget,
 ): string {

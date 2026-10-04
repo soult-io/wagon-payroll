@@ -74,7 +74,11 @@ export async function resolveEmployeeAddressAt(
   if (!employee) return null;
   // PAY-21: every source (current field, history payload, audit before) is
   // ciphertext at rest; decryptAddress tolerates plaintext legacy rows.
-  const current = readAddress(kind === "mailing" ? employee.mailingAddress : employee.address, key);
+  // Spec 24 (PAY-116) PR-4: the current field is decrypted only when it
+  // decides the value, so an unreadable current value never holds a W-2
+  // whose box f comes from the history.
+  const current = () =>
+    readAddress(kind === "mailing" ? employee.mailingAddress : employee.address, key);
 
   const requestType = KIND_TO_REQUEST_TYPE[kind];
   const history = await db
@@ -97,7 +101,7 @@ export async function resolveEmployeeAddressAt(
   if (inEffect) return readAddress(inEffect.payload, key);
 
   const first = history[0];
-  if (!first) return current;
+  if (!first) return current();
 
   // asOf precedes the first recorded change — recover the pre-change value
   // from the approve audit event of that first change. A present-but-null
@@ -121,7 +125,7 @@ export async function resolveEmployeeAddressAt(
     const record = before as Record<string, unknown>;
     if (beforeKey in record) return readAddress(record[beforeKey], key);
   }
-  return current;
+  return current();
 }
 
 /** W-2 box f (spec: mailing address effective Dec 31 of the tax year, else residential). */

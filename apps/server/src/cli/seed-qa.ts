@@ -2,8 +2,10 @@
  * QA seed CLI (spec 14 §2): deterministic synthetic dataset for the QA
  * environment. Idempotent — safe to re-run; never touches prod data.
  *
+ * Refuses to run unless APP_ENV=qa (or NODE_ENV=test) — Spec 24 (PAY-116).
+ *
  * Usage:
- *   pnpm seed:qa                                        (local, dev DB)
+ *   APP_ENV=qa pnpm seed:qa                             (local, dev DB)
  *   docker exec payroll-qa node dist/cli/seed-qa.js     (QA container)
  *
  * The fixed QA credentials + TOTP secrets it creates are documented in

@@ -1074,6 +1074,13 @@ export async function seedQaDataset(
   deps: QaDeps,
   opts: QaSeedOptions = {},
 ): Promise<QaSeedSummary> {
+  // Spec 24 (PAY-116) PR-4 (security): synthetic users, employees and a
+  // synthetic EIN may only be written to QA (APP_ENV=qa) or a test boot
+  // (NODE_ENV=test: the vitest harness and the ephemeral e2e boot). Checked
+  // before any read or write; the message never echoes the environment.
+  if (deps.config.appEnv !== "qa" && deps.config.nodeEnv !== "test") {
+    throw new Error("QA seed refused: it runs only with APP_ENV=qa or in a test boot");
+  }
   const today = opts.today ?? todayIso();
   // Reference data (company, tax tables, pay schedule) — idempotent.
   await seedDatabase(deps.db as unknown as SeedDb);

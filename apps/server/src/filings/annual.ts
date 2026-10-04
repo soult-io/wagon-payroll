@@ -187,7 +187,7 @@ export class FormNotAvailableError extends Error {
  * time (the readiness probe passed, then the render read failed). Fixed
  * message; never carries the value or a cause. Maps to 409 ssn_unreadable.
  */
-export class SsnUnreadableError extends Error {
+class SsnUnreadableError extends Error {
   constructor() {
     super("SSN could not be decrypted");
     this.name = "SsnUnreadableError";
@@ -888,20 +888,6 @@ async function w3StateSection(
 }
 
 /**
- * Spec 24 (PAY-116) §5: the year-level reconciliation_mismatch issues, one
- * per unreconciled state. None before STATE_BOXES_FROM_YEAR, and none while
- * any W-2 of the year has withheld boxes (the year is already blocked;
- * Product Lead ruling 2026-10-04).
- */
-export async function w2YearIssues(
-  db: Pick<Db, "select">,
-  year: number,
-  figures: readonly W2Figures[],
-): Promise<W2Issue[]> {
-  return yearIssuesOf(await yearStateSection(db, year, figures));
-}
-
-/**
  * The year's W-3 state section, or null before STATE_BOXES_FROM_YEAR, with
  * no W-2s, or while any W-2 of the year has withheld boxes.
  */
@@ -915,6 +901,12 @@ async function yearStateSection(
   return w3StateSection(db, year, figures as ReadableW2Figures[]);
 }
 
+/**
+ * Spec 24 (PAY-116) §5: the year-level reconciliation_mismatch issues, one
+ * per unreconciled state. None before STATE_BOXES_FROM_YEAR, and none while
+ * any W-2 of the year has withheld boxes (the section is null then: the
+ * year is already blocked; Product Lead ruling 2026-10-04).
+ */
 function yearIssuesOf(section: W3StateSection | null): W2Issue[] {
   if (section === null) return [];
   return section.states
@@ -1069,23 +1061,38 @@ async function probeEmployeePii(
     .from(employees)
     .where(inArray(employees.id, [...employeeIds]));
   for (const row of rows) {
-    const issues: W2Issue[] = [];
-    if (row.taxId) {
-      try {
-        decryptField(row.taxId, key);
-      } catch {
-        issues.push({ code: "ssn_unreadable", severity: "block" });
-      }
-    }
-    try {
-      await w2EmployeeAddressAt(db, row.id, year, key);
-    } catch (err) {
-      if (!(err instanceof AddressUnreadableError)) throw err;
-      issues.push({ code: "address_unreadable", severity: "block" });
-    }
+    const issues = [...ssnIssues(row.taxId, key), ...(await addressIssues(db, row.id, year, key))];
     if (issues.length > 0) out.set(row.id, issues);
   }
   return out;
+}
+
+/** [ssn_unreadable] when a stored SSN does not decrypt; the value is discarded. */
+function ssnIssues(taxId: string | null, key: string): W2Issue[] {
+  if (!taxId) return [];
+  try {
+    decryptSsn(taxId, key);
+    return [];
+  } catch (err) {
+    if (!(err instanceof SsnUnreadableError)) throw err;
+    return [{ code: "ssn_unreadable", severity: "block" }];
+  }
+}
+
+/** [address_unreadable] when the box f address does not decrypt; the value is discarded. */
+async function addressIssues(
+  db: ReadDb,
+  employeeId: number,
+  year: number,
+  key: string,
+): Promise<W2Issue[]> {
+  try {
+    await w2EmployeeAddressAt(db, employeeId, year, key);
+    return [];
+  } catch (err) {
+    if (!(err instanceof AddressUnreadableError)) throw err;
+    return [{ code: "address_unreadable", severity: "block" }];
+  }
 }
 
 /**
@@ -1163,11 +1170,11 @@ export interface AnnualSyncResult {
  * `opts.status` is the status a NEW row gets; an existing not_started row is
  * promoted to ready when the caller says the year has closed (PAY-22).
  */
-async function upsertAnnualFiling(
+export async function upsertAnnualFiling(
   db: Db,
   formType: "940" | "w2_w3",
   year: number,
-  opts: { status: "not_started" | "ready" },
+  opts: { status: "not_started" | "ready"; createdBy?: string },
 ): Promise<AnnualSyncResult> {
   const existing = await db
     .select()
@@ -1187,7 +1194,7 @@ async function upsertAnnualFiling(
         quarter: 0,
         dueDate: annualDueDate(year),
         status: opts.status,
-        createdBy: "scheduler",
+        createdBy: opts.createdBy ?? "scheduler",
       })
       .returning();
     row = inserted[0];

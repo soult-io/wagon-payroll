@@ -21,7 +21,7 @@ import { PGlite } from "@electric-sql/pglite";
 import type { InjectOptions, LightMyRequestResponse } from "fastify";
 import { drizzle } from "drizzle-orm/pglite";
 import { PGliteDialect } from "kysely";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,14 +35,13 @@ import {
   employees,
   seedDatabase,
   type SeedDb,
-  taxFilings,
 } from "@payroll/db";
 import { loadConfig } from "../config.js";
 import { buildApp } from "../app.js";
 import type { Db } from "../db.js";
 import { inviteUser } from "../auth/users.js";
 import { syncDeposits } from "../deposits/service.js";
-import { annualDueDate, refreshAnnualWorksheet, syncAnnualFilings } from "../filings/annual.js";
+import { syncAnnualFilings, upsertAnnualFiling } from "../filings/annual.js";
 import { syncFilings } from "../filings/service.js";
 import { seedQaDataset } from "../qa/seed-qa.js";
 
@@ -339,33 +338,10 @@ await syncAnnualFilings({ db, config });
 // the year closes (the scheduler creates the row only from January 1 of the
 // next year). Status not_started; the worksheet comes from the same refresh
 // the daily tick runs. PDFs still answer 409 until the year closes.
-{
-  const year = new Date().getFullYear();
-  const existing = await db
-    .select()
-    .from(taxFilings)
-    .where(
-      and(eq(taxFilings.formType, "w2_w3"), eq(taxFilings.year, year), eq(taxFilings.quarter, 0)),
-    )
-    .limit(1);
-  const row =
-    existing[0] ??
-    (
-      await db
-        .insert(taxFilings)
-        .values({
-          formType: "w2_w3",
-          year,
-          quarter: 0,
-          dueDate: annualDueDate(year),
-          status: "not_started",
-          createdBy: "e2e",
-        })
-        .returning()
-    )[0];
-  if (!row) throw new Error("current-year W-2/W-3 insert returned no row");
-  await refreshAnnualWorksheet(db, row);
-}
+await upsertAnnualFiling(db, "w2_w3", new Date().getFullYear(), {
+  status: "not_started",
+  createdBy: "e2e",
+});
 
 await app.listen({ port: PORT, host: HOST });
 console.log(`e2e:serve ready at ${BASE_URL} (state → ${STATE_FILE})`);

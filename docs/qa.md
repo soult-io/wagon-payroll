@@ -14,7 +14,9 @@ and re-seedable; no production data ever lands here.**
   UI internal-only). No external SMTP credentials exist in QA: real email
   cannot leave the network by construction.
 - Migrate one-shot runs on every redeploy (same as prod); `seed:qa` is a
-  manual CLI step after first boot (idempotent).
+  manual CLI step after first boot (idempotent). It refuses to run unless
+  `APP_ENV=qa` (or `NODE_ENV=test`), so it can never write synthetic data
+  into another environment.
 - Both schedulers ENABLED (payroll + contractor recurring) — scheduled
   behavior is exactly what QA exists to exercise.
 - Separate secrets dir `/srv/payroll-qa/secrets` (db password, encryption

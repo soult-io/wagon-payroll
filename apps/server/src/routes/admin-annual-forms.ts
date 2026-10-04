@@ -52,10 +52,10 @@ import {
   w2InputFor,
   type W2StateCheck,
   w2StateChecks,
-  w2YearIssues,
   w3InputFor,
 } from "../filings/annual.js";
 import { formatCents } from "@payroll/shared";
+import type { W2Issue } from "../filings/w2-boxes.js";
 import { electronicW2Channel } from "../filings/w2-consent.js";
 import { PDF_RATE_LIMIT, refuseCrossSite } from "../plugins/fetch-site.js";
 import { FilingServiceError } from "../filings/shared.js";
@@ -159,7 +159,7 @@ export function registerAdminAnnualFormRoutes(app: FastifyInstance, deps: Deps):
     const q = yearQuery.safeParse(req.query);
     if (!q.success) return reply.code(400).send({ error: "invalid_year", details: q.error.issues });
     let figures: W2Figures[];
-    let yearIssues: Awaited<ReturnType<typeof w2YearIssues>>;
+    let yearIssues: W2Issue[];
     let stateChecks: W2StateCheck[];
     try {
       const out = await w2FiguresWithYearIssues(db, q.data.year);

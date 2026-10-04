@@ -45,6 +45,7 @@ import { useNotify } from "../composables/useNotify";
 import {
   affectedEmployees,
   affectedYearsText,
+  nextRowYear,
   STATE_ID_CHANGE_HEADER,
   stateIdChangeText,
   stateIdRemoveText,
@@ -124,11 +125,9 @@ async function load() {
 
 /** "2026 on", "2026–2027", or "2026" when the next row starts the year after. */
 function usedFor(row: StateIdRow): string {
-  const later = (list.value?.stateIds ?? [])
-    .filter((r) => r.stateCode === row.stateCode && r.fromTaxYear > row.fromTaxYear)
-    .map((r) => r.fromTaxYear);
-  if (later.length === 0) return `${row.fromTaxYear} on`;
-  const last = Math.min(...later) - 1;
+  const next = nextRowYear(list.value?.stateIds ?? [], row);
+  if (next === null) return `${row.fromTaxYear} on`;
+  const last = next - 1;
   return last === row.fromTaxYear ? `${row.fromTaxYear}` : `${row.fromTaxYear}–${last}`;
 }
 
