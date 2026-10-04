@@ -112,7 +112,8 @@ export async function furnishAndRender(
       { db: tx, config: deps.config },
       employeeId,
       year,
-      { requireBundledForm: true },
+      // PAY-208: the January gate on the company-local date, like the list.
+      { requireBundledForm: true, today: localDate(new Date(), deps.config.appTz) },
     );
     const { corrected } = await furnishCurrent(tx, {
       employeeId,
@@ -265,17 +266,24 @@ async function withdrawalTimes(
 /**
  * PAY-208 (26 CFR 31.6051-1(j)(5)(ii)): employees whose CONSENTED notice for
  * `year` (the w2_available legal notice or a corrected w2_changed notice —
- * both carry the IMPORTANT subject) ended 'failed' in the outbox. The admin
- * then gives a paper copy within 30 days. Names only: no address, no
- * amounts. Sorted by name.
+ * both carry the IMPORTANT subject) ended 'failed' in the outbox, with the
+ * company-local date of the failed attempt (N4). An employee drops off once
+ * a paper_handed or admin_print furnishing of the year is recorded AFTER
+ * that failure. Names only: no address, no amounts. Sorted by name.
  */
 export async function undeliveredW2Notices(
-  db: Pick<Db, "selectDistinct">,
+  db: Pick<Db, "select">,
   year: number,
-): Promise<{ employeeId: number; legalName: string }[]> {
+  appTz: string,
+): Promise<{ employeeId: number; legalName: string; failedOn: string }[]> {
   const important = "IMPORTANT TAX RETURN DOCUMENT AVAILABLE: Your";
-  const rows = await db
-    .selectDistinct({ employeeId: employees.id, legalName: employees.legalName })
+  const failures = await db
+    .select({
+      employeeId: employees.id,
+      legalName: employees.legalName,
+      lastAttemptAt: emailOutbox.lastAttemptAt,
+      createdAt: emailOutbox.createdAt,
+    })
     .from(emailOutbox)
     .innerJoin(employees, eq(employees.userId, emailOutbox.userId))
     .where(
@@ -288,7 +296,36 @@ export async function undeliveredW2Notices(
         ),
       ),
     );
-  return rows.sort((a, b) =>
+  if (failures.length === 0) return [];
+  const latest = new Map<number, { legalName: string; at: Date }>();
+  for (const f of failures) {
+    const at = f.lastAttemptAt ?? f.createdAt;
+    if (at === null) continue;
+    const seen = latest.get(f.employeeId);
+    if (!seen || at.getTime() > seen.at.getTime()) {
+      latest.set(f.employeeId, { legalName: f.legalName, at });
+    }
+  }
+  const paper = await db
+    .select({ employeeId: w2Furnishings.employeeId, furnishedAt: w2Furnishings.furnishedAt })
+    .from(w2Furnishings)
+    .where(
+      and(
+        inArray(w2Furnishings.employeeId, [...latest.keys()]),
+        eq(w2Furnishings.taxYear, year),
+        inArray(w2Furnishings.method, ["paper_handed", "admin_print"]),
+      ),
+    );
+  const out: { employeeId: number; legalName: string; failedOn: string }[] = [];
+  for (const [employeeId, f] of latest) {
+    const answered = paper.some(
+      (p) => p.employeeId === employeeId && p.furnishedAt.getTime() > f.at.getTime(),
+    );
+    if (!answered) {
+      out.push({ employeeId, legalName: f.legalName, failedOn: localDate(f.at, appTz) });
+    }
+  }
+  return out.sort((a, b) =>
     a.legalName < b.legalName ? -1 : a.legalName > b.legalName ? 1 : a.employeeId - b.employeeId,
   );
 }
@@ -316,7 +353,14 @@ export async function electronicAccessAlreadyFurnished(
   today: string,
   appTz: string,
 ): Promise<boolean> {
-  const rows = await db
+  const rows = await onlineRows(db, employeeId, year);
+  if (rows.length === 0) return false;
+  return today <= electronicW2AccessThrough(year, latestCorrectedPostedOn(rows, appTz));
+}
+
+/** The year's portal_notice / employee_download rows of one employee. */
+async function onlineRows(db: Pick<Db, "select">, employeeId: number, year: number) {
+  return db
     .select({
       furnishedAt: w2Furnishings.furnishedAt,
       corrected: w2Furnishings.corrected,
@@ -331,10 +375,36 @@ export async function electronicAccessAlreadyFurnished(
       ),
     )
     .orderBy(desc(w2Furnishings.furnishedAt));
-  if (rows.length === 0) return false;
-  const corrected = rows.find((r) => r.corrected && r.method === "portal_notice");
-  const postedOn = corrected ? localDate(corrected.furnishedAt, appTz) : null;
-  return today <= electronicW2AccessThrough(year, postedOn);
+}
+
+/** Company-local date of the latest CORRECTED portal_notice, or null. */
+function latestCorrectedPostedOn(
+  rows: readonly { furnishedAt: Date; corrected: boolean; method: string }[],
+  appTz: string,
+): string | null {
+  let latest: Date | null = null;
+  for (const r of rows) {
+    if (r.method !== "portal_notice" || !r.corrected) continue;
+    if (latest === null || r.furnishedAt.getTime() > latest.getTime()) latest = r.furnishedAt;
+  }
+  return latest === null ? null : localDate(latest, appTz);
+}
+
+/**
+ * PAY-208 (N1, (j)(6)): the last day the employee's W-2 of `year` stays
+ * online — October 15 of the next year, or 90 days after the latest
+ * corrected posting when that is later.
+ */
+export async function w2AccessThrough(
+  db: Pick<Db, "select">,
+  employeeId: number,
+  year: number,
+  appTz: string,
+): Promise<string> {
+  return electronicW2AccessThrough(
+    year,
+    latestCorrectedPostedOn(await onlineRows(db, employeeId, year), appTz),
+  );
 }
 
 /** The current figures hash, or null (no W-2, blocked, or unreadable). */
@@ -446,7 +516,8 @@ async function sendPaperCourtesy(
 /**
  * PAY-208 (federal SME ruling 2026-10-04): the employee withdrew AFTER the
  * year's W-2 was posted online under a consent that covered the year, is
- * still active with a login — a correction is then posted online too (with
+ * still active with a login (N3: a portal_notice or an employee_download
+ * before the withdrawal) — a correction is then posted online too (with
  * the IMPORTANT notice) and, because they withdrew, also owed on paper
  * (correctionToFurnish stays set until paper_handed).
  */
@@ -461,8 +532,11 @@ function withdrewAfterOnlineFurnishing(
     return false;
   }
   if (!consentCoversYear({ ...consent, withdrawnAt: null }, taxYear)) return false;
+  // N3: a download is online furnishing too.
   return rows.some(
-    (r) => r.method === "portal_notice" && r.furnishedAt.getTime() < withdrawnAt.getTime(),
+    (r) =>
+      (r.method === "portal_notice" || r.method === "employee_download") &&
+      r.furnishedAt.getTime() < withdrawnAt.getTime(),
   );
 }
 
@@ -503,7 +577,8 @@ export async function furnishCorrectionIfNeeded(
     consented ||
     (withdrawnAt !== null &&
       withdrewAfterOnlineFurnishing(rows, withdrawnAt, consent, taxYear, employee) &&
-      today <= electronicW2AccessThrough(taxYear));
+      // C-L7: inside the window, extended by the latest corrected posting.
+      today <= electronicW2AccessThrough(taxYear, latestCorrectedPostedOn(rows, config.appTz)));
   if (postOnline && employee.userId) {
     const posted = await recordFurnishing(tx, {
       employeeId,
@@ -515,9 +590,11 @@ export async function furnishCorrectionIfNeeded(
     });
     // The latest notice already carries these figures (D2): never mail twice.
     if (!posted) return null;
+    // N2: posted today — online through the later of Oct 15 and today + 90 days.
     const rendered = tplW2Changed(await templateContext(tx, config), {
       taxYear,
       consented: true,
+      accessThrough: electronicW2AccessThrough(taxYear, today),
     });
     await tx.insert(emailOutbox).values({
       userId: employee.userId,

@@ -206,7 +206,7 @@ export function registerAdminAnnualFormRoutes(app: FastifyInstance, deps: Deps):
       reconsentNeeded: outdated.size,
       contactReady: (await readW2Contact(db)).ready,
       // PAY-208 ((j)(5)(ii)): consented notices of the year that bounced.
-      undeliveredNotices: await undeliveredW2Notices(db, q.data.year),
+      undeliveredNotices: await undeliveredW2Notices(db, q.data.year, config.appTz),
     };
   });
 

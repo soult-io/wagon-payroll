@@ -14,7 +14,11 @@ import type { AppConfig } from "../config.js";
 import type { Guards } from "../plugins/guards.js";
 import { encryptField, maskLast4 } from "../crypto/field-encryption.js";
 import { refuseCrossSite } from "../plugins/fetch-site.js";
-import { saveW2Contact, w2ContactForAdmin } from "../filings/w2-consent.js";
+import {
+  notifyIfContactAddressChanged,
+  saveW2Contact,
+  w2ContactForAdmin,
+} from "../filings/w2-consent.js";
 
 interface Deps {
   db: Db;
@@ -95,35 +99,41 @@ export function registerAdminSettingsRoutes(app: FastifyInstance, deps: Deps): v
     const before = rows[0];
     if (!before) return reply.code(404).send({ error: "no_company" });
 
-    const updated = await db
-      .update(company)
-      .set({
-        legalName: body.data.legalName,
-        ...(body.data.address !== undefined ? { address: body.data.address } : {}),
-        ...(body.data.ein !== undefined
-          ? { ein: encryptField(normalizeEin(body.data.ein), config.encryptionKey) }
-          : {}),
-      })
-      .where(eq(company.id, before.id))
-      .returning();
-    // Audit records MASKED before/after only — the plaintext EIN never lands
-    // in audit_events.
-    const einChanged = body.data.ein !== undefined;
-    await db.insert(auditEvents).values({
-      actorId: req.authUser!.id,
-      action: "company.update",
-      entity: "company",
-      entityId: String(before.id),
-      before: {
-        legalName: before.legalName,
-        address: before.address,
-        ...(einChanged ? { einMasked: maskLast4(before.ein, config.encryptionKey) } : {}),
-      },
-      after: {
-        legalName: updated[0]!.legalName,
-        address: updated[0]!.address,
-        ...(einChanged ? { einMasked: maskLast4(updated[0]!.ein, config.encryptionKey) } : {}),
-      },
+    // F1 ((j)(3)(vii)): the update, its audit row and any W-2 contact change
+    // mail (the contact uses the company address) commit together.
+    const updated = await db.transaction(async (tx) => {
+      const rows = await tx
+        .update(company)
+        .set({
+          legalName: body.data.legalName,
+          ...(body.data.address !== undefined ? { address: body.data.address } : {}),
+          ...(body.data.ein !== undefined
+            ? { ein: encryptField(normalizeEin(body.data.ein), config.encryptionKey) }
+            : {}),
+        })
+        .where(eq(company.id, before.id))
+        .returning();
+      // Audit records MASKED before/after only — the plaintext EIN never lands
+      // in audit_events.
+      const einChanged = body.data.ein !== undefined;
+      await tx.insert(auditEvents).values({
+        actorId: req.authUser!.id,
+        action: "company.update",
+        entity: "company",
+        entityId: String(before.id),
+        before: {
+          legalName: before.legalName,
+          address: before.address,
+          ...(einChanged ? { einMasked: maskLast4(before.ein, config.encryptionKey) } : {}),
+        },
+        after: {
+          legalName: rows[0]!.legalName,
+          address: rows[0]!.address,
+          ...(einChanged ? { einMasked: maskLast4(rows[0]!.ein, config.encryptionKey) } : {}),
+        },
+      });
+      await notifyIfContactAddressChanged(tx, config, before, rows[0]!);
+      return rows;
     });
     return {
       company: {

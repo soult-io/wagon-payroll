@@ -679,12 +679,20 @@ export function w2Available(
  */
 export function w2ConsentWithdrawn(
   ctx: TemplateContext,
-  data: { effectiveOn: string; contact: W2Contact | null },
+  data: {
+    effectiveOn: string;
+    contact: W2Contact | null;
+    /** PAY-208 (N1): W-2s already given online and still available, with their last day (ISO). */
+    stillOnline?: readonly { taxYear: number; accessThrough: string }[];
+  },
 ): RenderedEmail {
+  const still = (data.stillOnline ?? [])
+    .map((w) => `Your ${w.taxYear} W-2 stays available through ${longIsoDate(w.accessThrough)}.`)
+    .join(" ");
   const parts = [
     `This confirms that you withdrew your agreement to get your W-2s online. It takes effect on ${longIsoDate(data.effectiveOn)}.`,
     `From that date, ${ctx.companyName} will give you your W-2s on paper.`,
-    `W-2s given to you online before that date don't change. Each one stays available through October 15 of the year after its tax year: sign in at ${ctx.appUrl}, open ${PAYSLIPS_NAV_LABEL}, and find "${W2_CARD_HEADING}".`,
+    `W-2s given to you online before that date don't change. Each one stays available through October 15 of the year after its tax year: sign in at ${ctx.appUrl}, open ${PAYSLIPS_NAV_LABEL}, and find "${W2_CARD_HEADING}".${still ? ` ${still}` : ""}`,
     `To get your W-2s online again, sign in, open ${PAYSLIPS_NAV_LABEL}, and agree to the terms.`,
     data.contact
       ? `Questions, or didn't ask for this? Contact ${data.contact.name}: ${contactLine(data.contact)}.`
@@ -751,10 +759,21 @@ export function signInEmailChanged(ctx: TemplateContext): RenderedEmail {
  */
 export function w2Changed(
   ctx: TemplateContext,
-  data: { taxYear: number; consented: boolean },
+  data: {
+    taxYear: number;
+    consented: boolean;
+    /**
+     * PAY-208 (N2, (j)(6)): ISO date the corrected W-2 stays online through
+     * (electronicW2AccessThrough(year, posted on)); consented variant only.
+     */
+    accessThrough?: string;
+  },
 ): RenderedEmail {
   const year = data.taxYear;
   if (data.consented) {
+    const through = data.accessThrough
+      ? ` It stays available there through ${longIsoDate(data.accessThrough)}.`
+      : "";
     const lead = (co: string) =>
       `${co} has corrected your ${year} Form W-2. The corrected W-2 is marked CORRECTED and replaces the earlier one. Use the corrected W-2 for your tax return.`;
     const tail =
@@ -762,11 +781,11 @@ export function w2Changed(
     const where = (signIn: string) =>
       `To view and print it, sign in at ${signIn}, open ${PAYSLIPS_NAV_LABEL}, and find "${W2_CARD_HEADING}".`;
     const appUrl = escapeHtml(ctx.appUrl);
-    const body = `<p>${lead(escapeHtml(ctx.companyName))}</p><p>${where(`<a href="${appUrl}">${appUrl}</a>`)}</p><p>${tail}</p>`;
+    const body = `<p>${lead(escapeHtml(ctx.companyName))}</p><p>${where(`<a href="${appUrl}">${appUrl}</a>`)}</p><p>${tail}${through}</p>`;
     return {
       subject: `IMPORTANT TAX RETURN DOCUMENT AVAILABLE: Your corrected ${year} W-2 from ${ctx.companyName}`,
       html: page(ctx, body),
-      text: `${lead(ctx.companyName)} ${where(ctx.appUrl)} ${tail}\n\n${footer(ctx.companyName, ctx.brandName)}`,
+      text: `${lead(ctx.companyName)} ${where(ctx.appUrl)} ${tail}${through}\n\n${footer(ctx.companyName, ctx.brandName)}`,
     };
   }
   const notice = (co: string) =>

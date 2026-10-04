@@ -66,6 +66,7 @@ import { templateContext } from "../notify/outbox.js";
 import { AddressUnreadableError, w2EmployeeAddressAt } from "../change-requests/address-history.js";
 import { decryptField, fieldKey } from "../crypto/field-encryption.js";
 import { lockEmployee } from "../payroll/locks.js";
+import { localDate } from "../payroll/run-dates.js";
 import { furnishCurrent } from "./w2-furnish-core.js";
 import { electronicW2Channel, readW2Contact, W2_CONSENT_GATE_FROM_TAX_YEAR } from "./w2-consent.js";
 import {
@@ -1532,6 +1533,15 @@ export async function w3InputFor(
 // Employee self-service queries
 // ---------------------------------------------------------------------------
 
+/** Tax years with an issued run of one employee. */
+async function myEmployeeIssuedYears(db: Pick<Db, "selectDistinct">, employeeId: number) {
+  const rows = await db
+    .selectDistinct({ year: sql<number>`extract(year from ${payrollRuns.payDate})::int` })
+    .from(payrollRuns)
+    .where(and(eq(payrollRuns.employeeId, employeeId), eq(payrollRuns.status, "issued")));
+  return rows.map((r) => r.year);
+}
+
 /** Tax years with an issued run of the user's W-2 employee record (any availability). */
 async function myIssuedYears(db: Db, userId: string): Promise<number[]> {
   const employeeRows = await db
@@ -1751,9 +1761,11 @@ async function sendYearNotices(
 
 /**
  * PAY-208 (2.2a): an employee who agrees (or agrees again) after the year
- * notice went out is furnished then: for each notified year from the gate
- * year that is available, still inside its access window, with issued runs
- * for the employee and a ready W-2, the consented year notice runs now
+ * notice went out is furnished then: for each year from the gate year that
+ * is available (company-local date), still inside its access window, with
+ * issued runs for the employee, a ready W-2, and whose notice went out
+ * (notified, or this employee's notice already queued by a run still in
+ * progress — C-L5), the consented year notice runs now
  * (portal_notice + IMPORTANT mail; furnishCurrent dedupes, so a year
  * already furnished online mails nothing). A failure is logged by error
  * class only and the agreement stands (no scheduler retry yet, brief O3).
@@ -1761,12 +1773,13 @@ async function sendYearNotices(
 export async function furnishAfterConsent(
   deps: Deps,
   employeeId: number,
-  today: string = todayIso(),
+  today: string = localDate(new Date(), deps.config.appTz),
 ): Promise<{ sent: number; failed: number }> {
   const { db, config } = deps;
   let sent = 0;
   let failed = 0;
-  const years = (await notifiedYears(db)).filter(
+  const notified = await notifiedYears(db);
+  const years = (await myEmployeeIssuedYears(db, employeeId)).filter(
     (y) =>
       y >= W2_CONSENT_GATE_FROM_TAX_YEAR &&
       isW2Available(y, today) &&
@@ -1778,6 +1791,12 @@ export async function furnishAfterConsent(
     try {
       const recipient = (await w2RecipientsForYear(db, year, employeeId))[0];
       if (!recipient || (await myW2FormCount(db, employeeId, year)) === null) continue;
+      // C-L5: the year's notice went out — recorded as notified, or (a run
+      // still in progress) this employee's notice is already queued. A year
+      // not yet noticed at all is left to the run (T15b).
+      if (!notified.includes(year) && !(await yearNoticeQueued(db, recipient.userId, year))) {
+        continue;
+      }
       if (await sendOneW2AvailableNotice(db, recipient, year, notice)) sent += 1;
     } catch (err) {
       failed += 1;
@@ -1872,7 +1891,8 @@ export async function sendW2AvailableNotices(
   opts: { today?: string } = {},
 ): Promise<{ sent: number }> {
   const { db, config } = deps;
-  const today = opts.today ?? todayIso();
+  // PAY-208: the company-local date (Jan 1 in the company's time zone).
+  const today = opts.today ?? localDate(new Date(), config.appTz);
   const notified = await notifiedYears(db);
 
   const years = await db

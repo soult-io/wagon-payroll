@@ -25,18 +25,31 @@
  */
 
 import { and, eq, inArray, isNotNull, isNull, like } from "drizzle-orm";
-import { auditEvents, company, emailOutbox, employees, w2DeliveryConsents } from "@payroll/db";
+import {
+  auditEvents,
+  company,
+  emailOutbox,
+  employees,
+  w2DeliveryConsents,
+  w2Furnishings,
+} from "@payroll/db";
 import {
   EVENT_TYPE,
   w2ConsentWithdrawn as tplWithdrawn,
   w2ContactChanged as tplContactChanged,
   w2TermsUpdated as tplTermsUpdated,
 } from "@payroll/notifications";
-import { addressLine, type PostalAddress, type W2Contact } from "@payroll/shared";
+import {
+  addressLine,
+  electronicW2AccessThrough,
+  type PostalAddress,
+  type W2Contact,
+} from "@payroll/shared";
 import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
 import { templateContext } from "../notify/outbox.js";
 import { localDate } from "../payroll/run-dates.js";
+import { lockEmployee } from "../payroll/locks.js";
 import { FilingServiceError } from "./shared.js";
 
 type ReadDb = Pick<Db, "select">;
@@ -131,7 +144,7 @@ export interface W2ContactRecord {
   ready: boolean;
 }
 
-type CompanyRow = typeof company.$inferSelect;
+export type CompanyRow = typeof company.$inferSelect;
 
 function isAddress(v: unknown): v is PostalAddress {
   if (typeof v !== "object" || v === null) return false;
@@ -180,6 +193,58 @@ export async function w2ContactForAdmin(db: ReadDb): Promise<{
     mailingAddress: isAddress(row?.w2ContactAddress) ? row.w2ContactAddress : null,
     contactReady: contactOf(row).ready,
   };
+}
+
+/**
+ * (j)(3)(vii), 2nd sentence: one w2_contact_changed mail with `contact` to
+ * every employee whose consent is not withdrawn (any version) and who has a
+ * login. The one fan-out — the W-2 contact save and a company address
+ * change while the contact uses that address. Caller holds the transaction.
+ */
+export async function queueW2ContactChanged(
+  tx: Pick<Db, "select" | "insert">,
+  config: AppConfig,
+  companyName: string,
+  contact: W2Contact,
+): Promise<number> {
+  const recipients = await tx
+    .select({ userId: employees.userId })
+    .from(w2DeliveryConsents)
+    .innerJoin(employees, eq(employees.id, w2DeliveryConsents.employeeId))
+    .where(and(isNull(w2DeliveryConsents.withdrawnAt), isNotNull(employees.userId)))
+    .orderBy(employees.id);
+  const rendered = tplContactChanged(await templateContext(tx, config, companyName), { contact });
+  let notified = 0;
+  for (const r of recipients) {
+    if (r.userId === null) continue;
+    await tx.insert(emailOutbox).values({
+      userId: r.userId,
+      eventType: EVENT_TYPE.w2ContactChanged,
+      subject: rendered.subject,
+      bodyHtml: rendered.html,
+    });
+    notified += 1;
+  }
+  return notified;
+}
+
+/**
+ * F1 ((j)(3)(vii)): the company row changed from `before` to `after`. When
+ * the W-2 contact is complete and has no address of its own, the company
+ * address IS its mailing address — a changed address is a contact change
+ * and is mailed. Returns the number of mails queued.
+ */
+export async function notifyIfContactAddressChanged(
+  tx: Pick<Db, "select" | "insert">,
+  config: AppConfig,
+  before: CompanyRow,
+  after: CompanyRow,
+): Promise<number> {
+  if (isAddress(after.w2ContactAddress)) return 0;
+  if (canonical(before.address ?? null) === canonical(after.address ?? null)) return 0;
+  const { contact } = contactOf(after);
+  if (contact === null || contact.mailingAddress === null) return 0;
+  return queueW2ContactChanged(tx, config, after.legalName, contact);
 }
 
 /** JSON with sorted keys (jsonb does not keep key order); undefined dropped. */
@@ -244,27 +309,7 @@ export async function saveW2Contact(
     });
     const { contact } = contactOf(updated[0]);
     if (contact === null) return { changed: true, notified: 0 };
-    const recipients = await tx
-      .select({ userId: employees.userId })
-      .from(w2DeliveryConsents)
-      .innerJoin(employees, eq(employees.id, w2DeliveryConsents.employeeId))
-      .where(and(isNull(w2DeliveryConsents.withdrawnAt), isNotNull(employees.userId)))
-      .orderBy(employees.id);
-    const rendered = tplContactChanged(
-      await templateContext(tx, deps.config, updated[0]!.legalName),
-      { contact },
-    );
-    let notified = 0;
-    for (const r of recipients) {
-      if (r.userId === null) continue;
-      await tx.insert(emailOutbox).values({
-        userId: r.userId,
-        eventType: EVENT_TYPE.w2ContactChanged,
-        subject: rendered.subject,
-        bodyHtml: rendered.html,
-      });
-      notified += 1;
-    }
+    const notified = await queueW2ContactChanged(tx, deps.config, updated[0]!.legalName, contact);
     return { changed: true, notified };
   });
 }
@@ -385,6 +430,9 @@ export async function consentToElectronicW2(
   }
   if (!(await readW2Contact(db)).ready) throw new W2ConsentRefused("w2_contact_missing");
   const change = await db.transaction(async (tx) => {
+    // C-L5: the employee lock orders the agreement against the year-notice
+    // run (sendOneW2AvailableNotice takes the same lock).
+    await lockEmployee(tx, employeeId);
     const before = await consentRowOf(tx, employeeId);
     if (consentCoversYear(before, W2_CONSENT_GATE_FROM_TAX_YEAR)) return null;
     if (!opts.accessCheck()) throw new W2ConsentRefused("access_check_failed");
@@ -454,10 +502,19 @@ export async function withdrawW2Consent(
     }
     const now = new Date();
     const effectiveOn = localDate(now, config.appTz);
-    await tx
+    // C-L6: only the request that actually withdraws writes the audit row
+    // and the confirmation mail.
+    const changed = await tx
       .update(w2DeliveryConsents)
       .set({ withdrawnAt: now, updatedAt: now })
-      .where(eq(w2DeliveryConsents.employeeId, employeeId));
+      .where(
+        and(eq(w2DeliveryConsents.employeeId, employeeId), isNull(w2DeliveryConsents.withdrawnAt)),
+      )
+      .returning({ withdrawnAt: w2DeliveryConsents.withdrawnAt });
+    if (changed.length === 0) {
+      const row = await consentRowOf(tx, employeeId);
+      return { withdrawnAt: row?.withdrawnAt ?? now, confirmation: null };
+    }
     await tx.insert(auditEvents).values({
       actorId,
       action: "w2_consent.withdraw",
@@ -476,6 +533,7 @@ export async function withdrawW2Consent(
     const rendered = tplWithdrawn(await templateContext(tx, config), {
       effectiveOn,
       contact: (await readW2Contact(tx)).contact,
+      stillOnline: await stillOnline(tx, employeeId, effectiveOn, config.appTz),
     });
     await tx.insert(emailOutbox).values({
       userId,
@@ -490,6 +548,49 @@ export async function withdrawW2Consent(
     effectiveOn: localDate(out.withdrawnAt, config.appTz),
     confirmation: out.confirmation,
   };
+}
+
+/**
+ * N1: the tax years already furnished online (portal_notice or
+ * employee_download) and still inside their access window on `today`, with
+ * the window's last day — October 15 of the next year, or 90 days after the
+ * latest corrected posting when later ((j)(6)).
+ */
+async function stillOnline(
+  db: ReadDb,
+  employeeId: number,
+  today: string,
+  appTz: string,
+): Promise<{ taxYear: number; accessThrough: string }[]> {
+  const rows = await db
+    .select({
+      taxYear: w2Furnishings.taxYear,
+      method: w2Furnishings.method,
+      corrected: w2Furnishings.corrected,
+      furnishedAt: w2Furnishings.furnishedAt,
+    })
+    .from(w2Furnishings)
+    .where(
+      and(
+        eq(w2Furnishings.employeeId, employeeId),
+        inArray(w2Furnishings.method, ["portal_notice", "employee_download"]),
+      ),
+    );
+  const years = [...new Set(rows.map((r) => r.taxYear))].sort((a, b) => a - b);
+  const out: { taxYear: number; accessThrough: string }[] = [];
+  for (const taxYear of years) {
+    let latest: Date | null = null;
+    for (const r of rows) {
+      if (r.taxYear !== taxYear || r.method !== "portal_notice" || !r.corrected) continue;
+      if (latest === null || r.furnishedAt.getTime() > latest.getTime()) latest = r.furnishedAt;
+    }
+    const through = electronicW2AccessThrough(
+      taxYear,
+      latest === null ? null : localDate(latest, appTz),
+    );
+    if (today <= through) out.push({ taxYear, accessThrough: through });
+  }
+  return out;
 }
 
 /** Active consents of `employeeIds` whose employee has a login and is active. */

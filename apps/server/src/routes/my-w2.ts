@@ -50,7 +50,9 @@ import {
   electronicAccessAlreadyFurnished,
   furnishAndRender,
   isMyW2Corrected,
+  w2AccessThrough,
 } from "../filings/w2-furnish.js";
+import { electronicW2AccessThrough } from "@payroll/shared";
 import { localDate } from "../payroll/run-dates.js";
 import { PDF_RATE_LIMIT, refuseCrossSite } from "../plugins/fetch-site.js";
 
@@ -112,6 +114,8 @@ export function registerMyW2Routes(app: FastifyInstance, deps: Deps): void {
   const { db, config, guards } = deps;
   const now = deps.clock ?? (() => new Date());
   const today = () => localDate(now(), config.appTz);
+  /** The January availability gate: the real date in the company time zone (not deps.clock). */
+  const gateToday = () => localDate(new Date(), config.appTz);
   const codes = createAccessCodeStore();
 
   /** True when the employee may download `year`: the consent covers it, or D9. */
@@ -123,9 +127,10 @@ export function registerMyW2Routes(app: FastifyInstance, deps: Deps): void {
 
   app.get("/api/my/w2", { preHandler: guards.requireAuth }, async (req) => {
     const userId = req.authUser!.id;
-    const years = await listMyW2Years(db, userId);
+    // PAY-208: the January gate reads the company-local date (config.appTz).
+    const years = await listMyW2Years(db, userId, gateToday());
     // PAY-208 (2.2b, OD5): the consent prompt shows before January.
-    const upcomingYear = await myUpcomingW2Year(db, userId);
+    const upcomingYear = await myUpcomingW2Year(db, userId, gateToday());
     const employee = years.length > 0 ? await myEmployee(db, userId) : null;
     const w2s = [];
     for (const year of years) {
@@ -144,6 +149,10 @@ export function registerMyW2Routes(app: FastifyInstance, deps: Deps): void {
         corrected,
         downloadable,
         formCount,
+        // PAY-208 (N1, (j)(6)): the last day this W-2 stays online.
+        accessThrough: employee
+          ? await w2AccessThrough(db, employee.id, year, config.appTz)
+          : electronicW2AccessThrough(year),
       });
     }
     return { w2s, upcomingYear };
@@ -197,7 +206,7 @@ export function registerMyW2Routes(app: FastifyInstance, deps: Deps): void {
         if (out.change !== null) {
           // 2.2a: a year already notified on paper is furnished online now.
           try {
-            await furnishAfterConsent({ db, config }, employee.id);
+            await furnishAfterConsent({ db, config }, employee.id, gateToday());
           } catch (err) {
             req.log.error(`W-2 late consent furnishing failed (${errorClass(err)})`);
           }
