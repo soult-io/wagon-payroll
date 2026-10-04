@@ -49,6 +49,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { inflateSync } from "node:zlib";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -690,12 +691,16 @@ const W3_2025 = {
  * Goldens measured by the auditor on origin/main 9f42fda (pre-PR-3) at the
  * fixed clock below; packet and Copy D equal the PAY-206 goldens of
  * annual-w2-corrected-pdf.test.ts (cross-check of the method).
+ * PR-3 round 2 R6: the W-3 output is rebuilt without the template's
+ * JavaScript, so the 2025 W-3 byte golden (bb55fb2d…8498) is retired; the
+ * W-3 guard is now its shown values (measured on 9f42fda), page count, no
+ * fields, no script — and identical bytes with or without the null box
+ * 15–19 inputs. The 2025 W-2 goldens stay.
  */
 const FIXED_NOW = new Date("2026-01-20T12:00:00Z");
 const GOLDEN_2025 = {
   packet: "28023c78a10b89e34acdf6a6865ed946acfa4a50904b1454787df593b7b4e782",
   copyD: "9cc0ef38b4b9f9543513eda6c5347c04e1dd68e43f1ef2c5243fe3dcafe166e3",
-  w3: "bb55fb2d92f734e482f295c08250614e6b52209719044b784f979370dfaa8498",
   corrected: "e7b402d5647a0756982eb083b80222cbbb8af3cd43c2496f6f96ef9f52d65b15",
 };
 
@@ -736,22 +741,50 @@ describe("W15 PDF part (guard: passes before and after PR-3) — 2025 unchanged"
     });
   });
 
-  it("2025 bytes unchanged: packet, Copy D and W-3 equal the pre-PR-3 goldens (also with empty state fields / null W-3 boxes 15–19)", async () => {
+  it("2025 W-2 bytes unchanged: packet and Copy D equal the pre-PR-3 goldens (also with empty state fields)", async () => {
     vi.useFakeTimers({ toFake: ["Date"], now: FIXED_NOW });
     const withEmpty = { ...INPUT_2025, stateLines: [], localLines: [], formCount: 1 };
-    const w3Nulls = { ...W3_2025, ...Object.fromEntries(W3_BOX15_19.map((k) => [k, null])) };
     expect({
       packet: sha(await renderPacket(INPUT_2025)),
       packetEmpty: sha(await renderPacket(withEmpty)),
       copyD: sha(await renderCopyD(INPUT_2025)),
-      w3: sha(await renderW3(W3_2025)),
-      w3Nulls: sha(await renderW3(w3Nulls)),
     }).toEqual({
       packet: GOLDEN_2025.packet,
       packetEmpty: GOLDEN_2025.packet,
       copyD: GOLDEN_2025.copyD,
-      w3: GOLDEN_2025.w3,
-      w3Nulls: GOLDEN_2025.w3,
+    });
+  });
+
+  it("2025 W-3 unchanged in content: 1 page, no fields, the shown values measured on 9f42fda; same bytes with null boxes 15–19", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: FIXED_NOW });
+    const w3Nulls = { ...W3_2025, ...Object.fromEntries(W3_BOX15_19.map((k) => [k, null])) };
+    const bytes = await renderW3(W3_2025);
+    const doc = await pdfLib.PDFDocument.load(bytes);
+    expect({
+      structure: await documents.pdfStructure(bytes),
+      shown: pageXObjectStrings(doc, 0)
+        .filter((v: string) => v !== "")
+        .sort(),
+      sameWithNulls: sha(await renderW3(w3Nulls)) === sha(bytes),
+    }).toEqual({
+      structure: { pageCount: 1, fieldCount: 0 },
+      // "4" = the ZapfDingbats check of the 941 and None boxes; "1" = box c.
+      shown: [
+        "1",
+        "4",
+        "4",
+        "00-1234567",
+        "Synthetic Wagon Co",
+        "1 Test Way",
+        "Springfield, IL 62701",
+        "72000.00",
+        "7454.04",
+        "72000.00",
+        "4464.00",
+        "72000.00",
+        "1044.00",
+      ].sort(),
+      sameWithNulls: true,
     });
   });
 });
@@ -765,6 +798,109 @@ describe("C4 2025 CORRECTED (guard: passes before and after PR-3)", () => {
       pages: (await documents.pdfStructure(bytes)).pageCount,
       sha: sha(bytes),
     }).toEqual({ marked: [0, 2, 4], pages: 6, sha: GOLDEN_2025.corrected });
+  });
+});
+
+// =========================================================================== R6
+
+/** Catalog / object keys that make a PDF run script or act on open (security L1). */
+const SCRIPT_KEYS = ["JavaScript", "JS", "OpenAction", "AA", "Perms"];
+
+/** Every SCRIPT_KEYS name used as a dictionary key anywhere in the file (incl. object streams). */
+async function scriptKeys(bytes: Uint8Array): Promise<string[]> {
+  const doc = await pdfLib.PDFDocument.load(bytes);
+  const hits = new Set<string>();
+  for (const [, obj] of doc.context.enumerateIndirectObjects()) {
+    const dict = obj instanceof pdfLib.PDFDict ? obj : (obj as { dict?: unknown })?.dict;
+    if (!(dict instanceof pdfLib.PDFDict)) continue;
+    for (const key of (dict as Any).keys()) {
+      const name = String(key.asString()).slice(1);
+      if (SCRIPT_KEYS.includes(name)) hits.add(name);
+    }
+  }
+  return [...hits].sort();
+}
+
+describe("R6 rendered W-3 carries no JavaScript, open action, additional actions or Perms (security L1)", () => {
+  it("W-3 2025 and 2026: none of /JavaScript /JS /OpenAction /AA /Perms; still 1 page, no fields", async () => {
+    const w3_2025 = await renderW3(W3_2025);
+    const w3_2026 = await renderW3(
+      w3Base2026({
+        box15State: "CA",
+        box15StateId: "00000001",
+        box16StateWages: "60000.00",
+        box17StateTax: "148.08",
+      }),
+    );
+    expect({
+      y2025: await scriptKeys(w3_2025),
+      y2026: await scriptKeys(w3_2026),
+      s2025: await documents.pdfStructure(w3_2025),
+      s2026: await documents.pdfStructure(w3_2026),
+    }).toEqual({
+      y2025: [],
+      y2026: [],
+      s2025: { pageCount: 1, fieldCount: 0 },
+      s2026: { pageCount: 1, fieldCount: 0 },
+    });
+  });
+
+  it("guard: the 2026 W-2 packet and Copy D carry none either (built with PDFDocument.create)", async () => {
+    expect({
+      packet: await scriptKeys(await renderPacket(W05_INPUT)),
+      copyD: await scriptKeys(await renderCopyD(W05_INPUT)),
+    }).toEqual({ packet: [], copyD: [] });
+  });
+});
+
+// =========================================================================== R5
+
+/** Font size and shown text of one field's normal appearance (pre-flatten). */
+function appearance(doc: Any, name: string): { size: number | null; text: string } {
+  // pdf-lib builds appearances lazily (on save / flatten); build them as flatten would.
+  doc.getForm().updateFieldAppearances();
+  const field = doc.getForm().getTextField(name);
+  const widget = field.acroField.getWidgets()[0];
+  const ap = widget.getNormalAppearance();
+  const stream = ap instanceof pdfLib.PDFRef ? doc.context.lookup(ap) : ap;
+  const filter = String(stream.dict.get(pdfLib.PDFName.of("Filter")) ?? "");
+  const raw =
+    stream instanceof pdfLib.PDFRawStream
+      ? pdfLib.decodePDFRawStream(stream).decode()
+      : filter === "/FlateDecode"
+        ? inflateSync(Buffer.from(stream.getContents()))
+        : stream.getContents();
+  const src = Buffer.from(raw).toString("latin1");
+  const tf = [...src.matchAll(/\/[^\s/]+\s+([\d.]+)\s+Tf/g)].pop();
+  const shown = [...src.matchAll(/\(((?:\\.|[^\\)])*)\)\s*Tj|<([0-9A-Fa-f]*)>\s*Tj/g)]
+    .map((m) => (m[1] !== undefined ? m[1] : Buffer.from(m[2] ?? "", "hex").toString("latin1")))
+    .join("");
+  return { size: tf ? Number(tf[1]) : null, text: shown };
+}
+
+describe("R5 long state IDs on the 2026 W-2 (f2_32: no MaxLen, DoNotScroll, 8 pt, width 127.6 pt)", () => {
+  // Auditor dump: f2_32/f2_34 MaxLen none, Ff 8388608 (DoNotScroll), DA
+  // HelveticaLTStd-Bold 8 pt, rect 65.8–193.4 (127.6 pt). Digits are 556/1000
+  // em in Helvetica and Helvetica-Bold. 32 digits: 142.3 pt at 8 pt (does not
+  // fit), 106.8 pt at 6 pt (fits) -> auto-size between 6 and 8 pt.
+  const ID32 = "12345678901234567890123456789012";
+  it("a 32-digit ID is filled in full, auto-sized below 8 pt and not below 6 pt, and its text width fits the field", async () => {
+    const forms = await prepareW2Forms(
+      input2026([
+        { state: "CA", stateId: ID32, box16: "60000.00", box17: "148.08", form: 1, row: 1 },
+      ]),
+      ["CopyB"],
+    );
+    const name = w2Path("CopyB", W2_2026_ROWS.stateId[0].sub);
+    const a = appearance(forms[0], name);
+    const size = a.size ?? 0;
+    expect({
+      value: forms[0].getForm().getTextField(name).getText(),
+      shown: a.text,
+      shrunk: size < 8,
+      atLeast6: size >= 6,
+      fits: 32 * 0.556 * size <= 127.6,
+    }).toEqual({ value: ID32, shown: ID32, shrunk: true, atLeast6: true, fits: true });
   });
 });
 

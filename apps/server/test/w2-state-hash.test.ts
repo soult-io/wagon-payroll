@@ -18,6 +18,12 @@
  * reissued marked CORRECTED); PAY-206 R3-R6; PR-2 brief §4 option (b): v2 =
  * boxes 1-6 + formCount + state lines {state, form, row, box16, box17} +
  * localLines []; no state ID value; integers or null only.
+ *
+ * Updated for PAY-116 PR-3 round 2 R3 (Product Lead 2026-10-04): v2 also
+ * covers what box 15 prints — per line `stateIdSource` and `stateIdDigest`
+ * (SHA-256 hex of the stored ciphertext of an entered row, null otherwise).
+ * Changed in place (no v2 rows in prod). The figures passed to
+ * w2FiguresHash carry `stateLines[i].stateIdSource` / `.stateIdDigest`.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -35,10 +41,12 @@ import {
   voidRun,
 } from "./w2-state-harness.js";
 import {
+  ciphertextDigest,
   type ExpBoxes,
   type ExpLine,
   expBoxes,
   expLines,
+  type HashStateId,
   hashV1,
   hashV2,
   months,
@@ -57,12 +65,21 @@ const B: ExpBoxes = {
   box6: 87_000,
 };
 
-/** A readable W2Figures-like object (extra keys must not enter the hash). */
+/** Synthetic digests of two stored ciphertexts (R3); the hash never decrypts. */
+const DIGEST_CA = ciphertextDigest("enc:v1:synthetic-ca-ciphertext-0001");
+const DIGEST_NY = ciphertextDigest("enc:v1:synthetic-ny-ciphertext-0001");
+const IDS: Record<string, HashStateId> = {
+  CA: { source: "entered", digest: DIGEST_CA },
+  NY: { source: "entered", digest: DIGEST_NY },
+};
+
+/** A readable W2Figures-like object (names and issues must not enter the hash). */
 function figures(
   b: ExpBoxes,
   lines: ExpLine[],
   formCount: number,
   extra: Record<string, unknown> = {},
+  ids: Record<string, HashStateId> = IDS,
 ) {
   return {
     employeeId: 7,
@@ -82,7 +99,8 @@ function figures(
       box17Cents: l.box17,
       form: l.form,
       row: l.row,
-      stateIdSource: "entered",
+      stateIdSource: ids[l.state]?.source ?? null,
+      stateIdDigest: ids[l.state]?.digest ?? null,
     })),
     localLines: [],
     ...extra,
@@ -116,18 +134,49 @@ describe("H1 hash v1 frozen for tax years <= 2025", () => {
 });
 
 describe("H2 hash v2 for tax years >= 2026 (pure)", () => {
-  it("equals the auditor's canonical v2 object; extra keys (names, issues, stateIdSource) excluded", () => {
-    expect(hash(2026, figures(B, TWO, 1))).toBe(hashV2(7, 2026, B, 1, TWO));
+  it("equals the auditor's canonical v2 object; names and issues excluded; box 15 source + ciphertext digest included (R3)", () => {
+    expect(hash(2026, figures(B, TWO, 1))).toBe(hashV2(7, 2026, B, 1, TWO, IDS));
     expect(
       hash(2026, figures(B, TWO, 1, { legalName: "Other Name", issues: [{ code: "x" }] })),
-    ).toBe(hashV2(7, 2026, B, 1, TWO));
-    const otherSource = figures(B, TWO, 1);
-    otherSource.stateLines = otherSource.stateLines.map((l) => ({
-      ...l,
-      stateIdSource: "ein_default",
-    }));
-    expect(hash(2026, otherSource)).toBe(hashV2(7, 2026, B, 1, TWO));
+    ).toBe(hashV2(7, 2026, B, 1, TWO, IDS));
+    const einDefault: Record<string, HashStateId> = {
+      CA: IDS.CA as HashStateId,
+      NY: { source: "ein_default", digest: null },
+    };
+    expect(hash(2026, figures(B, TWO, 1, {}, einDefault))).toBe(
+      hashV2(7, 2026, B, 1, TWO, einDefault),
+    );
     expect(hash(2027, figures(B, [], 1))).toBe(hashV2(7, 2027, B, 1, []));
+  });
+
+  it("R3: a rewritten entered ID (new ciphertext) or a source change ein_default -> entered -> a different hash", () => {
+    const base = hash(2026, figures(B, TWO, 1));
+    const rewritten = hash(
+      2026,
+      figures(
+        B,
+        TWO,
+        1,
+        {},
+        {
+          ...IDS,
+          CA: {
+            source: "entered",
+            digest: ciphertextDigest("enc:v1:synthetic-ca-ciphertext-0002"),
+          },
+        },
+      ),
+    );
+    const einDefault = hash(
+      2026,
+      figures(B, TWO, 1, {}, { ...IDS, NY: { source: "ein_default", digest: null } }),
+    );
+    const noId = hash(2026, figures(B, TWO, 1, {}, { ...IDS, NY: { source: null, digest: null } }));
+    expect({
+      rewritten: rewritten !== base,
+      einDefaultToEntered: einDefault !== base,
+      noIdToEinDefault: noId !== einDefault,
+    }).toEqual({ rewritten: true, einDefaultToEntered: true, noIdToEinDefault: true });
   });
 
   it("differs from the v1 hash of the same boxes", () => {
@@ -168,7 +217,7 @@ describe("H2 hash v2 for tax years >= 2026 (pure)", () => {
       { state: "NY", box16: 6_000_000, box17: 12_000, form: 1, row: 1 },
       { state: "NY", box16: null, box17: null, form: 1, row: 2 },
     ];
-    expect(hash(2026, figures(B, nullRow, 1))).toBe(hashV2(7, 2026, B, 1, nullRow));
+    expect(hash(2026, figures(B, nullRow, 1))).toBe(hashV2(7, 2026, B, 1, nullRow, IDS));
   });
 
   it("anything but integers or null -> a fixed TypeError that does not echo the value", () => {
@@ -247,11 +296,18 @@ describe("H3 a 2026 W-2 furnished, then only box 17 changes -> CORRECTED", () =>
     const runs = await insertRuns(env, employeeId, ana());
     marchId = runs[2]!.id;
     // Furnished (portal notice) with the current v2 figures, hash by the oracle.
+    // R3: the CA line carries source "entered" + the digest of the stored ciphertext.
     const lines = expLines(ana(), 2026);
+    const stored = await env.t.pglite.query<{ state_id: string }>(
+      "SELECT state_id FROM company_state_ids WHERE state_code = 'CA'",
+    );
+    const ids = {
+      CA: { source: "entered" as const, digest: ciphertextDigest(stored.rows[0]?.state_id ?? "") },
+    };
     await env.t.db.insert(w2Furnishings).values({
       employeeId,
       taxYear: 2026,
-      boxesHash: hashV2(employeeId, 2026, expBoxes(ana(), 2026), 1, lines),
+      boxesHash: hashV2(employeeId, 2026, expBoxes(ana(), 2026), 1, lines, ids),
       hashVersion: 2,
       corrected: false,
       method: "portal_notice",
