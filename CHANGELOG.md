@@ -6,8 +6,45 @@ All notable changes to this project will be documented here. Format follows
 
 ## [Unreleased]
 
+## [1.28.0] - 2026-10-04
+
 ### Added
 
+- **2026 Forms W-2 and W-3 (PAY-116)** — the official 2026 IRS forms are
+  bundled, so 2026 W-2s and the W-3 can be downloaded from January 2027.
+  Boxes 15–17 show each state's wages and tax, two states per W-2. An
+  employee who worked in more than two states gets an extra W-2 with only
+  the extra state lines (federal amounts stay on the first). The W-3 shows
+  the number of W-2 forms and the state totals. A W-2 whose state account
+  number or EIN can't be read, or doesn't fit on the form, is put on hold
+  instead of failing.
+- **Corrected W-2 copies (PAY-206)** — if a W-2 changes after your employee
+  already has it, and before you mark your W-2s as filed, the app marks their
+  new Copies B, C and 2 "CORRECTED". Employees who get their W-2 online get an
+  email that the corrected copy is ready. For employees on paper, the app
+  tells you who needs a corrected copy so you can print it, hand it over, and
+  mark it given. If they have a login, they also get an email that it's on
+  the way. If an employee switches from online to paper, W-2s already posted
+  online stay downloadable until October 15 of the next year (the next Monday
+  if that's a weekend).
+- **Late payroll (PAY-193)** — if you issue a payroll after its pay date's
+  quarter has ended (or after its month has ended, in states that have a
+  monthly return), the app first asks you to confirm the amount that reached
+  your employee's bank and that the state returns for that period aren't
+  filed yet. It explains what happens next: your totals and any returns you
+  haven't filed are updated, any extra tax deposit is added, and your
+  employee gets a corrected W-2 if needed. If you've marked that quarter's
+  Form 941, or that year's Form 940 or W-2s, as filed, or you say a state
+  return for that period is filed, the payroll isn't issued, and the app
+  explains how to correct the filing outside Wagon Payroll.
+- **Year-end warning (PAY-193)** — from December 1, your dashboard and each
+  unissued payroll remind you to issue this year's payrolls by December 31 so
+  they count in this year. After the new year, the reminder stays until your
+  first year-end tax return is due and shows that date.
+- **Deposit shortfalls (PAY-193)** — if a payroll adds tax to a period whose
+  deposit you already made, or whose due date already passed, the app adds a
+  separate deposit for the difference instead of changing the earlier one.
+  Every admin gets an email, and Tax deposits shows the amount and due date.
 - **W-2 state lines on the W-2/W-3 page (PAY-116)** — each W-2 shows its state
   wages and state tax (boxes 15–17), and where its state number comes from.
   A new "State tax check" compares the state tax on your W-2s with your
