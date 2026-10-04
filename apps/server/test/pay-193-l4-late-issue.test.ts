@@ -1111,7 +1111,8 @@ async function companyLegalName(): Promise<string> {
 async function consentElectronicW2(employeeId: number): Promise<void> {
   await env.t.db
     .insert(w2DeliveryConsents)
-    .values({ employeeId, disclosureVersion: "2025-01", withdrawnAt: null });
+    // PAY-208: a consent that covers tax year 2026 is version "2026-10".
+    .values({ employeeId, disclosureVersion: "2026-10", withdrawnAt: null });
 }
 
 /** Paper notice content rules: no IMPORTANT phrase, no link, never "available". */

@@ -25,6 +25,7 @@ import { snapshotHash } from "../src/payroll/snapshot.js";
 import { createTestApp, type TestContext } from "./helpers.js";
 import { inviteAndOnboard, login, sessionHeader, TEST_PASSWORD } from "./flow-helpers.js";
 import { entriesOf, type FxRun, signedMoney } from "./w2-state-oracle.js";
+import { consentViaApi } from "./w2-consent-fixture.js";
 
 export const SYNTHETIC_EIN = "00-0000001";
 
@@ -342,11 +343,8 @@ export async function consentedEmployee(
   const employeeId = await createEmployee(env, legalName, { userId: user.userId });
   if (vi.isFakeTimers()) vi.setSystemTime(new Date(Date.now() + 31_000));
   const session = sessionHeader((await login(env.t, email, TEST_PASSWORD)).sessionCookie);
-  const res = await env.t.app.inject({
-    method: "POST",
-    url: "/api/my/w2/consent",
-    headers: session,
-  });
+  // PAY-208: contact + current disclosure version (w2-consent-fixture.ts).
+  const res = await consentViaApi(env.t, session);
   if (res.statusCode !== 200) throw new Error(`consent -> ${res.statusCode}`);
   return { employeeId, session };
 }

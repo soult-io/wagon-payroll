@@ -79,6 +79,16 @@ import { encryptField } from "../src/crypto/field-encryption.js";
 import { snapshotHash, type RunSnapshot } from "../src/payroll/snapshot.js";
 import { createTestApp, type TestContext } from "./helpers.js";
 import { inviteAndOnboard, login, sessionHeader, TEST_PASSWORD } from "./flow-helpers.js";
+import {
+  allMarkersTrue,
+  CONTACT,
+  CONTACT_ADDRESS,
+  disclosureMarkers,
+  NEW_VERSION,
+  OLD_JAN31_PHRASE,
+  SME_SENTENCE,
+} from "./pay-208-harness.js";
+import { accessCodeFor } from "./w2-consent-fixture.js";
 
 const EXPORT_TOKEN = "test-export-token-0123456789abcdef";
 
@@ -796,14 +806,37 @@ describe("admin annual-form routes", () => {
 });
 
 // ---------------------------------------------------------------------------
-// W-2 electronic-delivery consent (PAY-19, D4 — Pub 1141 §2.4)
+// W-2 electronic-delivery consent (PAY-19, D4; PAY-208: 26 CFR 31.6051-1(j))
 // ---------------------------------------------------------------------------
+
+/** PAY-208 (A6, OD1): the W-2 contact, set through the admin route. */
+async function seedW2Contact() {
+  return api("PUT", "/api/admin/company/w2-contact", {
+    ...CONTACT,
+    mailingAddress: CONTACT_ADDRESS,
+  });
+}
+
+/** PAY-208 (A5): consent names the disclosure version it agrees to. */
+const CONSENT_BODY = { disclosureVersion: NEW_VERSION };
+
+/** PAY-208 (A5 + D-B): the version + a fresh code from the test PDF. */
+async function consentBody(session: Record<string, string>) {
+  const code = await accessCodeFor(t, session);
+  return { ...CONSENT_BODY, ...(code !== undefined ? { accessCode: code } : {}) };
+}
 
 describe("W-2 electronic-delivery consent", () => {
   it("gates the PDF on consent, records it, and re-gates on withdrawal", async () => {
     const session = await sessionFor(acctA.email);
 
-    // Status: not consented; the Pub 1141 §2.4 disclosures ride along, PII-free.
+    // PAY-208 T1: the contact exists before the terms are read (A6); the
+    // rendered 2026-10 terms name it ((j)(3)(v)(A)).
+    // The status is asserted after the disclosure checks, so on the old code
+    // this test fails on the disclosure text first.
+    const contactPut = await seedW2Contact();
+
+    // Status: not consented; the (j)(3) disclosures ride along, PII-free.
     const before = await t.app.inject({
       method: "GET",
       url: "/api/my/w2/consent",
@@ -818,14 +851,19 @@ describe("W-2 electronic-delivery consent", () => {
     };
     expect(beforeBody.consented).toBe(false);
     expect(beforeBody.consentedAt).toBeNull();
-    expect(beforeBody.disclosureVersion).toMatch(/^\d{4}-\d{2}$/);
-    expect(beforeBody.disclosures.length).toBeGreaterThanOrEqual(5);
-    // Paper-copy right + withdrawal + posting window are all disclosed.
+    // PAY-208 T1 (fail-first): version "2026-10"; the federal-SME sentence
+    // verbatim replaces the wrong "available on or before January 31" bullet;
+    // one marker per 26 CFR 31.6051-1(j)(3)(ii)-(viii) item (+ (j)(2)(iii)).
+    expect(beforeBody.disclosureVersion).toBe(NEW_VERSION);
+    expect(beforeBody.disclosures.length).toBeGreaterThanOrEqual(9);
     const text = beforeBody.disclosures.join(" ");
-    expect(text).toContain("paper copy");
-    expect(text).toContain("withdraw");
-    expect(text).toContain("January 31");
-    expect(text).toContain("October 15");
+    expect(text).toContain(SME_SENTENCE);
+    expect(text).not.toContain(OLD_JAN31_PHRASE);
+    expect(text).not.toContain("Pub 1141");
+    const companyName = (await t.db.select({ n: company.legalName }).from(company).limit(1))[0]!.n;
+    const markers = disclosureMarkers(text, companyName);
+    expect(markers).toEqual(allMarkersTrue(markers));
+    expect(contactPut.statusCode, contactPut.body).toBe(200);
     expect(JSON.stringify(beforeBody)).not.toContain("123-45-6789");
 
     // No consent → the download 409s with consent_required.
@@ -842,6 +880,7 @@ describe("W-2 electronic-delivery consent", () => {
       method: "POST",
       url: "/api/my/w2/consent",
       headers: session,
+      payload: await consentBody(session),
     });
     expect(consented.statusCode, consented.body).toBe(200);
     const consentedBody = consented.json() as { consented: boolean; consentedAt: string | null };
@@ -853,6 +892,7 @@ describe("W-2 electronic-delivery consent", () => {
       .where(eq(w2DeliveryConsents.employeeId, acctA.employeeId));
     expect(rows).toHaveLength(1);
     expect(rows[0]?.withdrawnAt).toBeNull();
+    expect(rows[0]?.disclosureVersion).toBe(NEW_VERSION);
 
     // The admin list reflects the flag (acctB stays paper).
     const adminList = await api("GET", "/api/admin/annual-forms/w2?year=2025");
@@ -925,6 +965,7 @@ describe("W-2 electronic-delivery consent", () => {
         method: "POST",
         url: "/api/my/w2/consent",
         headers: session,
+        payload: await consentBody(session),
       });
       expect(res.statusCode, res.body).toBe(200);
       expect((res.json() as { consented: boolean }).consented).toBe(true);
@@ -954,7 +995,12 @@ describe("W-2 electronic-delivery consent", () => {
     // Contractors have no W-2 employee row → 404 on all consent endpoints.
     const contractor = await sessionFor(contractorUser.email);
     for (const method of ["GET", "POST", "DELETE"] as const) {
-      const res = await t.app.inject({ method, url: "/api/my/w2/consent", headers: contractor });
+      const res = await t.app.inject({
+        method,
+        url: "/api/my/w2/consent",
+        headers: contractor,
+        ...(method === "POST" ? { payload: CONSENT_BODY } : {}),
+      });
       expect(res.statusCode).toBe(404);
     }
 
@@ -977,6 +1023,7 @@ describe("my W-2 routes", () => {
       method: "POST",
       url: "/api/my/w2/consent",
       headers: session,
+      payload: await consentBody(session),
     });
     expect(consent.statusCode, consent.body).toBe(200);
 
@@ -993,6 +1040,8 @@ describe("my W-2 routes", () => {
           formCount: 1,
         },
       ],
+      // PAY-208 (2.2b, OD5): no issued year still waiting for January.
+      upcomingYear: null,
     });
 
     const pdf = await t.app.inject({
@@ -1025,7 +1074,7 @@ describe("my W-2 routes", () => {
     const session = await sessionFor(contractorUser.email);
     const list = await t.app.inject({ method: "GET", url: "/api/my/w2", headers: session });
     expect(list.statusCode, list.body).toBe(200);
-    expect(list.json()).toEqual({ w2s: [] });
+    expect(list.json()).toEqual({ w2s: [], upcomingYear: null });
     const pdf = await t.app.inject({
       method: "GET",
       url: "/api/my/w2/2025/pdf",
@@ -1108,6 +1157,14 @@ describe("sendW2AvailableNotices", () => {
     // Content rules: the notice states the year + log-in — never amounts/SSN.
     expect(mails[0]?.bodyHtml).not.toContain("8,000");
     expect(mails[0]?.bodyHtml).not.toContain("123-45-6789");
+    // PAY-208 (j)(5)(i): acctA (consent "2026-10", covers 2025) gets the legal
+    // notice — subject starts with the capitals phrase; acctB (withdrawn) gets
+    // the paper courtesy notice — no phrase.
+    const subjectOf = (userId: string) => mails.find((m) => m.userId === userId)?.subject ?? "";
+    expect(subjectOf(acctA.userId).startsWith("IMPORTANT TAX RETURN DOCUMENT AVAILABLE")).toBe(
+      true,
+    );
+    expect(subjectOf(acctB.userId)).not.toContain("IMPORTANT TAX RETURN DOCUMENT AVAILABLE");
 
     // Once per year: the dedupe record lives in app_settings.
     const again = await sendW2AvailableNotices(

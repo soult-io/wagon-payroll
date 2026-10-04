@@ -35,6 +35,7 @@ import { AnnualFiguresDefectError, w3Totals } from "../src/filings/w2-boxes.js";
 import { snapshotHash, type RunSnapshot } from "../src/payroll/snapshot.js";
 import { createTestApp, type TestContext } from "./helpers.js";
 import { inviteAndOnboard, login, sessionHeader, TEST_PASSWORD } from "./flow-helpers.js";
+import { consentViaApi } from "./w2-consent-fixture.js";
 
 const doubles = vi.hoisted(() => ({ defect: false, badAmount: false, target: "7777.77" }));
 
@@ -164,11 +165,8 @@ async function linkedEmployee(email: string, name: string) {
   const employeeId = rows[0]?.id;
   if (!employeeId) throw new Error("employee insert failed");
   const session = sessionHeader((await login(t, email, TEST_PASSWORD)).sessionCookie);
-  const consent = await t.app.inject({
-    method: "POST",
-    url: "/api/my/w2/consent",
-    headers: session,
-  });
+  // PAY-208: contact + current disclosure version (w2-consent-fixture.ts).
+  const consent = await consentViaApi(t, session);
   expect(consent.statusCode, consent.body).toBe(200);
   return { employeeId, session };
 }
