@@ -346,6 +346,8 @@ describe("S4 figures defect: no amounts or ids in the employee and filing bodies
           corrected: false,
           downloadable: false,
           formCount: null,
+          // PAY-208 N1 ((j)(6)): Oct 15, 2026 (Thursday).
+          accessThrough: "2026-10-15",
         },
       ],
       // PAY-208 (2.2b): no issued year waiting for January.

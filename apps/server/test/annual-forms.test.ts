@@ -1038,6 +1038,8 @@ describe("my W-2 routes", () => {
           corrected: false,
           downloadable: true,
           formCount: 1,
+          // PAY-208 N1 ((j)(6)): Oct 15, 2026 is a Thursday; no corrected posting.
+          accessThrough: "2026-10-15",
         },
       ],
       // PAY-208 (2.2b, OD5): no issued year still waiting for January.

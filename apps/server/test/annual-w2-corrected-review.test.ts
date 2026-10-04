@@ -94,6 +94,7 @@ import {
   type W2Emp,
   withdrawConsent,
   Y,
+  oracleAccessThrough,
 } from "./annual-w2-corrected-harness.js";
 
 let env: L4Env;
@@ -373,6 +374,9 @@ describe("D2 figures that come back to an earlier hash are furnished again", () 
               corrected: true,
               downloadable: true,
               formCount: 1,
+              // PAY-208 N1 ((j)(6)): later of Oct 15, 2026 and 90 days after the
+              // latest corrected posting (independent oracle, harness).
+              accessThrough: await oracleAccessThrough(env.t, k.id, Y, env.t.config.appTz),
             },
           ],
           // PAY-208 (2.2b): no issued year waiting for January.
@@ -838,6 +842,8 @@ describe("D9 after consent is withdrawn", () => {
       corrected: false,
       downloadable,
       formCount: 1,
+      // PAY-208 N1 ((j)(6)): Oct 15, 2026 (Thursday); no corrected posting.
+      accessThrough: "2026-10-15",
     });
     const listed = {
       consented: (await myList(env, c)).json(),
@@ -875,7 +881,12 @@ describe("D9 after consent is withdrawn", () => {
     });
   });
 
-  it("correction after withdrawal: paper path (to-do + courtesy mail) and the CORRECTED copy stays downloadable; the download does not clear the to-do", async () => {
+  // PAY-208 N3 (federal SME ruling 2026-10-04, round 2): the employee
+  // downloaded the W-2 (employee_download) before withdrawing, so it was
+  // furnished online under the consent: the correction is posted online
+  // (corrected portal_notice + the IMPORTANT w2_changed notice, (j)(5)(iii))
+  // AND, because they withdrew, is still owed on paper ((j)(7)).
+  it("correction after withdrawal (downloaded before): posted online with the IMPORTANT notice AND the paper to-do; the CORRECTED copy stays downloadable; the download does not clear the to-do", async () => {
     const e = await makeW2Emp(env, { grossCents: G, login: true, consent: true });
     await seedHistory2025(env, e, JAN_NOV);
     expect((await myPdf(env, e)).statusCode).toBe(200);
@@ -898,8 +909,10 @@ describe("D9 after consent is withdrawn", () => {
       rows: brief(await furnishings(env.t, e.id)),
     }).toEqual({
       engineVsOracle: NO_DIFF,
-      followUps: ["w2_paper_correction_needed"],
-      courtesy: [`${await co()} — Your ${Y} W-2 is being corrected`],
+      followUps: ["w2_changed_notice_sent"],
+      courtesy: [
+        `IMPORTANT TAX RETURN DOCUMENT AVAILABLE: Your corrected ${Y} W-2 from ${await co()}`,
+      ],
       before: { corrected: true, correctionToFurnish: true, furnished: "online" },
       pdf: 200,
       marked: [0, 2, 4],
@@ -907,6 +920,7 @@ describe("D9 after consent is withdrawn", () => {
       after: { corrected: true, correctionToFurnish: true, furnished: "online" },
       rows: [
         { method: "employee_download", hash: h1, corrected: false },
+        { method: "portal_notice", hash: h2, corrected: true },
         { method: "employee_download", hash: h2, corrected: true },
       ],
     });

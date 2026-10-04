@@ -235,6 +235,8 @@ describe("D2 employee W-2 list carries ready per year, no reason codes", () => {
           corrected: false,
           downloadable: true,
           formCount: 1,
+          // PAY-208 N1 ((j)(6)): Oct 15, 2026 (Thursday).
+          accessThrough: "2026-10-15",
         },
         {
           year: 2024,
@@ -243,6 +245,8 @@ describe("D2 employee W-2 list carries ready per year, no reason codes", () => {
           corrected: false,
           downloadable: false,
           formCount: null,
+          // PAY-208 N1 ((j)(6)): Oct 15, 2025 (Wednesday).
+          accessThrough: "2025-10-15",
         },
       ],
       // PAY-208 (2.2b): no issued year waiting for January.
@@ -261,6 +265,8 @@ describe("D2 employee W-2 list carries ready per year, no reason codes", () => {
           corrected: false,
           downloadable: false,
           formCount: null,
+          // PAY-208 N1 ((j)(6)): Oct 15, 2024 (Tuesday).
+          accessThrough: "2024-10-15",
         },
       ],
       // PAY-208 (2.2b): no issued year waiting for January.
