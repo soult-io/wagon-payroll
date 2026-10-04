@@ -16,10 +16,12 @@
  * per-employee block; yearW2BlockCodes includes reconciliation_mismatch;
  * the W-3 PDF answers 409 {error: w2_not_ready, issues:
  * [reconciliation_mismatch]} (before the template check); a single W-2 PDF
- * is not blocked by it (2026 still answers form_not_available until PR-3).
+ * is not blocked by it: with the 2026 fw2/fw3 bundled (Spec 24 PR-3) the
+ * admin Copy D answers 200 application/pdf.
  *
  * Fail first on origin/main a58dfc5: no states[] / yearIssues, and the W-3
- * PDF answers form_not_available.
+ * PDF answers form_not_available. The single-W-2 guard fails until PR-3
+ * bundles the 2026 forms (it answered form_not_available before).
  */
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -127,11 +129,12 @@ describe("W25 forced CA reconciliation mismatch (clock 2027-01-05)", () => {
     });
   });
 
-  it("guard: a single W-2 PDF is not blocked by the year-level mismatch (2026 form not bundled yet)", async () => {
+  it("guard: a single W-2 PDF is not blocked by the year-level mismatch (PR-3: 2026 forms bundled -> 200 PDF)", async () => {
     const res = await get(env, `/api/admin/annual-forms/w2/${anaId}/pdf?year=2026`);
-    expect({ status: res.statusCode, body: res.json() }).toEqual({
-      status: 409,
-      body: { error: "form_not_available", year: 2026 },
-    });
+    expect({
+      status: res.statusCode,
+      type: res.headers["content-type"],
+      body: res.statusCode === 200 ? "<pdf>" : res.json(),
+    }).toEqual({ status: 200, type: "application/pdf", body: "<pdf>" });
   });
 });
