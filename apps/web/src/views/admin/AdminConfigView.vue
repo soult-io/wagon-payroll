@@ -538,6 +538,11 @@ const w2ContactForm = ref({
   zip: "",
   country: "US",
 });
+/** F1: the saved W-2 contact is complete and uses the company address. */
+const contactUsesCompanyAddress = computed(() => {
+  const c = w2Contact.value;
+  return Boolean(c?.name && c.phone && c.email && c.mailingAddress === null);
+});
 /** S11c: one message per invalid field (client-side; the server re-checks). */
 const w2ContactErrors = ref<Record<string, string>>({});
 
@@ -911,8 +916,12 @@ onMounted(() => {
                   <InputText id="cCountry" v-model="companyForm.country" maxlength="2" />
                 </div>
               </div>
-              <div class="row">
+              <div class="row" style="flex-wrap: wrap; gap: 0.75rem; align-items: center">
                 <Button label="Save company profile" icon="pi pi-save" :loading="companySaving" @click="saveCompany" />
+                <!-- PAY-208 F1 ((j)(3)(vii)): the W-2 contact uses this address. -->
+                <span v-if="contactUsesCompanyAddress" class="muted small">
+                  The W-2 contact uses this address. Saving a change emails the new details to every employee who gets W-2s online.
+                </span>
               </div>
             </template>
           </section>

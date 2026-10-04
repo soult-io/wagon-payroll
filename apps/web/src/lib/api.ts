@@ -836,7 +836,10 @@ export const adminEmployeesApi = {
     }>(`/api/admin/employees/${employeeId}/w2-consent/withdraw`, {}),
   /** PAY-208 (D-A) — change the employee's sign-in email (needs a recent sign-in). */
   changeSignInEmail: (employeeId: number, email: string) =>
-    put<{ changed: boolean }>(`/api/admin/employees/${employeeId}/sign-in-email`, { email }),
+    put<{ changed: boolean; pendingEnrollment: boolean }>(
+      `/api/admin/employees/${employeeId}/sign-in-email`,
+      { email },
+    ),
   create: (input: {
     legalName: string;
     preferredName?: string;
@@ -1510,6 +1513,8 @@ export interface MyW2Year {
   downloadable: boolean;
   /** Spec 24 (PAY-116) PR-4 — number of W-2 forms; null unless ready. */
   formCount: number | null;
+  /** PAY-208 (N1) — last day (ISO) this W-2 stays online, incl. the 90-day corrected rule. */
+  accessThrough: string;
 }
 
 /** PAY-162 — a filing-level block issue on the tax-filings list. */
@@ -1652,7 +1657,7 @@ export const adminFilingsApi = {
       /** PAY-208 — the W-2 contact is complete (online W-2s can open). */
       contactReady: boolean;
       /** PAY-208 ((j)(5)(ii)) — consented notices of the year that bounced. */
-      undeliveredNotices: { employeeId: number; legalName: string }[];
+      undeliveredNotices: { employeeId: number; legalName: string; failedOn: string }[];
     }>(`/api/admin/annual-forms/w2?year=${year}`),
   w2PdfUrl: (employeeId: number, year: number) =>
     `/api/admin/annual-forms/w2/${employeeId}/pdf?year=${year}`,

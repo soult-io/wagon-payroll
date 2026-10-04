@@ -94,7 +94,7 @@ import {
 } from "../../lib/w2-filing";
 
 const route = useRoute();
-const { date, toIso } = useDates();
+const { date, longDate, toIso } = useDates();
 const { money } = useMoney();
 const notify = useNotify();
 const confirm = useConfirm();
@@ -117,7 +117,7 @@ const w2ReconsentNeeded = ref(0);
 /** PAY-208 (A6): the W-2 contact is complete. */
 const w2ContactReady = ref(true);
 /** PAY-208 ((j)(5)(ii)): consented notices of this year that bounced. */
-const w2Undelivered = ref<{ employeeId: number; legalName: string }[]>([]);
+const w2Undelivered = ref<{ employeeId: number; legalName: string; failedOn: string }[]>([]);
 /** PAY-24: uploaded confirmation/evidence documents (metadata only). */
 const attachments = ref<FilingAttachment[]>([]);
 /** PAY-25: past worksheet corrections (audit trail on the detail page). */
@@ -963,7 +963,7 @@ onMounted(async () => {
           :closable="false"
           data-testid="w2-undelivered-notices"
         >
-          {{ undeliveredNoticesText(w2Undelivered.map((u) => u.legalName), filing.year) }}
+          {{ undeliveredNoticesText(w2Undelivered.map((u) => `${u.legalName} (email failed ${longDate(u.failedOn)})`), filing.year) }}
         </Message>
 
         <!-- Spec 24 (PAY-116) PR-4 (carry-over e): warning only, never a hold. -->

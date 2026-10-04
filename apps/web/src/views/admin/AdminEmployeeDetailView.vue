@@ -550,6 +550,34 @@ function openEmailDialog() {
   emailDialog.value = true;
 }
 
+/** The inline message for a refused change, or null to toast the error. */
+function signInEmailErrorText(err: unknown): string | null {
+  const code = err instanceof ApiError ? err.code : "";
+  if (code === "session_not_fresh") {
+    return "For your security, sign out and sign in again, then change the email within an hour.";
+  }
+  if (code === "email_exists") return "Another account already signs in with that email.";
+  if (code === "invalid_body") return "Enter an email address, like name@example.com.";
+  return null;
+}
+
+function signInEmailChangedNotice(out: { changed: boolean; pendingEnrollment: boolean }) {
+  if (out.changed && out.pendingEnrollment) {
+    // S-H1: their old setup link no longer works — nothing is re-sent automatically.
+    notify.stickyInfo(
+      "Sign-in email changed",
+      'This employee hasn\'t finished setting up their account, and the old setup link no longer works. Use "Resend invite" to send a new link to the new address.',
+    );
+    return;
+  }
+  notify.success(
+    out.changed ? "Sign-in email changed" : "Sign-in email unchanged",
+    out.changed
+      ? "A notice went to the old and the new address. They're signed out and sign in with the new address."
+      : undefined,
+  );
+}
+
 async function changeSignInEmail() {
   const email = newSignInEmail.value.trim();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -561,23 +589,11 @@ async function changeSignInEmail() {
   try {
     const out = await adminEmployeesApi.changeSignInEmail(employeeId, email);
     emailDialog.value = false;
-    notify.success(
-      out.changed ? "Sign-in email changed" : "Sign-in email unchanged",
-      out.changed ? "A notice went to the old and the new address." : undefined,
-    );
+    signInEmailChangedNotice(out);
     await load();
   } catch (err) {
-    const code = err instanceof ApiError ? err.code : "";
-    if (code === "session_not_fresh") {
-      emailError.value =
-        "For your security, sign out and sign in again, then change the email within an hour.";
-    } else if (code === "email_exists") {
-      emailError.value = "Another account already signs in with that email.";
-    } else if (code === "invalid_body") {
-      emailError.value = "Enter an email address, like name@example.com.";
-    } else {
-      notify.error(err, "Could not change the sign-in email");
-    }
+    emailError.value = signInEmailErrorText(err);
+    if (emailError.value === null) notify.error(err, "Could not change the sign-in email");
   } finally {
     emailBusy.value = false;
   }

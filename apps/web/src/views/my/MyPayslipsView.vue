@@ -17,7 +17,7 @@
  * PAY-206: a corrected W-2 is labelled "{year} W-2 (CORRECTED)"; the PDF
  * link always serves the current figures. D9: after a withdrawal, a year
  * already furnished online keeps its download button (row.downloadable)
- * through its access window.
+ * through its access window (server-computed accessThrough, N1).
  *
  * Spec 24 (PAY-116) PR-4: a ready W-2 explains the two-up pages (from
  * W2_TWO_UP_FROM_YEAR) and, when it has more than one form, why (formCount
@@ -43,7 +43,7 @@ import {
   type PayslipSummary,
   type W2ConsentStatus,
 } from "../../lib/api";
-import { addressLine, electronicW2AccessThrough, W2_CARD_HEADING } from "@payroll/shared";
+import { addressLine, W2_CARD_HEADING } from "@payroll/shared";
 import { myW2NotReadyText } from "../../lib/w2-issues";
 import { disclosureParts, myMultiW2Text, twoUpHelpText } from "../../lib/w2-filing";
 import { useMoney } from "../../composables/useMoney";
@@ -178,7 +178,7 @@ async function giveConsent() {
     const code = err instanceof ApiError ? err.code : "";
     if (code === "access_check_failed") {
       agreeError.value =
-        "That code doesn't match the test PDF. Open the test PDF again and type the code you see.";
+        "That code doesn't match the test PDF. Open the test PDF again and type the code you see. Use the code from the most recent test PDF you opened.";
     } else if (code === "disclosure_changed") {
       await reloadConsent();
       agreeError.value =
@@ -323,7 +323,7 @@ onMounted(async () => {
               <!-- S7b: withdrawn, still inside the access window ((j)(3)(v)(C), (j)(6)). -->
               <span v-if="!agreed && w2Consent.withdrawnAt" class="muted small block">
                 You withdrew your agreement on {{ longDate(w2Consent.withdrawnAt) }}. You can still
-                download this W-2 until {{ longDate(electronicW2AccessThrough(w2.year)) }}.
+                download this W-2 until {{ longDate(w2.accessThrough) }}.
               </span>
             </template>
             <!-- S4 (+ S4b): ready, but this W-2 comes on paper. -->
@@ -350,13 +350,10 @@ onMounted(async () => {
         <!-- S23a / S23b: a year still to come (OD5). -->
         <p v-if="upcomingText" style="margin: 0">{{ upcomingText }}</p>
 
-        <!-- S5 (A6): no W-2 contact — no terms, no button. -->
-        <Message v-if="contactMissing" severity="info" :closable="false">
-          {{ company }} doesn't offer W-2s online yet, so it will give you your W-2 on paper.
-        </Message>
-
+        <!-- N5: the agreed state first — "Withdraw my agreement" stays reachable
+             even if the W-2 contact is later incomplete. -->
         <!-- Agreed: S26 + S27. -->
-        <template v-else-if="agreed">
+        <template v-if="agreed">
           <p class="small" style="margin: 0">
             You agreed to get your W-2s online on {{ longDate(w2Consent.consentedAt) }}. ·
             <a href="#" @click.prevent="confirmWithdraw">Withdraw my agreement</a>
@@ -377,6 +374,11 @@ onMounted(async () => {
             </li>
           </ul>
         </template>
+
+        <!-- S5 (A6): no W-2 contact — no terms, no button. -->
+        <Message v-else-if="contactMissing" severity="info" :closable="false">
+          {{ company }} doesn't offer W-2s online yet, so it will give you your W-2 on paper.
+        </Message>
 
         <!-- Not agreed / withdrawn / earlier terms: the terms, the access check, the button. -->
         <template v-else-if="showAgreeForm">
@@ -411,8 +413,15 @@ onMounted(async () => {
             you see in it.
           </p>
           <div class="w2-check">
-            <a :href="myW2Api.testPdfUrl()" target="_blank" rel="noopener">
-              <Button label="Open test PDF" icon="pi pi-file-pdf" size="small" outlined />
+            <!-- A real link styled as a button: keyboard-reachable, opens in a new tab. -->
+            <a
+              :href="myW2Api.testPdfUrl()"
+              target="_blank"
+              rel="noopener"
+              class="p-button p-component p-button-outlined p-button-sm test-pdf-link"
+            >
+              <i class="pi pi-file-pdf" aria-hidden="true" />
+              <span>Open test PDF</span>
             </a>
             <div class="field">
               <label for="w2AccessCode">Code from the test PDF</label>
@@ -496,6 +505,10 @@ onMounted(async () => {
   flex-wrap: wrap;
   gap: 0.75rem;
   align-items: flex-end;
+}
+.test-pdf-link {
+  gap: 0.5rem;
+  text-decoration: none;
 }
 .w2-check .field {
   display: flex;
