@@ -84,6 +84,12 @@ random per-install as usual.
 
 ## Persona inventory
 
+**Company:** the seed sets a synthetic EIN, `00-0000001`, when the company has
+none (a pre-set EIN is never overwritten; a `00` prefix is never issued). It
+appears on the QA W-2/W-3 forms, and Illinois and New York use it as their
+W-2 box 15 state number (the EIN default), so Ada's W-2 is not held for a
+missing state number.
+
 **W-2 employees** (payroll history: previous calendar year in full + current
 year through last month, issued through the real draft→approve→issue pipeline
 — figures are engine-exact to the cent):
