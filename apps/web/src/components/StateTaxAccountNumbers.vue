@@ -9,6 +9,11 @@
  * sessionStorage or the URL. The page shows only the mask the server sends.
  * The format is checked in the browser with the same rules as the server
  * before anything is sent.
+ *
+ * Spec 24 (PAY-116) PR-4 (carry-over f): before a save or remove that would
+ * change the number on W-2s already given out (the server's `furnished`
+ * counts), the owner confirms first. A save of the number already stored
+ * changes nothing on the server (`unchanged`), and the page says so.
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import Button from "primevue/button";
@@ -37,6 +42,14 @@ import {
   type StateIdRow,
 } from "../lib/api";
 import { useNotify } from "../composables/useNotify";
+import {
+  affectedEmployees,
+  affectedYearsText,
+  STATE_ID_CHANGE_HEADER,
+  stateIdChangeText,
+  stateIdRemoveText,
+  stateIdUnchangedText,
+} from "../lib/w2-filing";
 
 const notify = useNotify();
 const confirm = useConfirm();
@@ -140,7 +153,18 @@ function errorText(err: unknown, action: "save" | "remove", state: string): stri
   return notify.errorMessage(err);
 }
 
-async function save() {
+/** PR-4: employees (and years) whose given-out W-2 a change at state + year would correct. */
+function affected(state: string, year: number): { n: number; years: string } {
+  const furnished = list.value?.furnished ?? [];
+  const rows = list.value?.stateIds ?? [];
+  const target = { stateCode: state, fromTaxYear: year };
+  return {
+    n: affectedEmployees(furnished, rows, target),
+    years: affectedYearsText(furnished, rows, target),
+  };
+}
+
+function save() {
   if (!canSave.value || fromTaxYear.value === null) return;
   const state = stateCode.value;
   const year = fromTaxYear.value;
@@ -153,14 +177,37 @@ async function save() {
     return;
   }
   fieldError.value = "";
+  const { n, years } = affected(state, year);
+  if (n === 0) {
+    void put(state, year);
+    return;
+  }
+  confirm.require({
+    header: STATE_ID_CHANGE_HEADER,
+    message: stateIdChangeText(n, years, state),
+    icon: "pi pi-exclamation-triangle",
+    rejectProps: { label: "Keep the current number", severity: "secondary", text: true },
+    acceptProps: { label: "Save and correct W-2s", severity: "warn" },
+    accept: () => put(state, year),
+  });
+}
+
+async function put(state: string, year: number) {
   saving.value = true;
   try {
-    await adminSettingsApi.putStateId(state, { stateId: typed.value, fromTaxYear: year });
+    const res = await adminSettingsApi.putStateId(state, {
+      stateId: typed.value,
+      fromTaxYear: year,
+    });
     typed.value = "";
-    notify.success(
-      "Saved",
-      `Your ${stateName(state)} account number is saved for W-2s from ${year} on.`,
-    );
+    if (res.unchanged) {
+      notify.info("No change", stateIdUnchangedText(state));
+    } else {
+      notify.success(
+        "Saved",
+        `Your ${stateName(state)} account number is saved for W-2s from ${year} on.`,
+      );
+    }
     await load();
   } catch (err) {
     saveError.value = errorText(err, "save", state);
@@ -171,9 +218,11 @@ async function save() {
 
 function askRemove(row: StateIdRow) {
   const name = stateName(row.stateCode);
+  const { n, years } = affected(row.stateCode, row.fromTaxYear);
+  const given = n > 0 ? ` ${stateIdRemoveText(n, years, row.stateCode)}` : "";
   confirm.require({
     header: `Remove ${name} account number?`,
-    message: `Remove ${name} number ${row.idMasked} (used from ${row.fromTaxYear})? You won't be able to see the full number again, so you'd need to type it in again to add it back. W-2s that show ${name} tax withheld can't be made without a number.`,
+    message: `Remove ${name} number ${row.idMasked} (used from ${row.fromTaxYear})? You won't be able to see the full number again, so you'd need to type it in again to add it back. W-2s that show ${name} tax withheld can't be made without a number.${given}`,
     icon: "pi pi-exclamation-triangle",
     rejectProps: { label: "Keep it", severity: "secondary", text: true },
     acceptProps: { label: "Remove number", severity: "danger" },

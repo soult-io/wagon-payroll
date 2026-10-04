@@ -8,6 +8,20 @@ All notable changes to this project will be documented here. Format follows
 
 ### Added
 
+- **W-2 state lines on the W-2/W-3 page (PAY-116)** — each W-2 shows its state
+  wages and state tax (boxes 15–17), and where its state number comes from.
+  A new "State tax check" compares the state tax on your W-2s with your
+  issued pay runs, and shows what you marked as deposited. The W-3 table
+  shows the number of W-2 forms and boxes 15–17. "How to file" lists what
+  each state on your W-2s expects, and explains W-2s for employees who
+  worked in more than two states.
+- **More W-2 holds (PAY-116)** — a W-2 whose saved Social Security number or
+  address can't be read is put on hold with a clear next step, instead of
+  failing to download.
+- **Safer state number changes (PAY-116)** — before you change a state
+  account number that is already on W-2s you gave out, the app tells you how
+  many employees get a corrected W-2. Saving the same number again changes
+  nothing and sends no corrected W-2s.
 - **Tax deposits and filings in the export API (PAY-197)** — two new
   read-only endpoints for your accountant's tools:
   `GET /api/export/tax-deposits` lists each payroll tax deposit with its
@@ -16,6 +30,13 @@ All notable changes to this project will be documented here. Format follows
   filing with its saved worksheet and any IRS notice adjustments. Same
   export token as the payroll-runs export; every call is logged. See
   `docs/export-api.md`.
+
+### Changed
+
+- **The W-3 is a records copy (PAY-116)** — the page now says the W-3 is for
+  your records: Business Services Online makes the W-3 you file from the
+  W-2s you enter. Hold messages point to the real settings (Config →
+  Company), and employees see help for two-up W-2 pages.
 
 ## [1.27.0] - 2026-10-02
 

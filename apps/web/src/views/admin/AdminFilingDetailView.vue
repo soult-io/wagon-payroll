@@ -11,8 +11,15 @@
  * got them, how each latest copy was given, and — for paper employees still
  * owed a corrected copy — a banner, "Print corrected W-2" and "Mark given
  * on paper". Recording the SSA filing is never held by them (warning only).
+ *
+ * Spec 24 (PAY-116) PR-4: W-2 state lines (boxes 15–17), W-3 box c and
+ * boxes 15–17, the State tax check card, the notice-hold line, the W-3 as a
+ * records copy, the two-up and more-than-one-W-2 help, the Business Services
+ * Online copy (E1/E2) and the state filing checklist. Display logic and copy
+ * live in lib/w2-filing.ts.
  */
 import { computed, onMounted, ref } from "vue";
+import { STATE_ID_MIN_YEAR } from "@payroll/shared";
 import { useRoute } from "vue-router";
 import Button from "primevue/button";
 import DataTable from "primevue/datatable";
@@ -39,6 +46,7 @@ import {
   type TaxFilingRow,
   type W2FiguresRow,
   type W2Issue,
+  type W2StateCheck,
   type Worksheet940,
   type Worksheet941,
   type WorksheetRecomputePreview,
@@ -51,6 +59,7 @@ import { useNotify } from "../../composables/useNotify";
 import {
   formNotAvailableText,
   hasUnreadableTotals,
+  RECONCILIATION_POINTER_TEXT,
   STALE_TOTALS_TEXT,
   w2BlockedText,
   w2IssueKey,
@@ -59,6 +68,24 @@ import {
   w2LoadErrorText,
   w2WarningsOnlyText,
 } from "../../lib/w2-issues";
+import {
+  box15MissingIdState,
+  box15MissingIdText,
+  bsoMultiFormText,
+  markFiledLeadText,
+  multiW2Text,
+  STATE_CHECK_INTRO,
+  STATE_CHECK_WITHHELD,
+  stateCheckText,
+  stateFilingChecklist,
+  stateIdSourceTag,
+  stateLineText,
+  twoUpHelpText,
+  W2_DOWNLOAD_STEP,
+  W3_ON_HOLD_TEXT,
+  W3_RECORDS_NOTE,
+  w3WorksheetLines,
+} from "../../lib/w2-filing";
 
 const route = useRoute();
 const { date, toIso } = useDates();
@@ -75,6 +102,10 @@ const adjustments = ref<TaxAdjustmentRow[]>([]);
 const w2Rows = ref<W2FiguresRow[]>([]);
 /** Spec 24 (PAY-116): year-level issues (a state's W-2 tax vs its pay runs). */
 const w2YearIssues = ref<W2Issue[]>([]);
+/** Spec 24 (PAY-116) PR-4: the year's "your W-2 is ready" email already went out. */
+const w2Notified = ref(false);
+/** Spec 24 (PAY-116) PR-4 (I3): per-state tax check. */
+const stateChecks = ref<W2StateCheck[]>([]);
 /** PAY-24: uploaded confirmation/evidence documents (metadata only). */
 const attachments = ref<FilingAttachment[]>([]);
 /** PAY-25: past worksheet corrections (audit trail on the detail page). */
@@ -100,6 +131,34 @@ const attentionRows = computed(() =>
   w2Rows.value.filter((r) => r.issues.some((i) => i.severity === "block" || i.severity === "warn")),
 );
 const anyUnreadableTotals = computed(() => w2Rows.value.some(hasUnreadableTotals));
+/** Spec 24 (PAY-116): the year has W-2 state lines (boxes 15–17). */
+const hasStateBoxes = computed(() => (filing.value?.year ?? 0) >= STATE_ID_MIN_YEAR);
+/** PR-4 (carry-over e): the one box 15 state printed without an account number. */
+const box15MissingState = computed(() => box15MissingIdState(w2Rows.value));
+/** PR-4 (U7): Business Services Online copy when some employee has more than one W-2. */
+const bsoText = computed(() => bsoMultiFormText(w2Rows.value));
+/** PR-4 (U8): the "How to file" state lines. */
+const stateChecklist = computed(() => stateFilingChecklist(w2Rows.value));
+/** PR-4 (U6): employees with more than one W-2. */
+const multiFormRows = computed(() => w2Rows.value.filter((r) => r.formCount > 1));
+
+/** Apply one admin W-2 list response. */
+function applyW2List(list: Awaited<ReturnType<typeof adminFilingsApi.w2List>>): void {
+  w2Rows.value = list.w2s;
+  w2YearIssues.value = list.yearIssues;
+  w2FormAvailable.value = list.formAvailable;
+  w2Notified.value = list.notified;
+  stateChecks.value = list.stateChecks;
+}
+
+/** PR-4 (B3): a reconciliation_mismatch line points to the State tax check when it shows that state. */
+function yearIssueText(issue: W2Issue, year: number): string {
+  const text = w2IssueText(issue, { legalName: "", year });
+  const shown =
+    issue.code === "reconciliation_mismatch" &&
+    stateChecks.value.some((c) => c.state === issue.state);
+  return shown ? `${text} ${RECONCILIATION_POINTER_TEXT}` : text;
+}
 /** PAY-206: any W-2 corrected after the employee got it (SSA note). */
 const anyW2Corrected = computed(() => w2Rows.value.some((r) => r.corrected));
 /** PAY-206: paper employees still owed the corrected copy. */
@@ -150,9 +209,7 @@ function markGivenOnPaper(row: W2FiguresRow): void {
       markPaperBusy.value = row.employeeId;
       try {
         await adminFilingsApi.w2MarkGivenOnPaper(row.employeeId, year);
-        const list = await adminFilingsApi.w2List(year);
-        w2Rows.value = list.w2s;
-        w2YearIssues.value = list.yearIssues;
+        applyW2List(await adminFilingsApi.w2List(year));
         notify.success(`${row.legalName}'s corrected W-2 is marked as given.`);
       } catch (err) {
         notify.error(err, "Could not mark the W-2 as given");
@@ -215,6 +272,8 @@ async function load() {
   missingConfigYear.value = null;
   w2Rows.value = [];
   w2YearIssues.value = [];
+  w2Notified.value = false;
+  stateChecks.value = [];
   w2LoadError.value = false;
   w2FormAvailable.value = true;
   try {
@@ -225,10 +284,7 @@ async function load() {
     attachments.value = (await adminFilingsApi.listAttachments(filingId)).attachments;
     if (res.filing.formType === "w2_w3") {
       try {
-        const list = await adminFilingsApi.w2List(res.filing.year);
-        w2Rows.value = list.w2s;
-        w2YearIssues.value = list.yearIssues;
-        w2FormAvailable.value = list.formAvailable;
+        applyW2List(await adminFilingsApi.w2List(res.filing.year));
       } catch {
         w2LoadError.value = true;
       }
@@ -447,20 +503,10 @@ const worksheet940Lines = computed<WorksheetLine[]>(() => {
   ];
 });
 
-// PAY-11: W-3 transmittal aggregate lines.
-const worksheetW3Lines = computed<WorksheetLine[]>(() => {
-  const w = worksheetW3.value;
-  if (!w) return [];
-  return [
-    { line: "—", label: "W-2 forms included", value: String(w.employeeCount) },
-    { line: "1", label: "Wages, tips, other compensation", value: money(w.box1Wages) },
-    { line: "2", label: "Federal income tax withheld", value: money(w.box2FederalWithheld) },
-    { line: "3", label: "Social Security wages", value: money(w.box3SsWages) },
-    { line: "4", label: "Social Security tax withheld", value: money(w.box4SsTax) },
-    { line: "5", label: "Medicare wages and tips", value: money(w.box5MedicareWages) },
-    { line: "6", label: "Medicare tax withheld", value: money(w.box6MedicareTax) },
-  ];
-});
+// PAY-11: W-3 aggregate lines. Spec 24 (PAY-116) PR-4: box c and 15–17 from 2026.
+const worksheetW3Lines = computed<WorksheetLine[]>(() =>
+  worksheetW3.value ? w3WorksheetLines(worksheetW3.value) : [],
+);
 
 // ------------------------------------------------------ fractions of cents (D4)
 const fractionsText = ref("");
@@ -778,18 +824,18 @@ onMounted(async () => {
       <section v-if="filing.formType === 'w2_w3'" class="card table-scroll stack">
         <div class="row" style="justify-content: space-between; align-items: center">
           <h3 style="margin: 0">
-            W-3 transmittal totals <StatusChip :status="filing.status" style="margin-left: 0.5rem" />
+            W-3 totals (for your records) <StatusChip :status="filing.status" style="margin-left: 0.5rem" />
           </h3>
-          <!-- PAY-23: the W-3 action belongs with the transmittal, not the W-2 list. -->
+          <!-- PAY-23: the W-3 action belongs with the W-3 card, not the W-2 list. -->
           <template v-if="!w2LoadError">
-            <span v-if="anyW2Blocked" class="muted small">W-3 PDF on hold</span>
+            <span v-if="anyW2Blocked" class="muted small">{{ W3_ON_HOLD_TEXT }}</span>
             <a
               v-else-if="w2FormAvailable && worksheetW3"
               :href="adminFilingsApi.w3PdfUrl(filing.year)"
               target="_blank"
               rel="noopener"
             >
-              <Button label="Download W-3 PDF" icon="pi pi-download" size="small" text />
+              <Button label="Download W-3 (records copy)" icon="pi pi-download" size="small" text />
             </a>
           </template>
         </div>
@@ -799,7 +845,7 @@ onMounted(async () => {
         </Message>
         <Message v-else-if="anyW2Blocked" severity="error" :closable="false" data-testid="w2-blocked-banner">
           <div class="stack">
-            <span>{{ w2BlockedText(filing.year) }}</span>
+            <span>{{ w2BlockedText(filing.year, w2Notified) }}</span>
             <span v-if="anyUnreadableTotals">{{ STALE_TOTALS_TEXT }}</span>
           </div>
         </Message>
@@ -834,6 +880,16 @@ onMounted(async () => {
           SSA's copy) with the old figures, write VOID on it and don't send it.
         </Message>
 
+        <!-- Spec 24 (PAY-116) PR-4 (carry-over e): warning only, never a hold. -->
+        <Message
+          v-if="!w2LoadError && box15MissingState"
+          severity="warn"
+          :closable="false"
+          data-testid="w3-box15-missing-id"
+        >
+          {{ box15MissingIdText(box15MissingState) }}
+        </Message>
+
         <DataTable v-if="worksheetW3" :value="worksheetW3Lines" data-key="line" striped-rows>
           <Column field="line" header="Box" style="width: 4rem" />
           <Column field="label" header="Description" />
@@ -842,6 +898,8 @@ onMounted(async () => {
         <p v-else class="muted" style="margin: 0">
           {{ anyW2Blocked ? "W-3 not calculated: W-2s on hold" : "W-3 not calculated yet." }}
         </p>
+        <!-- Spec 24 (PAY-116) PR-4 (D-PL1): the W-3 is a records copy. -->
+        <p class="muted small" style="margin: 0" data-testid="w3-records-note">{{ W3_RECORDS_NOTE }}</p>
 
         <template v-if="!w2LoadError">
           <template v-if="w2YearIssues.length">
@@ -852,9 +910,32 @@ onMounted(async () => {
               style="margin: 0"
               data-testid="w2-year-issue"
             >
-              {{ w2IssueText(issue, { legalName: "", year: filing.year }) }}
+              {{ yearIssueText(issue, filing.year) }}
             </p>
           </template>
+          <!-- Spec 24 (PAY-116) PR-4 (I3): the state tax check. -->
+          <div
+            v-if="hasStateBoxes && (stateChecks.length > 0 || anyUnreadableTotals)"
+            class="stack state-check"
+            data-testid="w2-state-check"
+          >
+            <h4 style="margin: 0">State tax check</h4>
+            <p v-if="stateChecks.length === 0" class="muted small" style="margin: 0">
+              {{ STATE_CHECK_WITHHELD }}
+            </p>
+            <template v-else>
+              <p class="muted small" style="margin: 0">{{ STATE_CHECK_INTRO }}</p>
+              <ul class="stack" style="margin: 0; padding-left: 1.25rem">
+                <li v-for="check in stateChecks" :key="check.state">
+                  <span>{{ stateCheckText(check) }}</span>
+                  <span v-if="check.reconciled" class="small" style="margin-left: 0.5rem; white-space: nowrap">
+                    <i class="pi pi-check" aria-hidden="true" /> Matches
+                  </span>
+                  <Tag v-else value="Doesn't match" severity="danger" style="margin-left: 0.5rem" />
+                </li>
+              </ul>
+            </template>
+          </div>
           <template v-if="attentionRows.length">
             <h4 id="w2-attention" style="margin: 0">W-2s that need attention</h4>
             <ul class="stack" style="margin: 0; padding-left: 1.25rem" aria-labelledby="w2-attention">
@@ -869,14 +950,17 @@ onMounted(async () => {
                   />
                   <Tag v-else value="Please check" icon="pi pi-exclamation-triangle" severity="warn" />
                 </div>
-                <p
-                  v-for="issue in row.issues"
-                  :key="w2IssueKey(issue)"
-                  class="small"
-                  style="margin: 0.25rem 0 0"
-                >
-                  {{ w2IssueText(issue, { legalName: row.legalName, year: filing.year }) }}
-                </p>
+                <template v-for="issue in row.issues" :key="w2IssueKey(issue)">
+                  <p class="small" style="margin: 0.25rem 0 0">
+                    {{ w2IssueText(issue, { legalName: row.legalName, year: filing.year }) }}
+                  </p>
+                  <!-- Spec 24 (PAY-116) PR-4 (B2): the runs, outside the issue sentence. -->
+                  <ul v-if="issue.runs?.length" class="small" style="margin: 0.25rem 0 0; padding-left: 1.25rem">
+                    <li v-for="run in issue.runs" :key="run.runPublicId">
+                      Paid {{ date(run.payDate) }} · {{ money(run.stateTax) }} state tax
+                    </li>
+                  </ul>
+                </template>
               </li>
             </ul>
           </template>
@@ -903,6 +987,23 @@ onMounted(async () => {
             </Column>
             <Column header="Medicare tax" style="text-align: right">
               <template #body="{ data }">{{ money(data.box6MedicareTax) }}</template>
+            </Column>
+            <!-- Spec 24 (PAY-116) PR-4: boxes 15–17, never the state number or its mask. -->
+            <Column v-if="hasStateBoxes" header="State (boxes 15–17)" style="min-width: 14rem">
+              <template #body="{ data }">
+                <span v-if="!data.stateLines.length" class="muted">No state lines</span>
+                <div v-else class="stack" style="gap: 0.25rem">
+                  <div v-for="line in data.stateLines" :key="`${line.form}:${line.row}`">
+                    <template v-if="data.formCount > 1">W-2 #{{ line.form }} · </template>{{ stateLineText(line) }}
+                    <Tag
+                      v-if="stateIdSourceTag(line.stateIdSource)"
+                      :value="stateIdSourceTag(line.stateIdSource) ?? ''"
+                      :severity="line.stateIdSource === null ? 'warn' : 'secondary'"
+                      style="margin-left: 0.25rem"
+                    />
+                  </div>
+                </div>
+              </template>
             </Column>
             <!-- PAY-162: check results — codes rendered as fixed copy, never amounts. -->
             <Column header="Checks" style="min-width: 10rem">
@@ -986,6 +1087,23 @@ onMounted(async () => {
             Print the packet (Copies B/C/2 + instructions) for employees on paper delivery; employees
             who consented download their own.
           </p>
+          <!-- Spec 24 (PAY-116) PR-4 (U6): two-up pages. -->
+          <p v-if="twoUpHelpText(filing.year, 'admin')" class="muted small" style="margin: 0">
+            {{ twoUpHelpText(filing.year, "admin") }}
+          </p>
+          <!-- Spec 24 (PAY-116) PR-4 (U6, U7): more than one W-2 per employee. -->
+          <div v-if="bsoText" class="stack" data-testid="w2-multi-form">
+            <h4 style="margin: 0">Employees with more than one W-2</h4>
+            <ul class="stack small" style="margin: 0; padding-left: 1.25rem">
+              <li v-for="row in multiFormRows" :key="row.employeeId">
+                {{ multiW2Text(row.formCount, row.legalName) }}
+              </li>
+            </ul>
+            <p class="small" style="margin: 0">{{ bsoText.e1 }}</p>
+            <ul class="small" style="margin: 0; padding-left: 1.25rem">
+              <li v-for="line in bsoText.e2" :key="line">{{ line }}</li>
+            </ul>
+          </div>
         </template>
       </section>
 
@@ -1133,9 +1251,16 @@ onMounted(async () => {
       <Dialog v-model:visible="fileDialog" modal header="Mark as filed" :style="{ width: '26rem' }">
         <div class="stack">
           <p class="muted small">
-            File {{ formLabel(filing.formType) }} for {{ periodLabel() }} first — by mail or
-            e-file — then record it here.
+            {{ markFiledLeadText(filing.formType, formLabel(filing.formType), periodLabel()) }}
           </p>
+          <!-- Spec 24 (PAY-116) PR-4 (carry-over e): a warning only. -->
+          <Message
+            v-if="filing.formType === 'w2_w3' && box15MissingState"
+            severity="warn"
+            :closable="false"
+          >
+            {{ box15MissingIdText(box15MissingState) }}
+          </Message>
           <!-- PAY-206: a warning only; the SSA filing uses the current figures. -->
           <Message
             v-if="filing.formType === 'w2_w3' && paperCorrectionRows.length > 0"
@@ -1225,13 +1350,15 @@ onMounted(async () => {
         </div>
         <div v-else class="stack">
           <ol style="margin: 0; padding-left: 1.25rem" class="stack">
-            <li>Download the <strong>W-2 PDFs</strong> (one per employee) and the <strong>W-3 transmittal PDF</strong> above.</li>
+            <li>{{ W2_DOWNLOAD_STEP }}</li>
             <li>
               File electronically via the SSA's <strong>Business Services Online</strong> portal at
               <strong>ssa.gov/bso</strong> — register for a BSO account, then upload the W-2 data
               (BSO also accepts manual entry for small counts). W-2s with more than 10 information
               returns in total <em>must</em> be e-filed.
             </li>
+            <!-- Spec 24 (PAY-116) PR-4 (S24-D9): one line per state on the W-2s. -->
+            <li v-for="line in stateChecklist" :key="line">{{ line }}</li>
             <li>
               Employees can also download their own W-2 from their payslips page starting in
               January — the amounts above are what they will see.
@@ -1306,6 +1433,10 @@ onMounted(async () => {
 <style scoped>
 .dialog-actions {
   justify-content: flex-end;
+}
+/* Spec 24 (PAY-116) PR-4: amounts wrap as a unit at phone width. */
+.state-check li {
+  overflow-wrap: anywhere;
 }
 /* PAY-23: full headers never wrap — the card scrolls horizontally instead. */
 .w2-table :deep(th) {
