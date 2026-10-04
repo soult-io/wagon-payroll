@@ -5,7 +5,7 @@
  * product-ux-designer and state-local-payroll-sme, 2026-10-04.
  */
 
-import { stateName, W2_TWO_UP_FROM_YEAR } from "@payroll/shared";
+import { stateName, W2_TWO_UP_FROM_YEAR, W2_UNRECORDED_PAY_FROM_YEAR } from "@payroll/shared";
 import { useMoney } from "../composables/useMoney";
 import type {
   StateIdFurnished,
@@ -283,4 +283,54 @@ export const STATE_CHECK_WITHHELD =
 /** One state's line on the State tax check card. */
 export function stateCheckText(c: W2StateCheck): string {
   return `${stateName(c.state)}: W-2s ${money(c.box17)} · issued pay runs ${money(c.runWithholding)} · marked as deposited ${money(c.deposited)}`;
+}
+
+// ---------------------------------------------------------------------------
+// PAY-208 / PAY-210 — online-W-2 terms and the review-page lines
+// ---------------------------------------------------------------------------
+
+/**
+ * PAY-210 (S18): the W-2/W-3 review page line, from
+ * W2_UNRECORDED_PAY_FROM_YEAR — always shown, not tied to data. No support
+ * promise (OD7). Null for earlier years.
+ */
+export function unrecordedPayText(year: number): string | null {
+  if (year < W2_UNRECORDED_PAY_FROM_YEAR) return null;
+  return `This app doesn't record overtime pay, tips, or employer contributions to a Trump account for an employee or an employee's dependent. If you paid any of these in ${year} outside this app, they must be reported on the W-2, and this app can't add them. Get help from a tax professional before you give out your ${year} W-2s.`;
+}
+
+/** S8: employees on earlier online-W-2 terms (paper for `year` until they agree again). */
+export function reconsentBannerText(n: number, year: number): string | null {
+  if (n <= 0) return null;
+  const who = n === 1 ? "1 employee needs" : `${n} employees need`;
+  return `${who} to agree to the new online-W-2 terms. Until they do, give them a paper ${year} W-2 with "Print packet". They'll see a prompt on their Payslips page.`;
+}
+
+/** 26 CFR 31.6051-1(j)(5)(ii): consented notices of `year` that did not arrive. */
+export function undeliveredNoticesText(names: readonly string[], year: number): string | null {
+  if (names.length === 0) return null;
+  const who = names.length === 1 ? "1 employee" : `${names.length} employees`;
+  return `${who} didn't get the email that their ${year} W-2 is ready: ${names.join(", ")}. Give them a paper copy within 30 days.`;
+}
+
+/** S12: no W-2 contact — online W-2s are off (A6). */
+export const W2_CONTACT_MISSING_ADMIN_TEXT =
+  'Online W-2s are off until you add a W-2 contact. Until then, every employee gets a paper W-2: use "Print packet" for each one. Add it under Config → Company → W-2 contact.';
+
+/** S9: the Delivery tag for a row whose agreement is on earlier terms. */
+export const RECONSENT_TAG = "paper — needs to agree again";
+
+/**
+ * One online-W-2 terms bullet split for display: the lead phrase before the
+ * first ": " (shown bold), the rest, and — for the "How to withdraw"
+ * bullet — the contact details line after the line break (shown with
+ * tel:/mailto: links). A bullet without a lead (the SME sentence) has lead "".
+ */
+export function disclosureParts(text: string): { lead: string; body: string; details: string } {
+  const [first, ...more] = text.split("\n");
+  const head = first ?? "";
+  const at = head.indexOf(": ");
+  const lead = at > 0 && at < 40 ? head.slice(0, at + 1) : "";
+  const body = lead ? head.slice(at + 2) : head;
+  return { lead, body, details: more.join(" ").trim() };
 }

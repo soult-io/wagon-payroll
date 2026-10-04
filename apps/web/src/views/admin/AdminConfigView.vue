@@ -12,6 +12,7 @@ import Select from "primevue/select";
 import InputText from "primevue/inputtext";
 import InputNumber from "primevue/inputnumber";
 import ToggleSwitch from "primevue/toggleswitch";
+import Checkbox from "primevue/checkbox";
 import Skeleton from "primevue/skeleton";
 import Tabs from "primevue/tabs";
 import TabList from "primevue/tablist";
@@ -27,6 +28,7 @@ import {
   type CompanyProfile,
   type PaySchedule,
   type StateTaxConfigRow,
+  type W2ContactAdmin,
 } from "../../lib/api";
 import { useNotify } from "../../composables/useNotify";
 
@@ -520,11 +522,111 @@ async function saveCompany() {
   }
 }
 
+// ------------------------------------------- PAY-208: W-2 contact (S10/S11)
+const w2ContactLoading = ref(true);
+const w2ContactSaving = ref(false);
+const w2Contact = ref<W2ContactAdmin | null>(null);
+const w2ContactForm = ref({
+  name: "",
+  phone: "",
+  email: "",
+  useCompanyAddress: true,
+  line1: "",
+  line2: "",
+  city: "",
+  state: "",
+  zip: "",
+  country: "US",
+});
+/** S11c: one message per invalid field (client-side; the server re-checks). */
+const w2ContactErrors = ref<Record<string, string>>({});
+
+async function loadW2Contact() {
+  w2ContactLoading.value = true;
+  try {
+    const { w2Contact: c } = await adminSettingsApi.w2Contact();
+    w2Contact.value = c;
+    const a = c.mailingAddress;
+    w2ContactForm.value = {
+      name: c.name ?? "",
+      phone: c.phone ?? "",
+      email: c.email ?? "",
+      useCompanyAddress: a === null,
+      line1: a?.line1 ?? "",
+      line2: a?.line2 ?? "",
+      city: a?.city ?? "",
+      state: a?.state ?? "",
+      zip: a?.zip ?? "",
+      country: a?.country ?? "US",
+    };
+  } catch (err) {
+    notify.error(err, "Could not load the W-2 contact");
+  } finally {
+    w2ContactLoading.value = false;
+  }
+}
+
+function w2ContactValidate(): boolean {
+  const f = w2ContactForm.value;
+  const errors: Record<string, string> = {};
+  if (!f.name.trim()) errors.name = "Enter a name or department.";
+  const phone = f.phone.trim();
+  if (phone.length < 7 || phone.length > 30 || !/^[0-9+().\-\s]+$/.test(phone)) {
+    errors.phone = "Enter a phone number using digits, spaces and + ( ) - . only.";
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email.trim()) || f.email.trim().length > 254) {
+    errors.email = "Enter an email address, like payroll@example.com.";
+  }
+  if (!f.useCompanyAddress) {
+    if (!f.line1.trim() || !f.city.trim() || !f.state.trim() || !f.zip.trim()) {
+      errors.address = "Fill in address line 1, city, state and ZIP.";
+    }
+    if (f.country.trim().length !== 2) errors.address = "Use a two-letter country code.";
+  }
+  w2ContactErrors.value = errors;
+  return Object.keys(errors).length === 0;
+}
+
+async function saveW2Contact() {
+  if (!w2ContactValidate()) return;
+  const f = w2ContactForm.value;
+  w2ContactSaving.value = true;
+  try {
+    const mailingAddress: Address | null = f.useCompanyAddress
+      ? null
+      : {
+          line1: f.line1.trim(),
+          city: f.city.trim(),
+          state: f.state.trim(),
+          zip: f.zip.trim(),
+          country: f.country.trim().toUpperCase(),
+          ...(f.line2.trim() ? { line2: f.line2.trim() } : {}),
+        };
+    const out = await adminSettingsApi.putW2Contact({
+      name: f.name.trim(),
+      phone: f.phone.trim(),
+      email: f.email.trim(),
+      mailingAddress,
+    });
+    w2Contact.value = out.w2Contact;
+    notify.success(
+      out.changed
+        ? "W-2 contact saved. Employees who get W-2s online will be emailed the new details."
+        : "W-2 contact saved",
+    );
+  } catch (err) {
+    notify.error(err, "Could not save the W-2 contact");
+  } finally {
+    w2ContactSaving.value = false;
+  }
+}
+
 onMounted(() => {
   void loadTax();
   void loadStateTax();
   void loadSchedule();
   void loadCompany();
+  void loadW2Contact();
 });
 </script>
 
@@ -811,6 +913,95 @@ onMounted(() => {
               </div>
               <div class="row">
                 <Button label="Save company profile" icon="pi pi-save" :loading="companySaving" @click="saveCompany" />
+              </div>
+            </template>
+          </section>
+          <!-- PAY-208 (S10/S11): 26 CFR 31.6051-1(j)(3)(v)(A) — the W-2 contact. -->
+          <section class="card stack" style="margin-top: 1rem" data-testid="w2-contact">
+            <h3>W-2 contact</h3>
+            <p class="muted" style="margin: 0">
+              Employees use this contact to ask for a paper W-2 or to stop getting W-2s online. It
+              appears in the online-W-2 terms and in W-2 emails, so use details someone checks. The
+              address must be one where mail actually reaches you. Until you fill this in, employees
+              can't choose online W-2s and everyone gets their W-2 on paper.
+            </p>
+            <Skeleton v-if="w2ContactLoading" height="8rem" />
+            <template v-else>
+              <div class="form-grid">
+                <div class="field">
+                  <label for="w2cName">Name or department</label>
+                  <InputText
+                    id="w2cName"
+                    v-model="w2ContactForm.name"
+                    placeholder="e.g. Payroll"
+                    :invalid="!!w2ContactErrors.name"
+                  />
+                  <small v-if="w2ContactErrors.name" class="error-text">{{ w2ContactErrors.name }}</small>
+                </div>
+                <div class="field">
+                  <label for="w2cPhone">Phone</label>
+                  <InputText
+                    id="w2cPhone"
+                    v-model="w2ContactForm.phone"
+                    type="tel"
+                    autocomplete="off"
+                    :invalid="!!w2ContactErrors.phone"
+                  />
+                  <small v-if="w2ContactErrors.phone" class="error-text">{{ w2ContactErrors.phone }}</small>
+                </div>
+                <div class="field">
+                  <label for="w2cEmail">Email</label>
+                  <InputText
+                    id="w2cEmail"
+                    v-model="w2ContactForm.email"
+                    type="email"
+                    autocomplete="off"
+                    :invalid="!!w2ContactErrors.email"
+                  />
+                  <small v-if="w2ContactErrors.email" class="error-text">{{ w2ContactErrors.email }}</small>
+                </div>
+              </div>
+              <div class="row" style="gap: 0.5rem; align-items: center">
+                <Checkbox v-model="w2ContactForm.useCompanyAddress" input-id="w2cUseCompany" binary />
+                <label for="w2cUseCompany">Use the company address for mail</label>
+              </div>
+              <div v-if="!w2ContactForm.useCompanyAddress" class="form-grid">
+                <div class="field">
+                  <label for="w2cLine1">Address line 1</label>
+                  <InputText id="w2cLine1" v-model="w2ContactForm.line1" />
+                </div>
+                <div class="field">
+                  <label for="w2cLine2">Address line 2</label>
+                  <InputText id="w2cLine2" v-model="w2ContactForm.line2" />
+                </div>
+                <div class="field">
+                  <label for="w2cCity">City</label>
+                  <InputText id="w2cCity" v-model="w2ContactForm.city" />
+                </div>
+                <div class="field">
+                  <label for="w2cState">State/Province</label>
+                  <InputText id="w2cState" v-model="w2ContactForm.state" />
+                </div>
+                <div class="field">
+                  <label for="w2cZip">ZIP/Postal code</label>
+                  <InputText id="w2cZip" v-model="w2ContactForm.zip" />
+                </div>
+                <div class="field">
+                  <label for="w2cCountry">Country</label>
+                  <InputText id="w2cCountry" v-model="w2ContactForm.country" maxlength="2" />
+                </div>
+              </div>
+              <small v-if="w2ContactErrors.address" class="error-text">{{ w2ContactErrors.address }}</small>
+              <div class="row" style="flex-wrap: wrap; gap: 0.75rem; align-items: center">
+                <Button
+                  label="Save W-2 contact"
+                  icon="pi pi-save"
+                  :loading="w2ContactSaving"
+                  @click="saveW2Contact"
+                />
+                <span v-if="w2Contact?.name" class="muted small">
+                  Saving a change emails the new details to every employee who gets W-2s online.
+                </span>
               </div>
             </template>
           </section>

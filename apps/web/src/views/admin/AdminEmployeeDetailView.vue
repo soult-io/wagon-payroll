@@ -49,7 +49,7 @@ import { useNotify } from "../../composables/useNotify";
 const route = useRoute();
 const confirm = useConfirm();
 const { money } = useMoney();
-const { date, toIso } = useDates();
+const { date, longDate, toIso } = useDates();
 const notify = useNotify();
 
 const employeeId = Number(route.params.employeeId);
@@ -485,6 +485,104 @@ async function addStateElection() {
   }
 }
 
+// ----------------------------------------------- PAY-208: W-2 delivery (S16)
+const w2Busy = ref(false);
+/** S15: a withdrawal recorded for an employee we can't email — confirm on paper. */
+const w2PaperNotice = ref<string | null>(null);
+const w2DeliveryText = computed(() => {
+  const c = employee.value?.w2Consent;
+  if (!c || c.state === "none") return "Paper — hasn't agreed to online W-2s";
+  if (c.state === "current") return `Online — agreed on ${longDate(c.consentedAt)}`;
+  if (c.state === "outdated") {
+    return `Paper for 2026 and later — agreed to earlier terms on ${longDate(c.consentedAt)} and needs to agree to the updated terms`;
+  }
+  return `Paper — withdrew on ${longDate(c.withdrawnAt)}`;
+});
+const canRecordWithdrawal = computed(() => {
+  const state = employee.value?.w2Consent?.state;
+  return state === "current" || state === "outdated";
+});
+const todayLong = computed(() =>
+  new Intl.DateTimeFormat("en-US", { day: "numeric", month: "long", year: "numeric" }).format(
+    new Date(),
+  ),
+);
+
+function recordWithdrawal() {
+  const name = employee.value?.legalName ?? "this employee";
+  confirm.require({
+    header: "Record a written withdrawal?",
+    message: `Use this when ${name} has asked you in writing (email or letter) to stop getting W-2s online. It takes effect today, ${todayLong.value}, and can't be back-dated. They'll get a confirmation email. W-2s already given to them online don't change.`,
+    icon: "pi pi-exclamation-triangle",
+    rejectProps: { label: "Cancel", severity: "secondary", text: true },
+    acceptProps: { label: "Record withdrawal", severity: "danger" },
+    accept: async () => {
+      w2Busy.value = true;
+      try {
+        const out = await adminEmployeesApi.w2ConsentWithdraw(employeeId);
+        const on = longDate(out.effectiveOn);
+        if (out.confirmation === "paper_needed") {
+          w2PaperNotice.value = `Withdrawal recorded for ${name}, effective today, ${on}. We can't email them, so confirm it on paper: tell them their withdrawal took effect on ${on} and that their W-2s will now be on paper.`;
+        } else {
+          notify.success(
+            `Withdrawal recorded for ${name}, effective today, ${on}. They've been emailed a confirmation.`,
+          );
+        }
+        await load();
+      } catch (err) {
+        notify.error(err, "Could not record the withdrawal");
+      } finally {
+        w2Busy.value = false;
+      }
+    },
+  });
+}
+
+// ------------------------------------------- PAY-208 (D-A): sign-in email
+const emailDialog = ref(false);
+const newSignInEmail = ref("");
+const emailBusy = ref(false);
+const emailError = ref<string | null>(null);
+
+function openEmailDialog() {
+  newSignInEmail.value = "";
+  emailError.value = null;
+  emailDialog.value = true;
+}
+
+async function changeSignInEmail() {
+  const email = newSignInEmail.value.trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    emailError.value = "Enter an email address, like name@example.com.";
+    return;
+  }
+  emailBusy.value = true;
+  emailError.value = null;
+  try {
+    const out = await adminEmployeesApi.changeSignInEmail(employeeId, email);
+    emailDialog.value = false;
+    notify.success(
+      out.changed ? "Sign-in email changed" : "Sign-in email unchanged",
+      out.changed ? "A notice went to the old and the new address." : undefined,
+    );
+    await load();
+  } catch (err) {
+    const code = err instanceof ApiError ? err.code : "";
+    if (code === "session_not_fresh") {
+      emailError.value =
+        "For your security, sign out and sign in again, then change the email within an hour.";
+    } else if (code === "email_exists") {
+      emailError.value = "Another account already signs in with that email.";
+    } else if (code === "invalid_body") {
+      emailError.value = "Enter an email address, like name@example.com.";
+    } else {
+      notify.error(err, "Could not change the sign-in email");
+    }
+  } finally {
+    emailBusy.value = false;
+  }
+}
+
 onMounted(load);
 </script>
 
@@ -565,7 +663,16 @@ onMounted(load);
               </dd>
               <dt>Account</dt>
               <dd>
-                <template v-if="employee.user">{{ employee.user.email }} · {{ accountState.label }}</template>
+                <template v-if="employee.user">
+                  {{ employee.user.email }} · {{ accountState.label }}
+                  <Button
+                    label="Change sign-in email"
+                    text
+                    size="small"
+                    icon="pi pi-pencil"
+                    @click="openEmailDialog"
+                  />
+                </template>
                 <span v-else>Not invited</span>
               </dd>
               <dt>Tax ID</dt>
@@ -580,6 +687,24 @@ onMounted(load);
                 />
               </dd>
             </dl>
+          </section>
+          <!-- PAY-208 (S16): W-2 delivery — the employee's online-W-2 agreement. -->
+          <section v-if="employee.employmentType === 'w2'" class="card stack" style="margin-top: 1rem">
+            <h3 style="margin: 0">W-2 delivery</h3>
+            <p style="margin: 0">{{ w2DeliveryText }}</p>
+            <Message v-if="w2PaperNotice" severity="warn" :closable="true" @close="w2PaperNotice = null">
+              {{ w2PaperNotice }}
+            </Message>
+            <div v-if="canRecordWithdrawal">
+              <Button
+                label="Record written withdrawal"
+                icon="pi pi-file-edit"
+                size="small"
+                outlined
+                :loading="w2Busy"
+                @click="recordWithdrawal"
+              />
+            </div>
           </section>
         </TabPanel>
 
@@ -985,6 +1110,36 @@ onMounted(load);
           <Button type="submit" label="Add" :loading="seBusy" :disabled="seForm.stateCode.trim().length !== 2" />
         </div>
       </form>
+    </Dialog>
+    <!-- PAY-208 (D-A): change the email the employee signs in with. -->
+    <Dialog
+      v-model:visible="emailDialog"
+      header="Change sign-in email"
+      modal
+      :style="{ width: '28rem' }"
+      :breakpoints="{ '575px': '92vw' }"
+    >
+      <div class="stack">
+        <p style="margin: 0">
+          The employee signs in with the new address from now on, and W-2 emails go there. We email a
+          notice to the old and the new address.
+        </p>
+        <div class="field">
+          <label for="newSignInEmail">New sign-in email</label>
+          <InputText
+            id="newSignInEmail"
+            v-model="newSignInEmail"
+            type="email"
+            autocomplete="off"
+            :invalid="emailError !== null"
+          />
+        </div>
+        <Message v-if="emailError" severity="error" :closable="false" role="alert">{{ emailError }}</Message>
+      </div>
+      <template #footer>
+        <Button label="Cancel" severity="secondary" text @click="emailDialog = false" />
+        <Button label="Change email" icon="pi pi-check" :loading="emailBusy" @click="changeSignInEmail" />
+      </template>
     </Dialog>
   </div>
 </template>

@@ -448,12 +448,21 @@ export interface AdminEmployeeDetail {
   dateOfBirth: string | null;
   /** Presence flag only (spec 11) — the TIN itself never reaches the browser. */
   hasTaxId: boolean;
+  /** PAY-208 — W-2 delivery state (dates only, no terms text). */
+  w2Consent?: AdminW2ConsentState;
   user: {
     id: string;
     email: string | null;
     banned: boolean | null;
     banReason: string | null;
   } | null;
+}
+
+/** PAY-208 — an employee's agreement to online W-2s, as the admin sees it. */
+export interface AdminW2ConsentState {
+  state: "none" | "current" | "outdated" | "withdrawn";
+  consentedAt: string | null;
+  withdrawnAt: string | null;
 }
 
 export interface InviteResult {
@@ -818,6 +827,16 @@ export const adminEmployeesApi = {
   list: () => get<{ employees: AdminEmployeeListRow[] }>("/api/admin/employees"),
   detail: (employeeId: number) =>
     get<{ employee: AdminEmployeeDetail }>(`/api/admin/employees/${employeeId}`),
+  /** PAY-208 — record a written withdrawal (effective today; never back-dated). */
+  w2ConsentWithdraw: (employeeId: number) =>
+    post<{
+      w2Consent: AdminW2ConsentState;
+      effectiveOn: string;
+      confirmation: "email" | "paper_needed" | null;
+    }>(`/api/admin/employees/${employeeId}/w2-consent/withdraw`, {}),
+  /** PAY-208 (D-A) — change the employee's sign-in email (needs a recent sign-in). */
+  changeSignInEmail: (employeeId: number, email: string) =>
+    put<{ changed: boolean }>(`/api/admin/employees/${employeeId}/sign-in-email`, { email }),
   create: (input: {
     legalName: string;
     preferredName?: string;
@@ -857,10 +876,29 @@ export const adminNotificationsApi = {
   testEmail: () => post<{ ok: true; queued: boolean }>("/api/admin/settings/test-email"),
 };
 
+/** PAY-208 — the W-2 contact as entered; contactReady = online W-2s can open. */
+export interface W2ContactAdmin {
+  name: string | null;
+  phone: string | null;
+  email: string | null;
+  /** null = the company address is used. */
+  mailingAddress: Address | null;
+  contactReady: boolean;
+}
+
 export const adminSettingsApi = {
   company: () => get<{ company: CompanyProfile }>("/api/admin/company"),
   putCompany: (input: { legalName: string; address?: Address; ein?: string }) =>
     put<{ company: CompanyProfile }>("/api/admin/company", input),
+  /** PAY-208 — the W-2 contact (26 CFR 31.6051-1(j)(3)(v)(A)). */
+  w2Contact: () => get<{ w2Contact: W2ContactAdmin }>("/api/admin/company/w2-contact"),
+  putW2Contact: (input: {
+    name: string;
+    phone: string;
+    email: string;
+    mailingAddress: Address | null;
+  }) =>
+    put<{ w2Contact: W2ContactAdmin; changed: boolean }>("/api/admin/company/w2-contact", input),
   /** Spec 24 (PAY-116): write-only; reads return masks only. */
   stateIds: () => get<StateIdList>("/api/admin/company/state-ids"),
   putStateId: (stateCode: string, input: { stateId: string; fromTaxYear: number }) =>
@@ -1444,8 +1482,10 @@ export interface W2FiguresRow {
   formCount: number;
   issues: W2Issue[];
   blocked: boolean;
-  /** PAY-19 — active electronic-delivery consent on file. */
+  /** PAY-19/PAY-208 — the electronic channel of this tax year (a consent that covers it). */
   consented: boolean;
+  /** PAY-208 — agreed to earlier terms; paper for this year until they agree again. */
+  consentOutdated: boolean;
   /** PAY-206 — the employee may hold a copy with other figures (renders say CORRECTED). */
   corrected: boolean;
   /** PAY-206 — corrected and the current figures are not yet furnished. */
@@ -1607,6 +1647,12 @@ export const adminFilingsApi = {
       notified: boolean;
       /** PR-4 — per-state tax check (2026+; [] while W-2 boxes are withheld). */
       stateChecks: W2StateCheck[];
+      /** PAY-208 — employees who must agree to the current terms for this year. */
+      reconsentNeeded: number;
+      /** PAY-208 — the W-2 contact is complete (online W-2s can open). */
+      contactReady: boolean;
+      /** PAY-208 ((j)(5)(ii)) — consented notices of the year that bounced. */
+      undeliveredNotices: { employeeId: number; legalName: string }[];
     }>(`/api/admin/annual-forms/w2?year=${year}`),
   w2PdfUrl: (employeeId: number, year: number) =>
     `/api/admin/annual-forms/w2/${employeeId}/pdf?year=${year}`,
@@ -1651,22 +1697,48 @@ export const adminFilingsApi = {
   },
 };
 
-/** PAY-19 — W-2 electronic-delivery consent status (disclosures included). */
+/** PAY-208 — the W-2 contact employees write to (address already resolved). */
+export interface W2Contact {
+  name: string;
+  phone: string;
+  email: string;
+  mailingAddress: Address | null;
+}
+
+/**
+ * PAY-19/PAY-208 — online-W-2 agreement status (26 CFR 31.6051-1(j); IRS Pub
+ * 15-A (2026), "Furnishing Form W-2 to employees electronically").
+ */
 export interface W2ConsentStatus {
+  /** Agreed to the current terms. */
   consented: boolean;
+  /** Agreed to earlier terms: agree again for W-2s from 2026. */
+  outdated: boolean;
   consentedAt: string | null;
   withdrawnAt: string | null;
+  consentedVersion: string | null;
+  /** The current terms version — the one `disclosures` is, sent back on agree. */
   disclosureVersion: string;
   disclosures: readonly string[];
+  contactReady: boolean;
+  contact: W2Contact | null;
+  /** The employer's legal name. */
+  companyName: string;
+  /** DELETE only: company-local date the withdrawal took effect. */
+  effectiveOn?: string;
 }
 
 /** PAY-11 — employee's own W-2s (available from January of the next year). */
 export const myW2Api = {
-  list: () => get<{ w2s: MyW2Year[] }>("/api/my/w2"),
+  /** PAY-208: + upcomingYear — the latest paid year whose W-2 is not out yet. */
+  list: () => get<{ w2s: MyW2Year[]; upcomingYear: number | null }>("/api/my/w2"),
   pdfUrl: (year: number) => `/api/my/w2/${year}/pdf`,
-  // PAY-19 — electronic-delivery consent (Pub 1141 §2.4)
   consent: () => get<W2ConsentStatus>("/api/my/w2/consent"),
-  consentGive: () => post<W2ConsentStatus>("/api/my/w2/consent", {}),
+  /** PAY-208 D-B: the one-page test PDF with a single-use code. */
+  testPdfUrl: () => "/api/my/w2/consent/test-pdf",
+  /** Agree to the terms the employee read (disclosureVersion) after the access check (accessCode). */
+  consentGive: (input: { disclosureVersion: string; accessCode: string }) =>
+    post<W2ConsentStatus>("/api/my/w2/consent", input),
   consentWithdraw: () => del<W2ConsentStatus>("/api/my/w2/consent"),
 };
 
