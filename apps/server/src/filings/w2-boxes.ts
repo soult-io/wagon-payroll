@@ -71,7 +71,11 @@ export type W2IssueCode =
   // fit the form even at 6 pt (state).
   | "state_id_unreadable"
   | "ein_unreadable"
-  | "state_id_too_long";
+  | "state_id_too_long"
+  // Spec 24 (PAY-116) PR-4 (blocks): the employee's SSN or box f address
+  // does not decrypt (no state).
+  | "ssn_unreadable"
+  | "address_unreadable";
 
 /**
  * A W-2 check result: code and severity, plus (Spec 24) the state line it

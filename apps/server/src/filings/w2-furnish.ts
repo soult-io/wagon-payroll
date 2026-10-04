@@ -14,7 +14,7 @@
  * (R10). The figures hash never leaves the database.
  */
 
-import { and, eq, inArray, like } from "drizzle-orm";
+import { and, eq, gte, inArray, like } from "drizzle-orm";
 import {
   appSettings,
   auditEvents,
@@ -25,6 +25,7 @@ import {
 } from "@payroll/db";
 import { hasTemplate, renderW2EmployeePacket } from "@payroll/documents";
 import { EVENT_TYPE, w2Changed as tplW2Changed } from "@payroll/notifications";
+import { STATE_ID_MIN_YEAR } from "@payroll/shared";
 import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
 import { templateContext } from "../notify/outbox.js";
@@ -44,6 +45,7 @@ import {
   w2AvailableOn,
   w2FiguresForYear,
   w2InputWithBoxes,
+  w2StateLinesByEmployee,
 } from "./annual.js";
 import {
   electronicW2AccessThrough,
@@ -607,4 +609,88 @@ export async function backfillW2Furnishings(
       .onConflictDoNothing({ target: [appSettings.key] });
   }
   return { inserted, skipped: false, failed };
+}
+
+// ---------------------------------------------------------------------------
+// Spec 24 (PAY-116) PR-4: who already holds a W-2 with a state's number
+// ---------------------------------------------------------------------------
+
+/** Employees already given a W-2 of `taxYear` that has a `stateCode` line (a count only). */
+export interface FurnishedStateCount {
+  stateCode: string;
+  taxYear: number;
+  employees: number;
+}
+
+/**
+ * Spec 24 (PAY-116) PR-4 (carry-over f): per unfiled w2_w3 tax year from
+ * STATE_ID_MIN_YEAR with any furnishing row, and per state on those
+ * employees' current W-2 lines, the number of distinct furnished employees
+ * whose W-2 has a line for that state. Counts only — no names, no ids.
+ * A filed year is left out (its state IDs can no longer change). A year
+ * whose state lines cannot be planned is skipped with a fixed-message log
+ * (the other years still count); a database error on the furnishing or
+ * filing reads propagates. Sorted by state code (code-point), then year.
+ */
+export async function furnishedStateCounts(
+  db: Pick<Db, "select" | "selectDistinct">,
+): Promise<FurnishedStateCount[]> {
+  const out: FurnishedStateCount[] = [];
+  for (const [taxYear, ids] of await furnishedByOpenYear(db)) {
+    out.push(...(await stateCountsForYear(db, taxYear, ids)));
+  }
+  return out.sort(
+    (a, b) =>
+      (a.stateCode < b.stateCode ? -1 : a.stateCode > b.stateCode ? 1 : 0) || a.taxYear - b.taxYear,
+  );
+}
+
+/** Furnished employee ids per unfiled tax year from STATE_ID_MIN_YEAR. */
+async function furnishedByOpenYear(
+  db: Pick<Db, "select" | "selectDistinct">,
+): Promise<Map<number, Set<number>>> {
+  const byYear = new Map<number, Set<number>>();
+  const furnished = await db
+    .selectDistinct({ employeeId: w2Furnishings.employeeId, taxYear: w2Furnishings.taxYear })
+    .from(w2Furnishings)
+    .where(gte(w2Furnishings.taxYear, STATE_ID_MIN_YEAR));
+  if (furnished.length === 0) return byYear;
+  const filed = await db
+    .select({ year: taxFilings.year })
+    .from(taxFilings)
+    .where(
+      and(
+        eq(taxFilings.formType, "w2_w3"),
+        eq(taxFilings.quarter, 0),
+        eq(taxFilings.status, "filed"),
+      ),
+    );
+  const filedYears = new Set(filed.map((f) => f.year));
+  for (const r of furnished) {
+    if (filedYears.has(r.taxYear)) continue;
+    byYear.set(r.taxYear, (byYear.get(r.taxYear) ?? new Set()).add(r.employeeId));
+  }
+  return byYear;
+}
+
+/** Per state, how many of `ids` have a W-2 line for it in `taxYear`; [] when the year cannot be planned. */
+async function stateCountsForYear(
+  db: Pick<Db, "select">,
+  taxYear: number,
+  ids: ReadonlySet<number>,
+): Promise<FurnishedStateCount[]> {
+  let lines: Awaited<ReturnType<typeof w2StateLinesByEmployee>>;
+  try {
+    lines = await w2StateLinesByEmployee(db, taxYear);
+  } catch {
+    console.warn("[state-ids] furnished: one year's W-2 state lines could not be planned");
+    return [];
+  }
+  const perState = new Map<string, number>();
+  for (const id of ids) {
+    for (const state of new Set((lines.get(id) ?? []).map((l) => l.state))) {
+      perState.set(state, (perState.get(state) ?? 0) + 1);
+    }
+  }
+  return [...perState].map(([stateCode, employees]) => ({ stateCode, taxYear, employees }));
 }

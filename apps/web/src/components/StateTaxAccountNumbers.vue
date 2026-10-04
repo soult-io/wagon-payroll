@@ -9,6 +9,11 @@
  * sessionStorage or the URL. The page shows only the mask the server sends.
  * The format is checked in the browser with the same rules as the server
  * before anything is sent.
+ *
+ * Spec 24 (PAY-116) PR-4 (carry-over f): before a save or remove that would
+ * change the number on W-2s already given out (the server's `furnished`
+ * counts), the owner confirms first. A save of the number already stored
+ * changes nothing on the server (`unchanged`), and the page says so.
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import Button from "primevue/button";
@@ -37,6 +42,15 @@ import {
   type StateIdRow,
 } from "../lib/api";
 import { useNotify } from "../composables/useNotify";
+import {
+  affectedEmployees,
+  affectedYearsText,
+  nextRowYear,
+  STATE_ID_CHANGE_HEADER,
+  stateIdChangeText,
+  stateIdRemoveText,
+  stateIdUnchangedText,
+} from "../lib/w2-filing";
 
 const notify = useNotify();
 const confirm = useConfirm();
@@ -63,8 +77,14 @@ const stateOptions = Object.entries(STATE_NAMES)
   .sort((a, b) => (a.label < b.label ? -1 : 1));
 
 const yearMissing = computed(() => fromTaxYear.value === null);
+/**
+ * Spec 24 (PAY-116) PR-4 round 4: no save before the list loaded — the
+ * "W-2s already given out" confirm needs its furnished counts.
+ */
+const listReady = computed(() => list.value !== null && !loadError.value);
 const canSave = computed(
   () =>
+    listReady.value &&
     stateCode.value !== "" &&
     typed.value.trim() !== "" &&
     fromTaxYear.value !== null &&
@@ -111,11 +131,9 @@ async function load() {
 
 /** "2026 on", "2026–2027", or "2026" when the next row starts the year after. */
 function usedFor(row: StateIdRow): string {
-  const later = (list.value?.stateIds ?? [])
-    .filter((r) => r.stateCode === row.stateCode && r.fromTaxYear > row.fromTaxYear)
-    .map((r) => r.fromTaxYear);
-  if (later.length === 0) return `${row.fromTaxYear} on`;
-  const last = Math.min(...later) - 1;
+  const next = nextRowYear(list.value?.stateIds ?? [], row);
+  if (next === null) return `${row.fromTaxYear} on`;
+  const last = next - 1;
   return last === row.fromTaxYear ? `${row.fromTaxYear}` : `${row.fromTaxYear}–${last}`;
 }
 
@@ -140,7 +158,18 @@ function errorText(err: unknown, action: "save" | "remove", state: string): stri
   return notify.errorMessage(err);
 }
 
-async function save() {
+/** PR-4: employees (and years) whose given-out W-2 a change at state + year would correct. */
+function affected(state: string, year: number): { n: number; years: string } {
+  const furnished = list.value?.furnished ?? [];
+  const rows = list.value?.stateIds ?? [];
+  const target = { stateCode: state, fromTaxYear: year };
+  return {
+    n: affectedEmployees(furnished, rows, target),
+    years: affectedYearsText(furnished, rows, target),
+  };
+}
+
+function save() {
   if (!canSave.value || fromTaxYear.value === null) return;
   const state = stateCode.value;
   const year = fromTaxYear.value;
@@ -153,14 +182,37 @@ async function save() {
     return;
   }
   fieldError.value = "";
+  const { n, years } = affected(state, year);
+  if (n === 0) {
+    void put(state, year);
+    return;
+  }
+  confirm.require({
+    header: STATE_ID_CHANGE_HEADER,
+    message: stateIdChangeText(n, years, state),
+    icon: "pi pi-exclamation-triangle",
+    rejectProps: { label: "Keep the current number", severity: "secondary", text: true },
+    acceptProps: { label: "Save and correct W-2s", severity: "warn" },
+    accept: () => put(state, year),
+  });
+}
+
+async function put(state: string, year: number) {
   saving.value = true;
   try {
-    await adminSettingsApi.putStateId(state, { stateId: typed.value, fromTaxYear: year });
+    const res = await adminSettingsApi.putStateId(state, {
+      stateId: typed.value,
+      fromTaxYear: year,
+    });
     typed.value = "";
-    notify.success(
-      "Saved",
-      `Your ${stateName(state)} account number is saved for W-2s from ${year} on.`,
-    );
+    if (res.unchanged) {
+      notify.info("No change", stateIdUnchangedText(state));
+    } else {
+      notify.success(
+        "Saved",
+        `Your ${stateName(state)} account number is saved for W-2s from ${year} on.`,
+      );
+    }
     await load();
   } catch (err) {
     saveError.value = errorText(err, "save", state);
@@ -171,9 +223,11 @@ async function save() {
 
 function askRemove(row: StateIdRow) {
   const name = stateName(row.stateCode);
+  const { n, years } = affected(row.stateCode, row.fromTaxYear);
+  const given = n > 0 ? ` ${stateIdRemoveText(n, years, row.stateCode)}` : "";
   confirm.require({
     header: `Remove ${name} account number?`,
-    message: `Remove ${name} number ${row.idMasked} (used from ${row.fromTaxYear})? You won't be able to see the full number again, so you'd need to type it in again to add it back. W-2s that show ${name} tax withheld can't be made without a number.`,
+    message: `Remove ${name} number ${row.idMasked} (used from ${row.fromTaxYear})? You won't be able to see the full number again, so you'd need to type it in again to add it back. W-2s that show ${name} tax withheld can't be made without a number.${given}`,
     icon: "pi pi-exclamation-triangle",
     rejectProps: { label: "Keep it", severity: "secondary", text: true },
     acceptProps: { label: "Remove number", severity: "danger" },
@@ -232,11 +286,12 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="card stack">
+  <section class="card stack state-ids">
     <h3>State tax account numbers</h3>
-    <p class="muted small">
-      Your state gives you an employer account number when you register for state payroll tax. It
-      goes in box 15 of each W-2.
+    <p class="muted small" style="margin: 0">
+      Your state gives you a withholding account number when you register to withhold state income
+      tax. It goes in box 15 of each W-2. Don't use your state unemployment (UI) account number
+      here.
     </p>
 
     <Skeleton v-if="loading && !list" height="6rem" />
@@ -258,17 +313,26 @@ onBeforeUnmount(() => {
         </Message>
       </template>
 
-      <p v-for="d in list.defaults" :key="d.stateCode" class="small" data-testid="state-id-default">
-        <strong>{{ stateName(d.stateCode) }}:</strong>
-        We're using your EIN ({{ d.idMasked }}) as your {{ stateName(d.stateCode) }} account
-        number. If {{ stateName(d.stateCode) }} gave you a different number, add it below.
+      <div
+        v-for="d in list.defaults"
+        :key="d.stateCode"
+        class="stack"
+        style="gap: 0.25rem"
+        data-testid="state-id-default"
+      >
+        <p class="small" style="margin: 0">
+          <strong>{{ stateName(d.stateCode) }}:</strong>
+          We're using your EIN ({{ d.idMasked }}) as your {{ stateName(d.stateCode) }} account
+          number. If {{ stateName(d.stateCode) }} gave you a different number, add it below.
+        </p>
         <Button
           label="Use a different number"
           text
           size="small"
+          style="align-self: flex-start; padding-left: 0"
           @click="useDifferent(d.stateCode)"
         />
-      </p>
+      </div>
 
       <div v-if="list.stateIds.length" class="table-scroll">
         <DataTable :value="list.stateIds" striped-rows>
@@ -295,7 +359,7 @@ onBeforeUnmount(() => {
           </Column>
         </DataTable>
       </div>
-      <p v-else class="muted small">No state account numbers on file yet.</p>
+      <p v-else class="muted small" style="margin: 0">No state account numbers on file yet.</p>
     </template>
 
     <div class="form-grid">
@@ -391,6 +455,14 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/*
+ * Spec 24 (PAY-116) PR-4: no extra heading margin inside the .stack card.
+ * Set here, not inline: the heading markup stays "<h3>State tax account
+ * numbers</h3>" (the issue copy points to this label; a test reads it).
+ */
+.state-ids > h3 {
+  margin: 0;
+}
 /*
  * PrimeVue's hover and focus border rules (.p-inputtext:enabled:hover/:focus)
  * outrank .p-inputtext.p-invalid, so an invalid field that has focus or the

@@ -14,6 +14,10 @@
  * already furnished online keeps its download button (row.downloadable)
  * through electronicW2AccessThrough(year); the consent prompt shows only
  * while some year still needs consent.
+ *
+ * Spec 24 (PAY-116) PR-4: a ready W-2 explains the two-up pages (from
+ * W2_TWO_UP_FROM_YEAR) and, when it has more than one form, why (formCount
+ * only — never the states).
  */
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
@@ -33,6 +37,7 @@ import {
 } from "../../lib/api";
 import { electronicW2AccessThrough, W2_CARD_HEADING } from "@payroll/shared";
 import { myW2NotReadyText } from "../../lib/w2-issues";
+import { myMultiW2Text, twoUpHelpText } from "../../lib/w2-filing";
 import { useMoney } from "../../composables/useMoney";
 import { useDates } from "../../composables/useDates";
 import { useNotify } from "../../composables/useNotify";
@@ -54,6 +59,13 @@ const consentBusy = ref(false);
 /** PAY-206 (R7): "{year} W-2 (CORRECTED)" when the W-2 replaces one with other figures. */
 function w2Label(w2: MyW2Year): string {
   return w2.corrected ? `${w2.year} W-2 (CORRECTED)` : `${w2.year} W-2`;
+}
+/** Spec 24 (PAY-116) PR-4: help under a downloadable W-2 (two-up pages, more than one form). */
+function w2HelpLines(w2: MyW2Year): string[] {
+  if (!w2.ready) return [];
+  return [myMultiW2Text(w2.formCount, w2.year), twoUpHelpText(w2.year, "employee")].filter(
+    (t): t is string => t !== null,
+  );
 }
 /** PAY-206 (D9): rows shown above the consent prompt — downloadable without consent. */
 const w2Downloadable = computed(() => w2Years.value.filter((w2) => w2.downloadable));
@@ -196,10 +208,18 @@ onMounted(async () => {
         >
           <span>
             <strong>{{ w2Label(w2) }}</strong>
-            <span class="muted small">· available since {{ date(w2.availableOn) }}</span>
+            <span class="muted small">{{ " · available since " }}{{ date(w2.availableOn) }}</span>
             <span v-if="w2.corrected" class="muted small" style="display: block">
               This replaces any earlier {{ w2.year }} W-2 you may have. Use this one for your tax
               return.
+            </span>
+            <span
+              v-for="line in w2HelpLines(w2)"
+              :key="line"
+              class="muted small"
+              style="display: block; margin-top: 0.25rem"
+            >
+              {{ line }}
             </span>
             <span v-if="w2Consent.withdrawnAt" class="muted small" style="display: block">
               You turned off online W-2s. You can still download this one until
@@ -239,10 +259,18 @@ onMounted(async () => {
           <span>
             <!-- PAY-206: the current figures replace a copy the employee may hold. -->
             <strong>{{ w2Label(w2) }}</strong>
-            <span class="muted small">· available since {{ date(w2.availableOn) }}</span>
+            <span class="muted small">{{ " · available since " }}{{ date(w2.availableOn) }}</span>
             <span v-if="w2.corrected" class="muted small" style="display: block">
               This replaces any earlier {{ w2.year }} W-2 you may have. Use this one for your tax
               return.
+            </span>
+            <span
+              v-for="line in w2HelpLines(w2)"
+              :key="line"
+              class="muted small"
+              style="display: block; margin-top: 0.25rem"
+            >
+              {{ line }}
             </span>
           </span>
           <a v-if="w2.ready" :href="myW2Api.pdfUrl(w2.year)" target="_blank" rel="noopener">

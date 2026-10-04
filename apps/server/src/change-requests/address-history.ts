@@ -23,6 +23,27 @@ import type { DbLike } from "../payroll/resolve.js";
 
 export type AddressKind = "residential" | "mailing";
 
+/**
+ * Spec 24 (PAY-116) PR-4: a stored address (current field, history payload
+ * or audit snapshot) failed to decrypt. Fixed message; never carries the
+ * value or a cause.
+ */
+export class AddressUnreadableError extends Error {
+  constructor() {
+    super("address could not be decrypted");
+    this.name = "AddressUnreadableError";
+  }
+}
+
+/** decryptAddress, with a decrypt failure as AddressUnreadableError. */
+function readAddress(value: unknown, key: string): AddressPayload | null {
+  try {
+    return decryptAddress(value, key);
+  } catch {
+    throw new AddressUnreadableError();
+  }
+}
+
 const KIND_TO_REQUEST_TYPE = {
   residential: "address",
   mailing: "mailing_address",
@@ -33,7 +54,10 @@ const KIND_TO_BEFORE_KEY = {
   mailing: "mailingAddress",
 } as const;
 
-/** The employee's address of `kind` in effect on `asOf` (YYYY-MM-DD), or null. */
+/**
+ * The employee's address of `kind` in effect on `asOf` (YYYY-MM-DD), or null.
+ * AddressUnreadableError when a value it reads does not decrypt.
+ */
 export async function resolveEmployeeAddressAt(
   db: DbLike,
   employeeId: number,
@@ -50,10 +74,11 @@ export async function resolveEmployeeAddressAt(
   if (!employee) return null;
   // PAY-21: every source (current field, history payload, audit before) is
   // ciphertext at rest; decryptAddress tolerates plaintext legacy rows.
-  const current = decryptAddress(
-    kind === "mailing" ? employee.mailingAddress : employee.address,
-    key,
-  );
+  // Spec 24 (PAY-116) PR-4: the current field is decrypted only when it
+  // decides the value, so an unreadable current value never holds a W-2
+  // whose box f comes from the history.
+  const current = () =>
+    readAddress(kind === "mailing" ? employee.mailingAddress : employee.address, key);
 
   const requestType = KIND_TO_REQUEST_TYPE[kind];
   const history = await db
@@ -73,10 +98,10 @@ export async function resolveEmployeeAddressAt(
     .orderBy(asc(changeRequests.effectiveFrom), asc(changeRequests.appliedAt));
 
   const inEffect = history.filter((r) => r.effectiveFrom <= asOf).at(-1);
-  if (inEffect) return decryptAddress(inEffect.payload, key);
+  if (inEffect) return readAddress(inEffect.payload, key);
 
   const first = history[0];
-  if (!first) return current;
+  if (!first) return current();
 
   // asOf precedes the first recorded change — recover the pre-change value
   // from the approve audit event of that first change. A present-but-null
@@ -98,9 +123,9 @@ export async function resolveEmployeeAddressAt(
   if (before && typeof before === "object") {
     const beforeKey = KIND_TO_BEFORE_KEY[kind];
     const record = before as Record<string, unknown>;
-    if (beforeKey in record) return decryptAddress(record[beforeKey], key);
+    if (beforeKey in record) return readAddress(record[beforeKey], key);
   }
-  return current;
+  return current();
 }
 
 /** W-2 box f (spec: mailing address effective Dec 31 of the tax year, else residential). */

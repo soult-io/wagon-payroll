@@ -60,6 +60,9 @@ import { syncFilings } from "../filings/service.js";
 // Fixed QA credentials (FAKE — QA-only, documented in docs/qa.md)
 // ---------------------------------------------------------------------------
 
+/** Spec 24 (PAY-116) PR-4: the QA company's synthetic EIN (00- prefix: never issued). */
+const QA_COMPANY_EIN = "000000001";
+
 export const QA_ADMIN = {
   name: "Quinn Adminster",
   email: "qa-admin@example.test",
@@ -1071,6 +1074,13 @@ export async function seedQaDataset(
   deps: QaDeps,
   opts: QaSeedOptions = {},
 ): Promise<QaSeedSummary> {
+  // Spec 24 (PAY-116) PR-4 (security): synthetic users, employees and a
+  // synthetic EIN may only be written to QA (APP_ENV=qa) or a test boot
+  // (NODE_ENV=test: the vitest harness and the ephemeral e2e boot). Checked
+  // before any read or write; the message never echoes the environment.
+  if (deps.config.appEnv !== "qa" && deps.config.nodeEnv !== "test") {
+    throw new Error("QA seed refused: it runs only with APP_ENV=qa or in a test boot");
+  }
   const today = opts.today ?? todayIso();
   // Reference data (company, tax tables, pay schedule) — idempotent.
   await seedDatabase(deps.db as unknown as SeedDb);
@@ -1081,6 +1091,14 @@ export async function seedQaDataset(
 
   const companyRows = await deps.db.select({ id: company.id }).from(company).limit(1);
   const companyId = one(companyRows, "company").id;
+  // Spec 24 (PAY-116) PR-4 (D-PL3): a synthetic company EIN, so IL and NY
+  // take the EIN default (S24-D2) and the QA W-2s are not held for a
+  // missing state number. Set only while the company has none — a pre-set
+  // EIN is never overwritten. A "00" prefix is never a valid EIN (D31).
+  await deps.db
+    .update(company)
+    .set({ ein: encryptField(QA_COMPANY_EIN, deps.config.encryptionKey) })
+    .where(and(eq(company.id, companyId), isNull(company.ein)));
 
   const w2 = await seedW2People(deps, companyId, employeeLogin.id, today);
   await seedResidences(deps.db, w2, admin.id);

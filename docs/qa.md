@@ -14,7 +14,9 @@ and re-seedable; no production data ever lands here.**
   UI internal-only). No external SMTP credentials exist in QA: real email
   cannot leave the network by construction.
 - Migrate one-shot runs on every redeploy (same as prod); `seed:qa` is a
-  manual CLI step after first boot (idempotent).
+  manual CLI step after first boot (idempotent). It refuses to run unless
+  `APP_ENV=qa` (or `NODE_ENV=test`), so it can never write synthetic data
+  into another environment.
 - Both schedulers ENABLED (payroll + contractor recurring) — scheduled
   behavior is exactly what QA exists to exercise.
 - Separate secrets dir `/srv/payroll-qa/secrets` (db password, encryption
@@ -83,6 +85,12 @@ the other three QA secrets (db-password, encryption-key, session-secret) are
 random per-install as usual.
 
 ## Persona inventory
+
+**Company:** the seed sets a synthetic EIN, `00-0000001`, when the company has
+none (a pre-set EIN is never overwritten; a `00` prefix is never issued). It
+appears on the QA W-2/W-3 forms, and Illinois and New York use it as their
+W-2 box 15 state number (the EIN default), so Ada's W-2 is not held for a
+missing state number.
 
 **W-2 employees** (payroll history: previous calendar year in full + current
 year through last month, issued through the real draft→approve→issue pipeline

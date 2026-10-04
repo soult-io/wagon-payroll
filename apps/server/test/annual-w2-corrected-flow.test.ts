@@ -257,7 +257,14 @@ describe("T10 the L4 miss: downloaded before the year notice", () => {
       rows: [{ method: "employee_download", hash: h2, corrected: true }],
       myList: {
         w2s: [
-          { year: Y, availableOn: "2026-01-01", ready: true, corrected: true, downloadable: true },
+          {
+            year: Y,
+            availableOn: "2026-01-01",
+            ready: true,
+            corrected: true,
+            downloadable: true,
+            formCount: 1,
+          },
         ],
       },
       admin: { corrected: true, correctionToFurnish: false, furnished: "online", boxes: dec },
@@ -392,7 +399,14 @@ describe("T12 paper correction: printed, changed, marked given on paper", () => 
       lastRow: { method: "admin_print", hash: h2, corrected: true },
       myList: {
         w2s: [
-          { year: Y, availableOn: "2026-01-01", ready: true, corrected: true, downloadable: false },
+          {
+            year: Y,
+            availableOn: "2026-01-01",
+            ready: true,
+            corrected: true,
+            downloadable: false,
+            formCount: 1,
+          },
         ],
       },
       mailsAfter: 1,

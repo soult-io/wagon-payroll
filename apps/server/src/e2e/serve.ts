@@ -41,7 +41,7 @@ import { buildApp } from "../app.js";
 import type { Db } from "../db.js";
 import { inviteUser } from "../auth/users.js";
 import { syncDeposits } from "../deposits/service.js";
-import { syncAnnualFilings } from "../filings/annual.js";
+import { syncAnnualFilings, upsertAnnualFiling } from "../filings/annual.js";
 import { syncFilings } from "../filings/service.js";
 import { seedQaDataset } from "../qa/seed-qa.js";
 
@@ -331,6 +331,17 @@ await pglite.exec(`
 await syncDeposits({ db, config });
 await syncFilings({ db, config });
 await syncAnnualFilings({ db, config });
+
+// Spec 24 (PAY-116) PR-4 e2e fixture (ephemeral boot only, never the QA
+// seed): a W-2/W-3 row for the CURRENT calendar year, so the browser can
+// see the state lines, the state tax check and the filing checklist before
+// the year closes (the scheduler creates the row only from January 1 of the
+// next year). Status not_started; the worksheet comes from the same refresh
+// the daily tick runs. PDFs still answer 409 until the year closes.
+await upsertAnnualFiling(db, "w2_w3", new Date().getFullYear(), {
+  status: "not_started",
+  createdBy: "e2e",
+});
 
 await app.listen({ port: PORT, host: HOST });
 console.log(`e2e:serve ready at ${BASE_URL} (state → ${STATE_FILE})`);

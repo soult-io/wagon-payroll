@@ -236,6 +236,7 @@ describe("D2 employee W-2 list carries ready per year, no reason codes", () => {
           ready: true,
           corrected: false,
           downloadable: true,
+          formCount: 1,
         },
         {
           year: 2024,
@@ -243,6 +244,7 @@ describe("D2 employee W-2 list carries ready per year, no reason codes", () => {
           ready: false,
           corrected: false,
           downloadable: false,
+          formCount: null,
         },
       ],
     });
@@ -258,6 +260,7 @@ describe("D2 employee W-2 list carries ready per year, no reason codes", () => {
           ready: false,
           corrected: false,
           downloadable: false,
+          formCount: null,
         },
       ],
     });

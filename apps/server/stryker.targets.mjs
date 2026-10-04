@@ -39,6 +39,8 @@ export const TARGETS = {
       "test/calendar.test.ts",
       "test/mailing-address.test.ts",
       "test/state-deposit-transitions.test.ts",
+      // PAY-116 (Spec 24 PR-4): the QA seed EIN suite reads W-2 figures.
+      "test/qa-seed-ein.test.ts",
     ],
     thresholds: { high: 80, low: 60, break: 65 },
   },

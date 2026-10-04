@@ -3,9 +3,12 @@
  * numbers (W-2 box 15). Admin only; write-only values.
  *
  * - GET    /api/admin/company/state-ids — entered rows (masked), the IL/NY
- *   EIN defaults (masked) and the states that still need a number.
+ *   EIN defaults (masked), the states that still need a number, and
+ *   (Spec 24 (PAY-116) PR-4) `furnished`: per state and unfiled tax year,
+ *   how many employees already got a W-2 with that state on it (counts only).
  * - PUT    /api/admin/company/state-ids/:stateCode — body
- *   `{ stateId, fromTaxYear? = 2026 }`; upsert, 200 with the masked row.
+ *   `{ stateId, fromTaxYear? = 2026 }`; upsert, 200 with the masked row and
+ *   `unchanged` (PR-4: the identical value writes nothing).
  * - DELETE /api/admin/company/state-ids/:stateCode/:fromTaxYear — 204; no
  *   such row → 404 NOT_FOUND and no audit row.
  *
@@ -38,6 +41,7 @@ import {
   writeStateId,
 } from "../company/state-ids.js";
 import { w2StateLinesForYear } from "../filings/annual.js";
+import { furnishedStateCounts } from "../filings/w2-furnish.js";
 import { actorOf, NOT_FOUND, safeIssues } from "./params.js";
 
 interface Deps {
@@ -119,7 +123,9 @@ export function registerAdminStateIdRoutes(app: FastifyInstance, deps: Deps): vo
 
     const needed = await neededFromPlanner();
 
-    return { stateIds, defaults, needed };
+    const furnished = await furnishedStateCounts(db);
+
+    return { stateIds, defaults, needed, furnished };
   });
 
   app.put("/api/admin/company/state-ids/:stateCode", { preHandler: admin }, async (req, reply) => {
@@ -154,6 +160,7 @@ export function registerAdminStateIdRoutes(app: FastifyInstance, deps: Deps): vo
         idMasked: result.idMasked,
         source: "entered" as const,
       },
+      unchanged: result.unchanged,
     };
   });
 
