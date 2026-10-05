@@ -1082,8 +1082,9 @@ describe("EF-3 a late draft made stale by an earlier issued run (D4)", () => {
 const W2_PHRASE = "IMPORTANT TAX RETURN DOCUMENT AVAILABLE";
 const W2_SUBJECT_E = (year: number, co: string) =>
   `${W2_PHRASE}: Your corrected ${year} W-2 from ${co}`;
+// PAY-217 round 2 (F1): + the print step, as in the w2Available notice.
 const W2_BODY_E = (year: number, co: string, appUrl: string) =>
-  `${co} has corrected your ${year} Form W-2. The corrected W-2 is marked CORRECTED and replaces the earlier one. Use the corrected W-2 for your tax return. To view and print it, sign in at ${appUrl}, open Payslips, and find "W-2 wage and tax statements". If you already filed your return using the earlier W-2, you may need to amend it.`;
+  `${co} has corrected your ${year} Form W-2. The corrected W-2 is marked CORRECTED and replaces the earlier one. Use the corrected W-2 for your tax return. To view and print it, sign in at ${appUrl}, open Payslips, and find "W-2 wage and tax statements". Select Download PDF, then print or save it from your PDF reader. If you already filed your return using the earlier W-2, you may need to amend it.`;
 const W2_SUBJECT_P = (year: number, co: string) => `${co} — Your ${year} W-2 is being corrected`;
 const W2_BODY_P = (year: number, co: string) =>
   `${co} has corrected your ${year} Form W-2. ${co} will give you a corrected paper W-2, marked CORRECTED. Use the corrected paper copy for your tax return, not the earlier one. This email is a notice only and is not your W-2.`;
