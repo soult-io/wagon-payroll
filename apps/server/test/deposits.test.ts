@@ -635,7 +635,7 @@ describe("admin deposit list filters (PAY-15)", () => {
     await t.db.insert(taxDeposits).values({
       jurisdiction: "federal",
       periodStart: "2025-12-01",
-      amount: "785.63",
+      amount: "712.34", // synthetic
       dueDate: "2026-01-15",
       status: "deposited",
       depositedOn: "2025-12-18",

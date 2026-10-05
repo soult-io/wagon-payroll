@@ -936,7 +936,7 @@ async function insertV124(env: Env): Promise<void> {
     await deposit(env, {
       j: "federal",
       start,
-      c: 57376,
+      c: 61234,
       due,
       status: "deposited",
       on,
@@ -1026,7 +1026,7 @@ describe("PAY-91 v1.24/v1.25 data and migration 0022", () => {
         `quarter 2026-07-01 25345 ${CA_Q3_DUE} pending`,
       ]);
       await expectLive(env, "IL", [`month 2026-07-01 5000 ${M_DUE.jul} overdue`]);
-      const fedAfter = (await rows(env, "federal")).filter((r) => r.c === 57376).map((r) => r.raw);
+      const fedAfter = (await rows(env, "federal")).filter((r) => r.c === 61234).map((r) => r.raw);
       expect(fedAfter).toEqual(fedBefore);
       await inv(env);
     } finally {
@@ -1102,7 +1102,7 @@ describe("PAY-91 v1.24/v1.25 data and migration 0022", () => {
     await inv(E);
   });
 
-  it("T28: 941 Q3 2026 line 13 = 1,721.28 (3 x 573.76) after migrate + sync with CA SUP rows present", async () => {
+  it("T28: 941 Q3 2026 line 13 = 1,837.02 (3 x 612.34, synthetic) after migrate + sync with CA SUP rows present", async () => {
     const env = await t18Env();
     try {
       for (const [start, due, on] of [
@@ -1113,7 +1113,7 @@ describe("PAY-91 v1.24/v1.25 data and migration 0022", () => {
         await deposit(env, {
           j: "federal",
           start,
-          c: 57376,
+          c: 61234,
           due,
           status: "deposited",
           on,
@@ -1122,7 +1122,7 @@ describe("PAY-91 v1.24/v1.25 data and migration 0022", () => {
       }
       await sync(env, "2026-10-01");
       const ws = await computeWorksheet(env.db, 2026, 3);
-      expect(ws.line13Deposits).toBe("1721.28");
+      expect(ws.line13Deposits).toBe("1837.02");
     } finally {
       await env.pg.close();
     }
@@ -1153,7 +1153,7 @@ describe("PAY-91 monthly and no-schedule states", () => {
       await deposit(E, {
         j: "federal",
         start,
-        c: 57376,
+        c: 61234,
         due,
         status: "deposited",
         on: start,
@@ -1177,7 +1177,7 @@ describe("PAY-91 monthly and no-schedule states", () => {
       "month 2026-09-01 8000",
     ]);
     expect(await rows(E, "TX")).toEqual([]);
-    expect((await rows(E, "federal")).filter((r) => r.c === 57376).map((r) => r.raw)).toEqual(
+    expect((await rows(E, "federal")).filter((r) => r.c === 61234).map((r) => r.raw)).toEqual(
       fedBefore,
     );
     await inv(E);
