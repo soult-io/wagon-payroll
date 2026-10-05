@@ -534,7 +534,7 @@ export async function withdrawW2Consent(
     const rendered = tplWithdrawn(await templateContext(tx, config), {
       effectiveOn,
       contact: (await readW2Contact(tx)).contact,
-      stillOnline: await stillOnline(tx, employeeId, effectiveOn, config.appTz),
+      stillOnline: await onlineW2Windows(tx, employeeId, effectiveOn, config.appTz),
     });
     await tx.insert(emailOutbox).values({
       userId,
@@ -555,9 +555,11 @@ export async function withdrawW2Consent(
  * N1: the tax years already furnished online (portal_notice or
  * employee_download) and still inside their access window on `today`, with
  * the window's last day — October 15 of the next year, or 90 days after the
- * latest corrected posting when later ((j)(6)).
+ * latest corrected posting when later ((j)(6)). PAY-217: the one owner of
+ * the window rule — the withdrawal confirmation, the former-employee guard,
+ * the daily sign-in job, the employee W-2 list and the admin list use it.
  */
-async function stillOnline(
+export async function onlineW2Windows(
   db: ReadDb,
   employeeId: number,
   today: string,
