@@ -7,7 +7,7 @@
  * years given online whose window is still open (server-computed); no
  * payslips, profile or consent. A corrected W-2 is posted here too and
  * labelled CORRECTED (the IMPORTANT mail says a paper copy is coming; the
- * footer offers paper on request).
+ * footer says how to ask for paper).
  */
 import { computed, onMounted, ref } from "vue";
 import Message from "primevue/message";
@@ -28,7 +28,10 @@ const loadError = ref(false);
 const w2s = ref<MyW2Year[]>([]);
 const former = ref<FormerW2Info | null>(null);
 
-const company = computed(() => former.value?.companyName || "Your former employer");
+const company = computed(() => former.value?.companyName || "your former employer");
+const title = computed(() =>
+  former.value?.companyName ? `Your W-2s from ${former.value.companyName}` : "Your W-2s",
+);
 const contact = computed(() => former.value?.contact ?? null);
 
 /** "{year} W-2 (CORRECTED)" when the W-2 replaces one with other figures. */
@@ -58,12 +61,14 @@ onMounted(async () => {
 
 <template>
   <div class="page">
-    <PageHeader :title="`Your W-2s from ${company}`" />
+    <PageHeader :title="title" />
 
     <div class="card stack">
       <p style="margin: 0">
         Your job with {{ company }} has ended. You can still sign in here to download the W-2s
-        {{ company }} gave you online, until {{ longDate(auth.w2AccessThrough) }}.
+        {{ company }} gave you online<template v-if="auth.w2AccessThrough"
+          >, through {{ longDate(auth.w2AccessThrough) }}</template
+        >.
       </p>
 
       <Message v-if="loadError" severity="error" :closable="false">
@@ -106,7 +111,8 @@ onMounted(async () => {
           {{ myW2NotReadyText(w2.year) }}
         </Message>
         <span v-else class="small">
-          Your {{ w2.year }} W-2 is being updated. Check back in a day.
+          Your {{ w2.year }} W-2 is being updated and can't be downloaded right now. Check back
+          later, or contact {{ company }} if you need it sooner.
         </span>
       </div>
 
@@ -116,6 +122,7 @@ onMounted(async () => {
         <a :href="`mailto:${contact.email}`">{{ contact.email }}</a>
         <template v-if="contact.mailingAddress">, {{ addressLine(contact.mailingAddress) }}</template>.
       </p>
+      <p v-else class="small footer">Questions? Contact {{ company }}.</p>
     </div>
   </div>
 </template>

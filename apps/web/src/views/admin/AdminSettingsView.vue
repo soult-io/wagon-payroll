@@ -207,6 +207,9 @@ async function unlock(u: AdminUser) {
 
 function statusOf(u: AdminUser): string {
   if (!u.banned) return "active";
+  // PAY-217: former employees.
+  if (u.banReason === "w2_access_ended") return "former employee, online W-2 access ended";
+  if (u.banReason === "employee_terminated") return "former employee";
   return u.banReason === "pending_enrollment"
     ? "pending enrollment"
     : `disabled (${u.banReason ?? "banned"})`;

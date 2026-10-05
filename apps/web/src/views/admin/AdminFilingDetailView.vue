@@ -135,7 +135,7 @@ function markFormerHanded(row: FormerEmployeeW2Access): void {
   confirm.require({
     message: `Only do this after you have handed or mailed ${row.legalName} their ${year} W-2 on paper. This can't be undone.`,
     header: `Mark ${row.legalName}'s W-2 as handed on paper?`,
-    icon: "pi pi-check",
+    icon: "pi pi-exclamation-triangle",
     rejectProps: { label: "Cancel", severity: "secondary", text: true },
     acceptProps: { label: "Yes, mark it handed" },
     accept: async () => {
@@ -1009,9 +1009,10 @@ onMounted(async () => {
         >
           <h4 style="margin: 0">Former employees who can still get this W-2 online</h4>
           <p class="muted small" style="margin: 0">
-            These people no longer work here. A W-2 given to them online must stay available until
-            the date shown, so they can still sign in to download it. If one of them can't sign in,
-            give them a paper copy and mark it handed.
+            These people no longer work here. A W-2 you gave them online must stay online through
+            the date shown, so they can still sign in to download it. If someone shows Locked out,
+            unlock them under Settings → Users. If someone can't sign in, give them a paper copy and
+            select Mark handed on paper.
           </p>
           <div class="former-list" role="list">
             <div v-for="row in w2Former" :key="row.employeeId" class="former-row" role="listitem">

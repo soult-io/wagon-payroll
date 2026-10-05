@@ -279,9 +279,15 @@ const accountState = computed(() => {
   if (!u) return { label: "Not invited", canInvite: true, canResend: false };
   // PAY-217: a former employee who can still sign in for their W-2s.
   const former = employee.value?.formerW2Access;
-  if (isTerminated.value && former && !(u.banned && u.banReason === "lockout"))
+  if (isTerminated.value && former && !u.banned)
     return {
-      label: `Former employee · W-2 access until ${longDate(former.accessThrough)}`,
+      label: `Former employee · can get W-2s online through ${longDate(former.accessThrough)}`,
+      canInvite: false,
+      canResend: false,
+    };
+  if (isTerminated.value && former && u.banReason !== "lockout")
+    return {
+      label: "Former employee · can't sign in · give W-2s on paper",
       canInvite: false,
       canResend: false,
     };

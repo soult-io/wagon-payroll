@@ -75,6 +75,8 @@ function w4WindowMessage(err: ApiError): string | null {
  * closed (WCAG 2.2.1): a 5-second toast is too short to read them.
  */
 const STICKY_ERROR_CODES = new Set([
+  // PAY-217: a reset / unlock of a former employee whose W-2 access ended.
+  "w2_access_ended",
   "stale_draft",
   "ytd_order_conflict",
   "pay_period_filed",
