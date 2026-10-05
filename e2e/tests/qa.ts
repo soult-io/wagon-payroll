@@ -221,4 +221,51 @@ export function loadEphemeralState(): EphemeralState | null {
   }
 }
 
+/** "YYYY-MM" of the month before `ym` ("YYYY-MM"). */
+export function previousMonth(ym: string): string {
+  const [y, m] = ym.split("-").map(Number) as [number, number];
+  return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`;
+}
+
+/**
+ * PAY-225 (brief §4.7, B8): the dates the read-only history specs assert,
+ * from the SERVER, never the runner's clock.
+ * - lastHistoryMonth: the month before server today when today's year has
+ *   tax tables; otherwise December of the latest covered year.
+ * - closedYear: min(server year − 1, latest covered year).
+ * Ephemeral boot: the QA seed's own summary in state.json (when uncovered the
+ * server year is above L, so min(Y − 1, L) = L). Live QA: the coverage
+ * endpoint (admin session on `page`).
+ */
+export async function serverHistoryDates(
+  page: Page,
+): Promise<{ lastHistoryMonth: string; closedYear: number }> {
+  if (!LIVE_QA) {
+    const state = loadEphemeralState();
+    if (!state) throw new Error("ephemeral state missing — e2e:serve writes it");
+    const { qa } = state;
+    if (qa.draftPeriod !== null) {
+      // Covered: the draft is the current period; history ends the month before.
+      const lastHistoryMonth = previousMonth(qa.draftPeriod);
+      expect(qa.historyThrough, "seed history ends the month before the draft").toBe(
+        lastHistoryMonth,
+      );
+      return { lastHistoryMonth, closedYear: Number(qa.draftPeriod.slice(0, 4)) - 1 };
+    }
+    const lastHistoryMonth = `${qa.latestCoveredYear}-12`;
+    expect(qa.historyThrough, "uncovered: history ends in December of L").toBe(lastHistoryMonth);
+    return { lastHistoryMonth, closedYear: qa.latestCoveredYear };
+  }
+  const cov = await fetchTaxTableCoverage(page);
+  const serverYear = Number(cov.today.slice(0, 4));
+  const latest = cov.latestCoveredYear;
+  if (latest === null) throw new Error("coverage: no covered tax year");
+  const current = cov.years.find((y) => y.year === serverYear);
+  const covered = current?.federal === true && current.missingStates.length === 0;
+  return {
+    lastHistoryMonth: covered ? previousMonth(cov.today.slice(0, 7)) : `${latest}-12`,
+    closedYear: Math.min(serverYear - 1, latest),
+  };
+}
+
 export const EMPLOYEE_SESSION_PATH = resolve(STATE_DIR, "employee-storage.json");

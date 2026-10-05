@@ -32,6 +32,7 @@ import {
   QA_DRAFT_EMPLOYEE_NAME,
   QA_EMPLOYEE,
   QA_EXPORT_TOKEN,
+  serverHistoryDates,
 } from "./qa.js";
 import { step } from "./support/journey.js";
 import { newContext } from "./support/walkthrough.js";
@@ -290,13 +291,16 @@ test("tax deposits: admin sees the computed schedule incl. last month (PAY-9)", 
   const page = await newAuthedPage(browser, QA_ADMIN);
   try {
     // The QA seed syncs deposits from 2 years of issued payroll history — the
-    // previous calendar month must be listed (read-only assertion).
-    const now = new Date();
-    const prev = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+    // last month of that history must be listed (read-only assertion). That
+    // is the previous calendar month while today's year has tax tables, else
+    // December of the latest covered year (PAY-225, B8). From the server,
+    // never the runner's clock.
+    const { lastHistoryMonth } = await serverHistoryDates(page);
+    const prev = new Date(`${lastHistoryMonth}-01T00:00:00Z`);
     // Pin the year filter to the month under assertion. It defaults to the
     // CURRENT year and filters server-side, so every January — when the seed
     // has produced no current-year runs yet — the default view is empty.
-    await step(page, "Deposit schedule lists last month", async () => {
+    await step(page, "Deposit schedule lists the last month of history", async () => {
       await page.goto(`/admin/deposits?year=${prev.getUTCFullYear()}`);
       await expect(page.getByRole("heading", { name: "Tax deposits" })).toBeVisible();
       // Three-letter month, matching AdminDepositsView's periodLabel since PAY-38
@@ -336,11 +340,11 @@ test("W-2/W-3 filing detail: full headers, Documents column, W-3 action placemen
 }) => {
   const page = await newAuthedPage(browser, QA_ADMIN);
   try {
-    // The most recent CLOSED year — derived, never hardcoded: the QA seed's
-    // history is a rolling window (previous calendar year in full + this year
-    // to date), so a literal year silently stops existing once the window
-    // moves past it.
-    const closedYear = String(new Date().getUTCFullYear() - 1);
+    // The most recent CLOSED year with history — derived, never hardcoded:
+    // the QA seed's history is a rolling window, so a literal year silently
+    // stops existing once the window moves past it. PAY-225: min(server year
+    // − 1, latest covered year), from the server, never the runner's clock.
+    const closedYear = String((await serverHistoryDates(page)).closedYear);
     // The year filter defaults to the CURRENT year and W-2/W-3 is a closed-year
     // form, so this row is never on the default view. Pin it by query param,
     // the same way PAY-9 above does — no coupling to a PrimeVue class name.
