@@ -8,8 +8,11 @@
  *     missingStates = sorted distinct work-state codes (employee_work_states rows
  *                     overlapping calendar year `year`, effective_to exclusive) of
  *                     ACTIVE W-2 employees whose compensation overlaps `year`
- *                     (effective_to exclusive), with no state_tax_configs row for
- *                     (code, year). No work state → nothing (federal only).
+ *                     (effective_to exclusive), for which the run resolver
+ *                     (resolveStateTaxConfig: "<code>:<mapped status>", then
+ *                     "<code>"; progressive needs brackets) finds no config for
+ *                     that employee's filing status (V4–V5). No work state →
+ *                     nothing (federal only).
  *   latestCoveredYear(db, onOrBefore): Promise<number | null>
  *     the highest federal tax_config year <= onOrBefore whose coverage is complete
  *     (federal true AND missingStates empty); null when there is none.
@@ -26,8 +29,13 @@ import {
   employees,
   employeeWorkStates,
   seedDatabase,
+  stateTaxBrackets,
+  stateTaxConfigs,
+  stateWithholdingElections,
+  w4Elections,
   type SeedDb,
 } from "@payroll/db";
+import { mapStateFilingStatus, resolveStateTaxConfig } from "../src/payroll/resolve.js";
 import { latestCoveredYear, taxTableCoverage } from "../src/payroll/tax-coverage.js";
 import { seedSyntheticFederal2027, seedSyntheticIl2027 } from "./fixtures/synthetic-2027.js";
 import { createTestApp, type TestContext } from "./helpers.js";
@@ -232,5 +240,231 @@ describe("V3 latestCoveredYear follows federal AND state coverage", {
     expect(await latestCoveredYear(t.db, 2027)).toBe(2027);
     // Never looks past `onOrBefore`.
     expect(await latestCoveredYear(t.db, 2026)).toBe(2026);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V4–V5 (code review HIGH, PAY-81): coverage must agree with the run resolver.
+//
+// resolveStateTaxConfig (src/payroll/resolve.ts) looks up the jurisdiction
+// "<state>:<mapped status>" first, then "<state>", and treats a 'progressive'
+// config with no brackets (same fallback order) as not found. The status is
+// the employee's state election filing status if any, else the federal W-4's,
+// mapped by mapStateFilingStatus (married_separate → single). Contract
+// assumed: a work state is missing for year Y exactly when, for some active
+// W-2 employee paid in Y and working there in Y, that lookup returns null for
+// the employee's filing status in Y. (Every employee below has one status for
+// the whole year, so "status as of which date" does not matter here.)
+// ---------------------------------------------------------------------------
+
+type FilingStatus = "single" | "married_joint" | "married_separate" | "head_of_household";
+
+async function addPaidEmployee(
+  t: TestContext,
+  opts: { name: string; state: string; year: number; w4: FilingStatus; election?: FilingStatus },
+): Promise<void> {
+  const [row] = await t.db
+    .insert(employees)
+    .values({
+      companyId: await companyId(t),
+      employmentType: "w2",
+      legalName: opts.name,
+      hireDate: "2024-01-01",
+      status: "active",
+    })
+    .returning({ id: employees.id });
+  if (!row) throw new Error("employee insert returned nothing");
+  await t.db.insert(compensation).values({
+    employeeId: row.id,
+    periodAmount: "4000.00",
+    frequency: "monthly",
+    effectiveFrom: "2024-01-01",
+    effectiveTo: null,
+  });
+  await t.db.insert(employeeWorkStates).values({
+    employeeId: row.id,
+    stateCode: opts.state,
+    effectiveFrom: "2024-01-01",
+    effectiveTo: null,
+  });
+  await t.db.insert(w4Elections).values({
+    employeeId: row.id,
+    taxYear: opts.year,
+    filingStatus: opts.w4,
+    federalExempt: false,
+    effectiveFrom: `${opts.year}-01-01`,
+    filedDate: `${opts.year - 1}-12-15`,
+    renewalDeadline: null,
+  });
+  if (opts.election) {
+    await t.db.insert(stateWithholdingElections).values({
+      employeeId: row.id,
+      stateCode: opts.state,
+      filingStatus: opts.election,
+      effectiveFrom: `${opts.year}-01-01`,
+      filedDate: `${opts.year - 1}-12-15`,
+    });
+  }
+}
+
+/** SYNTHETIC — TEST ONLY: a state config row (not a published table). */
+async function synState(
+  t: TestContext,
+  jurisdiction: string,
+  year: number,
+  kind: "flat" | "progressive",
+): Promise<void> {
+  await t.db.insert(stateTaxConfigs).values({
+    jurisdiction,
+    taxYear: year,
+    kind,
+    flatRate: kind === "flat" ? "0.0300" : null,
+    note: "SYNTHETIC — TEST ONLY (PAY-81 V5)",
+  });
+}
+
+/** SYNTHETIC — TEST ONLY: one open bracket under `jurisdiction`. */
+async function synBracket(t: TestContext, jurisdiction: string, year: number): Promise<void> {
+  await t.db.insert(stateTaxBrackets).values({
+    jurisdiction,
+    taxYear: year,
+    ordinal: 1,
+    minAmount: "0.00",
+    maxAmount: null,
+    rate: "0.0300",
+  });
+}
+
+/** States where the resolver finds no config for at least one employee working there. */
+async function resolverMissing(
+  t: TestContext,
+  year: number,
+  people: { state: string; w4: FilingStatus; election?: FilingStatus }[],
+): Promise<string[]> {
+  const out = new Set<string>();
+  for (const p of people) {
+    const found = await resolveStateTaxConfig(
+      t.db,
+      p.state,
+      year,
+      mapStateFilingStatus(p.election ?? p.w4),
+    );
+    if (!found) out.add(p.state);
+  }
+  return [...out].sort();
+}
+
+describe("V4 bundled 2026 seeds: CA (status-specific rows only, no bare 'CA' row) is covered", () => {
+  let t: TestContext;
+  const people: { name: string; state: string; w4: FilingStatus }[] = [
+    { name: "Synthetic CA Single", state: "CA", w4: "single" },
+    { name: "Synthetic CA Joint", state: "CA", w4: "married_joint" },
+    { name: "Synthetic CA Head", state: "CA", w4: "head_of_household" },
+    { name: "Synthetic CA Separate", state: "CA", w4: "married_separate" },
+  ];
+  beforeAll(async () => {
+    t = await createTestApp();
+    await seedDatabase(t.db as unknown as SeedDb);
+    for (const p of people) await addPaidEmployee(t, { ...p, year: 2026 });
+  }, 120_000);
+  afterAll(async () => t.close());
+
+  it("the resolver finds a CA 2026 config for every one of them (precondition)", async () => {
+    expect(await resolverMissing(t, 2026, people)).toEqual([]);
+  });
+
+  it("taxTableCoverage(2026) = { federal: true, missingStates: [] }", async () => {
+    expect(await taxTableCoverage(t.db, 2026)).toEqual({
+      year: 2026,
+      federal: true,
+      missingStates: [],
+    });
+  });
+
+  it("latestCoveredYear(2026) = 2026", async () => {
+    expect(await latestCoveredYear(t.db, 2026)).toBe(2026);
+  });
+});
+
+// One describe, one database, steps in order: never shuffled.
+describe("V5 coverage agrees with resolveStateTaxConfig (synthetic 2025 state rows)", {
+  shuffle: false,
+}, () => {
+  // 2025: only IL and TX are bundled, so every state below starts with no
+  // 2025 row and gets SYNTHETIC test-only rows.
+  const YEAR = 2025;
+  const people: {
+    name: string;
+    state: string;
+    w4: FilingStatus;
+    election?: FilingStatus;
+  }[] = [
+    // Only CA:single exists; this employee is married_joint → resolver null.
+    { name: "Synthetic CA Joint", state: "CA", w4: "married_joint" },
+    // Same state, status that has a row → found (CA still missing: see above).
+    { name: "Synthetic CA Single", state: "CA", w4: "single" },
+    // Bare row only → fallback finds it.
+    { name: "Synthetic GA Single", state: "GA", w4: "single" },
+    // married_separate maps to single → NJ:single found.
+    { name: "Synthetic NJ Separate", state: "NJ", w4: "married_separate" },
+    // State election status (head_of_household) wins over the W-4 (single);
+    // only OR:single exists → resolver null.
+    { name: "Synthetic OR Election", state: "OR", w4: "single", election: "head_of_household" },
+    // Bare progressive config without brackets → resolver null.
+    { name: "Synthetic NY Single", state: "NY", w4: "single" },
+    // Status config progressive, brackets only under the bare code → found.
+    { name: "Synthetic MN Head", state: "MN", w4: "head_of_household" },
+  ];
+  let t: TestContext;
+  beforeAll(async () => {
+    t = await createTestApp();
+    await seedDatabase(t.db as unknown as SeedDb);
+    for (const p of people) await addPaidEmployee(t, { ...p, year: YEAR });
+    await synState(t, "CA:single", YEAR, "flat");
+    await synState(t, "GA", YEAR, "flat");
+    await synState(t, "NJ:single", YEAR, "flat");
+    await synState(t, "OR:single", YEAR, "flat");
+    await synState(t, "NY", YEAR, "progressive");
+    await synState(t, "MN:head_of_household", YEAR, "progressive");
+    await synBracket(t, "MN", YEAR);
+  }, 120_000);
+  afterAll(async () => t.close());
+
+  it("step 1: missing = CA (married_joint has no row, no bare row), NY (progressive, no brackets), OR (election status has no row); equals the resolver", async () => {
+    const coverage = await taxTableCoverage(t.db, YEAR);
+    expect({
+      coverage,
+      resolver: await resolverMissing(t, YEAR, people),
+    }).toEqual({
+      coverage: { year: YEAR, federal: true, missingStates: ["CA", "NY", "OR"] },
+      resolver: ["CA", "NY", "OR"],
+    });
+  });
+
+  it("step 2: a bare CA row and NY brackets are added → only OR missing; equals the resolver", async () => {
+    await synState(t, "CA", YEAR, "flat");
+    await synBracket(t, "NY", YEAR);
+    expect({
+      coverage: await taxTableCoverage(t.db, YEAR),
+      resolver: await resolverMissing(t, YEAR, people),
+      latest: await latestCoveredYear(t.db, YEAR),
+    }).toEqual({
+      coverage: { year: YEAR, federal: true, missingStates: ["OR"] },
+      resolver: ["OR"],
+      latest: null,
+    });
+  });
+
+  it("step 3: OR:head_of_household is added → covered; latestCoveredYear(2025) = 2025", async () => {
+    await synState(t, "OR:head_of_household", YEAR, "flat");
+    expect({
+      coverage: await taxTableCoverage(t.db, YEAR),
+      resolver: await resolverMissing(t, YEAR, people),
+      latest: await latestCoveredYear(t.db, YEAR),
+    }).toEqual({
+      coverage: { year: YEAR, federal: true, missingStates: [] },
+      resolver: [],
+      latest: YEAR,
+    });
   });
 });
