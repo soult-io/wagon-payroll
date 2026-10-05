@@ -100,6 +100,11 @@ test("ephemeral only: assign a work state and see it in the history", async ({ b
   const user = loadEphemeralState()?.admin;
   test.skip(!user, "ephemeral state missing — run the journeys first");
   const page = await newAuthedPage(browser, user!);
+  // PAY-225: the form's "Effective from" defaults to the BROWSER's today. The
+  // election scenario below issues a Nov 2026 run that needs this IL work
+  // state, so start the browser at the same scenario date (a running clock,
+  // see the election test): IL from 2026-10-15 on any real date.
+  await page.context().clock.install({ time: ELECTION_SCENARIO_NOW });
   try {
     await step(page, "Open the employee's State tax tab", async () => {
       await openStateTaxTab(page);
@@ -215,6 +220,20 @@ test("ephemeral only: employee state election flows request → approval → pay
           }),
         });
         await expect(electionsCard.getByRole("cell", { name: "IL", exact: true })).toBeVisible();
+
+        // The Nov run below needs an IL work state in force on the election's
+        // effective date; say so by name if it is not.
+        const electionFrom = `${effYear}-${String(effMonth).padStart(2, "0")}-01`;
+        const wsRes = await adminPage.request.get(`/api/admin/employees/${id}/work-state`);
+        expect(wsRes.status()).toBe(200);
+        const { workStates } = (await wsRes.json()) as {
+          workStates: { stateCode: string; effectiveFrom: string; effectiveTo: string | null }[];
+        };
+        const ilFroms = workStates.filter((w) => w.stateCode === "IL").map((w) => w.effectiveFrom);
+        expect(
+          ilFroms.some((from) => from <= electionFrom),
+          `an IL work state starting on or before the election's ${electionFrom} (IL rows from: ${ilFroms.join(", ")})`,
+        ).toBe(true);
         return id;
       },
     );

@@ -197,12 +197,27 @@ test("scheduler draft: seeded current-period run shows in admin approvals (read-
     // in PR-5; remove this skip there.
     test.skip(!expectation.covered, "PAY-103 banner pending");
     await step(page, "Missing-tax-tables banner names the year", async () => {
-      const cov = await fetchTaxTableCoverage(page);
+      // Ephemeral: the boot's app clock is pinned to 2025-12-31, so the
+      // coverage endpoint would answer for 2025. The seed date is the
+      // runner's UTC date (the clock-shift preload reaches both processes;
+      // see qa-seed-boot-state.spec), and state.json says it is uncovered.
+      let uncovered: number[];
+      if (!LIVE_QA) {
+        const serverYear = new Date().getUTCFullYear();
+        expect(serverYear).toBeGreaterThan(expectation.latestCoveredYear);
+        uncovered = [serverYear];
+      } else {
+        const cov = await fetchTaxTableCoverage(page);
+        uncovered = cov.years
+          .filter((e) => !e.federal || e.missingStates.length > 0)
+          .map((e) => e.year);
+      }
+      expect(uncovered.length, "at least one uncovered year to name").toBeGreaterThan(0);
       await page.goto("/admin/payroll");
       const banner = page.getByTestId("missing-tax-tables-banner");
       await expect(banner).toBeVisible();
-      for (const y of cov.years.filter((e) => !e.federal || e.missingStates.length > 0)) {
-        await expect(banner).toContainText(String(y.year));
+      for (const y of uncovered) {
+        await expect(banner).toContainText(String(y));
       }
     });
   } finally {
@@ -295,8 +310,19 @@ test("tax deposits: admin sees the computed schedule incl. last month (PAY-9)", 
     // is the previous calendar month while today's year has tax tables, else
     // December of the latest covered year (PAY-225, B8). From the server,
     // never the runner's clock.
-    const { lastHistoryMonth } = await serverHistoryDates(page);
-    const prev = new Date(`${lastHistoryMonth}-01T00:00:00Z`);
+    const { lastHistoryMonths } = await serverHistoryDates(page);
+    let lastHistoryMonth = lastHistoryMonths[0];
+    if (lastHistoryMonths.length > 1) {
+      // Live-QA midnight window only: take the candidate the server holds.
+      const res = await page.request.get("/api/admin/tax-deposits");
+      expect(res.status()).toBe(200);
+      const { deposits } = (await res.json()) as { deposits: { periodStart: string }[] };
+      const held = new Set(deposits.map((d) => d.periodStart.slice(0, 7)));
+      lastHistoryMonth = lastHistoryMonths.find((m) => held.has(m));
+    }
+    const prev = new Date(
+      `${must(lastHistoryMonth, `a deposit row for one of ${lastHistoryMonths.join(", ")}`)}-01T00:00:00Z`,
+    );
     // Pin the year filter to the month under assertion. It defaults to the
     // CURRENT year and filters server-side, so every January — when the seed
     // has produced no current-year runs yet — the default view is empty.

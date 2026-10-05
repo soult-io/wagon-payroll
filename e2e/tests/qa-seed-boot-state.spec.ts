@@ -21,7 +21,13 @@
  */
 
 import { expect, test } from "@playwright/test";
-import { LIVE_QA, QA_ADMIN, loadEphemeralState, newAuthedPage } from "./qa.js";
+import {
+  EPHEMERAL_EMPLOYEE_NAME,
+  LIVE_QA,
+  QA_ADMIN,
+  loadEphemeralState,
+  newAuthedPage,
+} from "./qa.js";
 
 interface QaBootFacts {
   latestCoveredYear: number;
@@ -78,6 +84,19 @@ test("ephemeral boot: state.json carries the QA seed's covered year, history end
     expect(w2Years).toContain(qa.w2Year);
     expect(w2Years.filter((y) => y > qa.w2Year)).toEqual([]);
 
+    // QA-seed personas only: the boot's own E2E Employee gets runs from the
+    // journeys and the state-taxes election flow (a Nov 2026 run), so the
+    // answer must not depend on which spec file ran first.
+    const empRes = await page.request.get("/api/admin/employees");
+    expect(empRes.status()).toBe(200);
+    const { employees } = (await empRes.json()) as {
+      employees: { id: number; legalName: string }[];
+    };
+    const bootOwn = new Set(
+      employees.filter((e) => e.legalName === EPHEMERAL_EMPLOYEE_NAME).map((e) => e.id),
+    );
+    expect(bootOwn.size, `${EPHEMERAL_EMPLOYEE_NAME} in the employee list`).toBe(1);
+
     const through = qa.historyThrough;
     expect(through).not.toBeNull();
     if (through) {
@@ -85,8 +104,11 @@ test("ephemeral boot: state.json carries the QA seed's covered year, history end
         `/api/admin/payroll-runs?status=issued&year=${through.slice(0, 4)}`,
       );
       expect(issuedRes.status()).toBe(200);
-      const { runs: issued } = (await issuedRes.json()) as { runs: { periodStart: string }[] };
+      const { runs: issued } = (await issuedRes.json()) as {
+        runs: { employeeId: number; periodStart: string }[];
+      };
       const lastIssued = issued
+        .filter((r) => !bootOwn.has(r.employeeId))
         .map((r) => r.periodStart.slice(0, 7))
         .sort()
         .at(-1);
@@ -96,10 +118,10 @@ test("ephemeral boot: state.json carries the QA seed's covered year, history end
     const pendingRes = await page.request.get("/api/admin/payroll-runs?status=awaiting_approval");
     expect(pendingRes.status()).toBe(200);
     const { runs: pending } = (await pendingRes.json()) as {
-      runs: { periodStart: string; payDate: string }[];
+      runs: { employeeId: number; periodStart: string; payDate: string }[];
     };
     const pendingThisYear = pending
-      .filter((r) => r.payDate.startsWith(`${Y}-`))
+      .filter((r) => !bootOwn.has(r.employeeId) && r.payDate.startsWith(`${Y}-`))
       .map((r) => r.periodStart.slice(0, 7));
     expect(pendingThisYear).toEqual(qa.draftPeriod ? [qa.draftPeriod] : []);
   } finally {
