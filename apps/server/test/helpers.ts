@@ -13,7 +13,7 @@
  * session writes. PGlite's native drivers handle Dates correctly.)
  */
 
-import { PGlite } from "@electric-sql/pglite";
+import { PGlite, type PGliteOptions } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { PGliteDialect } from "kysely";
 import { existsSync, readFileSync } from "node:fs";
@@ -87,9 +87,17 @@ export async function createTestApp(
     logStream?: { write(msg: string): void };
     /** Fixed wall clock for the issue-time pay-date check (Spec 26 (PAY-173) D9). */
     clock?: () => Date;
+    /**
+     * PAY-81: opt-in PGlite contrib extensions. Pass `{ btree_gist }` (from
+     * `@electric-sql/pglite/contrib/btree_gist`) so migration 0001 applies in
+     * full and the `compensation_no_overlap` exclusion constraint is live.
+     * Without it runMigrations skips that constraint (skippedStatements), which
+     * is how the year-rollover overlap stayed invisible to CI.
+     */
+    extensions?: PGliteOptions["extensions"];
   } = {},
 ): Promise<TestContext> {
-  const pglite = new PGlite("memory://");
+  const pglite = new PGlite("memory://", extra.extensions ? { extensions: extra.extensions } : {});
   const skippedStatements = await runMigrations(pglite);
 
   const config = loadConfig({
