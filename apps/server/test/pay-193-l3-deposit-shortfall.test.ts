@@ -349,6 +349,42 @@ async function shortfallAudits(): Promise<AuditRow[]> {
   return r.rows;
 }
 
+/**
+ * PAY-226: a federal December row exactly as v1.28.0 (the pre-PAY-226 release)
+ * could leave it — used to build shapes the quarter rule no longer produces
+ * (seq 0 overdue + seq 1 overdue, seq 1 overdue + seq 2 overdue).
+ */
+async function legacyFedRow(
+  seq: number,
+  c: number,
+  status: "pending" | "overdue" | "deposited",
+  on: string | null = null,
+): Promise<number> {
+  const r = await E.pg.query<{ id: number }>(
+    `INSERT INTO tax_deposits (jurisdiction, period_start, period_kind, seq, amount, due_date, status,
+                               deposited_on, eftps_confirmation, created_by)
+     VALUES ('federal', $1, 'month', $2, $3, $4, $5, $6, $7, 'scheduler') RETURNING id`,
+    [DEC, seq, money(c), FED_DUE, status, on, on ? `EFTPS-SYN-L3-LEGACY-${seq}` : null],
+  );
+  return r.rows[0]!.id;
+}
+
+/** PAY-226: rows superseded by the quarter rule are audited under this action. */
+const QUARTER_SUPERSEDED = "tax_deposit.shortfall_superseded";
+async function supersededAudits(): Promise<AuditRow[]> {
+  const r = await E.pg.query<AuditRow>(
+    `SELECT action, after FROM audit_events WHERE action = $1 ORDER BY id`,
+    [QUARTER_SUPERSEDED],
+  );
+  return r.rows;
+}
+async function statusOf(id: number): Promise<string> {
+  const r = await E.pg.query<{ status: string }>(`SELECT status FROM tax_deposits WHERE id = $1`, [
+    id,
+  ]);
+  return r.rows[0]!.status;
+}
+
 /** Full table image, for idempotence checks. */
 async function image(): Promise<string> {
   const r = await E.pg.query<{ s: string }>(
@@ -400,7 +436,9 @@ describe("PAY-193 L3 federal shortfall rows", () => {
     await invariants();
   });
 
-  it("S-D2: seq 0 overdue (today 2027-01-20) stays; seq 1 overdue holds the added liability, due 2027-01-15; one audit row", async () => {
+  // PAY-226 (SME ruling 2026-10-05): an overdue row is money owed, not paid —
+  // only deposited rows count. The open seq 0 row takes L − D = A + B.
+  it("S-D2 (PAY-226): seq 0 overdue (today 2027-01-20) is recalculated to A + B = 1,411.16, still overdue; no seq 1 row, no shortfall audit", async () => {
     await issue(A, "2026-12-15", null);
     await sync("2027-01-20");
     const before = await liveRow("federal", DEC, 0);
@@ -408,25 +446,11 @@ describe("PAY-193 L3 federal shortfall rows", () => {
 
     await issue(B, "2026-12-31", null);
     const res = await sync("2027-01-20");
-    expect(await live("federal")).toEqual([
-      `0 month ${DEC} ${FED_A} ${FED_DUE} overdue`,
-      `1 month ${DEC} ${FED_B} ${FED_DUE} overdue`,
-    ]);
+    expect(await live("federal")).toEqual([`0 month ${DEC} ${FED_A + FED_B} ${FED_DUE} overdue`]);
     const after0 = await liveRow("federal", DEC, 0);
     expect(after0.id).toBe(before.id);
-    expect(res.created).toBe(1);
-    expect(await shortfallAudits()).toEqual([
-      {
-        action: SHORTFALL,
-        after: {
-          jurisdiction: "federal",
-          periodStart: DEC,
-          periodKind: "month",
-          seq: 1,
-          cents: FED_B,
-        },
-      },
-    ]);
+    expect(res.created).toBe(0);
+    expect(await shortfallAudits()).toEqual([]);
     await invariants();
   });
 
@@ -496,7 +520,7 @@ describe("PAY-193 L3 federal shortfall rows", () => {
     await invariants();
   });
 
-  it("F counts overdue: seq 0 deposited + seq 1 overdue, a third run -> seq 2 overdue for that run only", async () => {
+  it("PAY-226 only deposited rows count: seq 0 deposited + seq 1 overdue, a third run -> seq 1 grows to B + C = 822.06, still overdue; no seq 2", async () => {
     await issue(A, "2026-12-15", null);
     await sync("2027-01-08");
     await deposit((await liveRow("federal", DEC, 0)).id, "2027-01-08", "EFTPS-SYN-L3-5");
@@ -504,13 +528,17 @@ describe("PAY-193 L3 federal shortfall rows", () => {
     await sync("2027-01-20"); // seq 1 inserted overdue (2027-01-15 has passed)
     expect((await liveRow("federal", DEC, 1)).status).toBe("overdue");
 
+    const s1 = await liveRow("federal", DEC, 1);
+
     await issue(C, "2026-12-31", null);
     await sync("2027-01-21");
+    // L = A + B + C = 1,732.39; D = A = 910.33; target 822.06 on the open seq 1.
     expect(await live("federal")).toEqual([
       `0 month ${DEC} ${FED_A} ${FED_DUE} deposited`,
-      `1 month ${DEC} ${FED_B} ${FED_DUE} overdue`,
-      `2 month ${DEC} ${FED_C} ${FED_DUE} overdue`,
+      `1 month ${DEC} ${FED_B + FED_C} ${FED_DUE} overdue`,
     ]);
+    expect((await liveRow("federal", DEC, 1)).id).toBe(s1.id);
+    expect(await shortfallAudits()).toHaveLength(1);
     await invariants();
   });
 
@@ -554,7 +582,10 @@ describe("PAY-193 L3 federal shortfall rows", () => {
     await invariants();
   });
 
-  it("S-D8b (federal): open seq 1 shrinks to 0.00 (never negative) when voids drop L to or below F", async () => {
+  // PAY-226: target 0 supersedes the open row (no 0.00 row); a seq > 0 row was
+  // mailed, so it gets one cancellation mail per active admin (PL decision 3).
+  it("S-D8b (PAY-226): voids drop L to or below D -> the open seq 1 is superseded (audited, cancellation mail), never 0.00 or negative", async () => {
+    const admins = await ensureAdmins();
     const rA = await issue(A, "2026-12-15", null);
     await sync("2027-01-08");
     await deposit((await liveRow("federal", DEC, 0)).id, "2027-01-08", "EFTPS-SYN-L3-9");
@@ -562,25 +593,35 @@ describe("PAY-193 L3 federal shortfall rows", () => {
     await sync("2027-01-10");
     expect((await liveRow("federal", DEC, 1)).c).toBe(FED_B);
 
-    await voidRun(rB); // R = 0
+    const s1 = await liveRow("federal", DEC, 1);
+    await E.pg.exec(`TRUNCATE email_outbox`);
+
+    await voidRun(rB); // L = A = D -> target 0
     await sync("2027-01-11");
-    expect(await live("federal")).toEqual([
-      `0 month ${DEC} ${FED_A} ${FED_DUE} deposited`,
-      `1 month ${DEC} 0 ${FED_DUE} pending`,
-    ]);
-    await voidRun(rA); // R = -910.33 -> P = max(0, R) = 0
+    expect(await live("federal")).toEqual([`0 month ${DEC} ${FED_A} ${FED_DUE} deposited`]);
+    expect(await statusOf(s1.id)).toBe("superseded");
+    expect((await supersededAudits()).map((a) => a.after?.superseded)).toEqual([[s1.id]]);
+    const cancel = await outbox();
+    expect(cancel.map((m) => m.userId).sort()).toEqual([...admins].sort());
+    for (const m of cancel) {
+      expect(m.subject).not.toMatch(/\$|\d+\.\d{2}/);
+      expect(m.body).not.toMatch(/\$|\d+\.\d{2}/);
+    }
+
+    await voidRun(rA); // L = 0 < D = A: quarter excess, information only — no row
     await sync("2027-01-20");
-    expect(await live("federal")).toEqual([
-      `0 month ${DEC} ${FED_A} ${FED_DUE} deposited`,
-      `1 month ${DEC} 0 ${FED_DUE} pending`,
-    ]);
+    expect(await live("federal")).toEqual([`0 month ${DEC} ${FED_A} ${FED_DUE} deposited`]);
     expect(await shortfallAudits()).toHaveLength(1);
+    expect(await supersededAudits()).toHaveLength(1);
+    expect(await outbox()).toHaveLength(admins.length);
     await invariants();
   });
 
   it("idempotent: a second sync after a shortfall insert writes nothing and no second audit row", async () => {
+    // PAY-226: a shortfall row needs a deposited seq 0 (an overdue seq 0 just grows).
     await issue(A, "2026-12-15", null);
-    await sync("2027-01-20");
+    await sync("2027-01-08");
+    await deposit((await liveRow("federal", DEC, 0)).id, "2027-01-08", "EFTPS-SYN-L3-IDEM");
     await issue(B, "2026-12-31", null);
     await sync("2027-01-20");
     const img = await image();
@@ -1074,12 +1115,13 @@ describe("PAY-193 L3 review R1 — detail lists the period's other rows", () => 
     expectLineReconciles(d, FED_C);
   });
 
-  it("round 3 D1: an overdue earlier sibling is still owed, not deposited — seq 2 overdue: alreadyDeposited 910.33, stillOwedEarlier 500.83; 1,732.39 − 910.33 − 500.83 = 321.23", async () => {
+  it("round 3 D1: an overdue earlier sibling is still owed, not deposited — seq 2 overdue (v1.28.0 data): alreadyDeposited 910.33, stillOwedEarlier 500.83; 1,732.39 − 910.33 − 500.83 = 321.23", async () => {
     const [id0, id1] = await fedSeq1Pending();
     await sync("2027-01-20"); // seq 1 flips overdue
     await issue(C, "2026-12-31", null);
-    await sync("2027-01-21");
-    const id2 = (await liveRow("federal", DEC, 2)).id;
+    // PAY-226: the quarter rule no longer writes a seq 2 beside an open seq 1;
+    // this is the shape v1.28.0 left, read before any PAY-226 sync.
+    const id2 = await legacyFedRow(2, FED_C, "overdue");
     const d = await detail(id2);
     expect({
       siblings: d.siblings,
@@ -1109,13 +1151,30 @@ describe("PAY-193 L3 review R1 — detail lists the period's other rows", () => 
       alreadyDeposited: money(FED_A),
       stillOwedEarlier: "0.00",
     });
+
+    // PAY-226 sync: L 1,732.39 − D 910.33 = 822.06 on the LOWEST open row
+    // (seq 1); seq 2 superseded (one audit row, no cancellation mail — PL
+    // decision 2); the line reconciles on seq 1: 1,732.39 − 910.33 − 0.00.
+    await sync("2027-01-21");
+    expect(await live("federal")).toEqual([
+      `0 month ${DEC} ${FED_A} ${FED_DUE} deposited`,
+      `1 month ${DEC} ${FED_B + FED_C} ${FED_DUE} overdue`,
+    ]);
+    expect(await statusOf(id2)).toBe("superseded");
+    expect((await supersededAudits()).map((a) => a.after?.superseded)).toEqual([[id2]]);
+    const after1 = await detail(id1);
+    expect(after1.siblings).toEqual([
+      { id: id0, seq: 0, status: "deposited", amount: money(FED_A) },
+    ]);
+    expectLineReconciles(after1, FED_B + FED_C);
   });
 
   it("round 3 D1 (S-D2 shape): seq 0 overdue 910.33, seq 1 overdue -> seq 1 alreadyDeposited 0.00, stillOwedEarlier 910.33; 1,411.16 − 0.00 − 910.33 = 500.83; seq 0 shows 0.00 / 0.00", async () => {
     await issue(A, "2026-12-15", null);
     await sync("2027-01-20");
     await issue(B, "2026-12-31", null);
-    await sync("2027-01-20");
+    // PAY-226: the S-D2 shape is v1.28.0 data now (the quarter rule grows seq 0).
+    await legacyFedRow(1, FED_B, "overdue");
     const r0 = await liveRow("federal", DEC, 0);
     const r1 = await liveRow("federal", DEC, 1);
     expect([r0.status, r1.status]).toEqual(["overdue", "overdue"]);
@@ -1145,6 +1204,15 @@ describe("PAY-193 L3 review R1 — detail lists the period's other rows", () => 
       stillOwedEarlier: "0.00", // the overdue seq 1 is HIGHER: never counted
       additionalDeposit: { id: r1.id, amount: money(FED_B) },
     });
+
+    // PAY-226 sync: keep the lowest open row (seq 0) at A + B = 1,411.16,
+    // supersede seq 1; seq 0 then has no extra deposit to show.
+    await sync("2027-01-20");
+    expect(await live("federal")).toEqual([`0 month ${DEC} ${FED_A + FED_B} ${FED_DUE} overdue`]);
+    expect(await statusOf(r1.id)).toBe("superseded");
+    const after0 = await detail(r0.id);
+    expect(after0.additionalDeposit).toBeNull();
+    expectLineReconciles(after0, FED_A + FED_B);
   });
 
   it("IL monthly seq 1: siblings = [seq 0 deposited 185.93]; alreadyDeposited 185.93, stillOwedEarlier 0.00; liability 297.61 − 185.93 = 111.68", async () => {
@@ -1370,14 +1438,16 @@ describe("PAY-193 L3 review R3 — admin email when a shortfall row is created",
   });
 
   it("federal seq 1 inserted overdue: body carries 'It is already past its due date.'", async () => {
+    // PAY-226: a seq 1 row is inserted only after seq 0 is deposited (an
+    // overdue seq 0 just grows), so the first sentence is "was made".
     const admins = await ensureAdmins();
     await issue(A, "2026-12-15", null);
-    await sync("2027-01-20"); // seq 0 overdue, frozen
+    await sync("2027-01-08");
+    await deposit((await liveRow("federal", DEC, 0)).id, "2027-01-08", "EFTPS-SYN-L3-M0");
     await E.pg.exec(`TRUNCATE email_outbox`);
     await issue(B, "2026-12-31", null);
     await sync("2027-01-20");
-    // Round 3 D4: seq 0 is unpaid (overdue), so the "already due" sentence.
-    expectShortfallMail(await outbox(), admins, "Federal", "December 2026", true, "due");
+    expectShortfallMail(await outbox(), admins, "Federal", "December 2026", true, "made");
   });
 
   it("idempotent: a second sync, and seq 1 growing with a further run, add no mail", async () => {
@@ -1596,16 +1666,27 @@ describe("PAY-193 L3 review R5 — GET /api/export/tax-deposits includes seq", (
 // ===========================================================================
 
 describe("PAY-193 L3 round 3 D3 — additionalDeposit = what is still extra to pay", () => {
-  it("seq 0 deposited, seq 1 overdue 500.83, seq 2 overdue 321.23 -> {seq 1 id (lowest open), 822.06}", async () => {
+  it("seq 0 deposited, seq 1 overdue 500.83, seq 2 overdue 321.23 (v1.28.0 data) -> {seq 1 id (lowest open), 822.06}; after the PAY-226 sync seq 1 alone holds 822.06", async () => {
     const [id0, id1] = await fedSeq1Pending();
     await sync("2027-01-20"); // seq 1 flips overdue
     await issue(C, "2026-12-31", null);
-    await sync("2027-01-21"); // seq 2 inserted overdue
+    const id2 = await legacyFedRow(2, FED_C, "overdue"); // as v1.28.0 wrote it
     expect(await live("federal")).toEqual([
       `0 month ${DEC} ${FED_A} ${FED_DUE} deposited`,
       `1 month ${DEC} ${FED_B} ${FED_DUE} overdue`,
       `2 month ${DEC} ${FED_C} ${FED_DUE} overdue`,
     ]);
+    expect((await detail(id0)).additionalDeposit).toEqual({
+      id: id1,
+      amount: money(FED_B + FED_C),
+    });
+
+    await sync("2027-01-21");
+    expect(await live("federal")).toEqual([
+      `0 month ${DEC} ${FED_A} ${FED_DUE} deposited`,
+      `1 month ${DEC} ${FED_B + FED_C} ${FED_DUE} overdue`,
+    ]);
+    expect(await statusOf(id2)).toBe("superseded");
     expect((await detail(id0)).additionalDeposit).toEqual({
       id: id1,
       amount: money(FED_B + FED_C),
@@ -1627,16 +1708,18 @@ describe("PAY-193 L3 round 3 D3 — additionalDeposit = what is still extra to p
     expect((await detail(id0)).additionalDeposit).toBeNull();
   });
 
-  it("open seq 1 shrunk to 0.00 by a void -> null", async () => {
+  it("open seq 1 superseded by a void (PAY-226: target 0, no 0.00 row) -> null", async () => {
     await issue(A, "2026-12-15", null);
     await sync("2027-01-08");
     const id0 = (await liveRow("federal", DEC, 0)).id;
     await deposit(id0, "2027-01-08", "EFTPS-SYN-L3-D3c");
     const rB = await issue(B, "2026-12-31", null);
     await sync("2027-01-10");
+    const id1 = (await liveRow("federal", DEC, 1)).id;
     await voidRun(rB);
     await sync("2027-01-11");
-    expect((await liveRow("federal", DEC, 1)).c).toBe(0);
+    expect(await statusOf(id1)).toBe("superseded");
+    expect(await live("federal")).toEqual([`0 month ${DEC} ${FED_A} ${FED_DUE} deposited`]);
     expect((await detail(id0)).additionalDeposit).toBeNull();
   });
 
@@ -1704,13 +1787,14 @@ describe("PAY-193 L3 round 3 D2 — state alreadyDeposited from planner credits 
 });
 
 describe("PAY-193 L3 round 3 D4 — shortfall mail says 'was made' or 'already due'", () => {
-  it("S-D2 shape (seq 0 overdue, unpaid) -> 'already due' sentence, not 'was made'", async () => {
-    const admins = await ensureAdmins();
+  it("S-D2 shape (seq 0 overdue, unpaid) -> PAY-226: seq 0 grows, no shortfall row, so no shortfall mail", async () => {
+    await ensureAdmins();
     await issue(A, "2026-12-15", null);
     await sync("2027-01-20");
     await issue(B, "2026-12-31", null);
     await sync("2027-01-20");
-    expectShortfallMail(await outbox(), admins, "Federal", "December 2026", true, "due");
+    expect(await live("federal")).toEqual([`0 month ${DEC} ${FED_A + FED_B} ${FED_DUE} overdue`]);
+    expect(await outbox()).toEqual([]);
   });
 
   it("S-D3 shape (seq 0 deposited) -> 'was made' sentence", async () => {
@@ -1719,13 +1803,20 @@ describe("PAY-193 L3 round 3 D4 — shortfall mail says 'was made' or 'already d
     expectShortfallMail(await outbox(), admins, "Federal", "December 2026", false, "made");
   });
 
-  it("seq 2 with seq 0 deposited and seq 1 overdue -> 'was made' (some lower-seq row is deposited)", async () => {
+  it("PAY-226: seq 1 overdue grows with a further run (no mail); once seq 1 is deposited too, the next run's seq 2 overdue -> 'was made'", async () => {
     const admins = await ensureAdmins();
-    await fedSeq1Pending();
+    const [, id1] = await fedSeq1Pending();
     await sync("2027-01-20"); // seq 1 overdue
     await E.pg.exec(`TRUNCATE email_outbox`);
     await issue(C, "2026-12-31", null);
-    await sync("2027-01-21");
+    await sync("2027-01-21"); // seq 1 -> B + C, no insert
+    expect(await outbox(), "growth of an open row sends no mail").toEqual([]);
+    expect((await liveRow("federal", DEC, 1)).c).toBe(FED_B + FED_C);
+
+    await deposit(id1, "2027-01-21", "EFTPS-SYN-L3-M3");
+    await issue(A, "2026-12-31", null); // L = 2A + B + C; D = A + (B + C) -> seq 2 = A
+    await sync("2027-01-22");
+    expect((await liveRow("federal", DEC, 2)).c).toBe(FED_A);
     expectShortfallMail(await outbox(), admins, "Federal", "December 2026", true, "made");
   });
 });
@@ -1814,9 +1905,11 @@ describe("PAY-193 L3 Product Lead decision — federal alreadyDeposited counts l
     await issue(A, "2026-12-15", null);
     await sync("2027-01-20");
     await issue(B, "2026-12-31", null);
-    await sync("2027-01-20");
     await issue(C, "2026-12-31", null);
-    await sync("2027-01-21");
+    // PAY-226: the quarter rule never writes seq 1/seq 2 beside an open seq 0;
+    // this is the shape v1.28.0 left, read before any PAY-226 sync.
+    await legacyFedRow(1, FED_B, "overdue");
+    await legacyFedRow(2, FED_C, "overdue");
     const r0 = await liveRow("federal", DEC, 0);
     const r1 = await liveRow("federal", DEC, 1);
     const r2 = await liveRow("federal", DEC, 2);
@@ -1858,5 +1951,18 @@ describe("PAY-193 L3 Product Lead decision — federal alreadyDeposited counts l
     });
     expectLineReconciles(d2, FED_C);
     expect(r0.status).toBe("overdue");
+
+    // PAY-226 sync: L 1,732.39 − D 321.23 = 1,411.16 on the lowest open row
+    // (seq 0); seq 1 superseded with one audit row and no cancellation mail
+    // (PL decision 2: the money is still owed); the deposited seq 2 untouched.
+    await ensureAdmins();
+    await sync("2027-01-23");
+    expect(await live("federal")).toEqual([
+      `0 month ${DEC} ${FED_A + FED_B} ${FED_DUE} overdue`,
+      `2 month ${DEC} ${FED_C} ${FED_DUE} deposited`,
+    ]);
+    expect(await statusOf(r1.id)).toBe("superseded");
+    expect((await supersededAudits()).map((a) => a.after?.superseded)).toEqual([[r1.id]]);
+    expect(await outbox()).toEqual([]);
   });
 });
