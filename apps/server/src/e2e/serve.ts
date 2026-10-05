@@ -30,18 +30,33 @@ import { createOTP } from "@better-auth/utils/otp";
 import * as schema from "@payroll/db";
 import {
   authTwoFactor,
+  authUser,
   company,
   compensation,
+  employeeResidences,
+  employeeWorkStates,
   employees,
   seedDatabase,
   type SeedDb,
+  w2DeliveryConsents,
+  w4Elections,
 } from "@payroll/db";
 import { loadConfig } from "../config.js";
 import { buildApp } from "../app.js";
 import type { Db } from "../db.js";
 import { inviteUser } from "../auth/users.js";
 import { syncDeposits } from "../deposits/service.js";
-import { syncAnnualFilings, upsertAnnualFiling } from "../filings/annual.js";
+import {
+  employeeW2Figures,
+  readableBoxes,
+  syncAnnualFilings,
+  upsertAnnualFiling,
+} from "../filings/annual.js";
+import { furnishCurrent } from "../filings/w2-furnish.js";
+import { encryptField } from "../crypto/field-encryption.js";
+import { encryptAddress } from "../crypto/address-encryption.js";
+import { lockEmployee } from "../payroll/locks.js";
+import { generateDraft, monthlyPeriod, transitionRun } from "../payroll/runs.js";
 import { syncFilings } from "../filings/service.js";
 import { seedQaDataset } from "../qa/seed-qa.js";
 
@@ -58,6 +73,22 @@ const ORIGIN = { origin: BASE_URL };
 const ADMIN = { name: "E2E Admin", email: "e2e-admin@example.com" };
 const ADMIN_PASSWORD = "correct-horse-battery-staple-9";
 const EMPLOYEE = { name: "E2E Employee", email: "e2e-employee@example.com" };
+// PAY-217: former employees (synthetic). The boot clock is 2025-12-31, so the
+// 2025 W-2 window (through 2026-10-15) is open and the 2024 one is closed.
+const FORMER = {
+  name: "Fern Formerly",
+  email: "e2e-former@example.com",
+  password: "former-horse-battery-staple-9",
+  taxId: "000000017",
+  taxYear: 2025,
+};
+const FORMER_CLOSED = {
+  name: "Gil Gonewell",
+  email: "e2e-former-closed@example.com",
+  password: "closed-horse-battery-staple-9",
+  taxId: "000000018",
+  taxYear: 2024,
+};
 
 interface Journal {
   entries: { idx: number; tag: string }[];
@@ -305,6 +336,123 @@ if (gen.statusCode !== 201) throw new Error(`generate: ${gen.body}`);
 const runPublicId = (gen.json() as { generated: { publicId: string }[] }).generated[0]?.publicId;
 if (!runPublicId) throw new Error("generate returned no run");
 
+// ---------------------------------------------------------------- PAY-217
+// Former employees. Fern: a W-2 employee with one issued 2025 run whose 2025
+// W-2 was posted online (portal_notice with the CURRENT figures), then
+// terminated — the login stays (W-2 only). Gil: terminated, his only online
+// year (2024) closed — banned w2_access_ended, as the daily job leaves it.
+async function onboardedUser(p: { name: string; email: string; password: string }) {
+  const invite = await inviteUser(
+    { auth, db, config },
+    { name: p.name, email: p.email, role: "employee" },
+    null,
+  );
+  const token = new URL(invite.setupLink).searchParams.get("token");
+  if (!token) throw new Error("no invite token");
+  await onboard(token, invite.userId, p.password);
+  return { userId: invite.userId, totpSecret: await decryptedTotpSecret(invite.userId) };
+}
+
+async function formerRow(p: { name: string; taxId: string }, userId: string): Promise<number> {
+  const [row] = await db
+    .insert(employees)
+    .values({
+      userId,
+      companyId: companyRows[0]!.id,
+      employmentType: "w2",
+      legalName: p.name,
+      hireDate: "2024-01-02",
+      status: "active",
+      address: encryptAddress(
+        { line1: "17 Former Lane", city: "Austin", state: "TX", zip: "73301", country: "US" },
+        config.encryptionKey,
+      ),
+      taxId: encryptField(p.taxId, config.encryptionKey),
+    })
+    .returning({ id: employees.id });
+  if (!row) throw new Error("former employee insert returned nothing");
+  await db.insert(w2DeliveryConsents).values({ employeeId: row.id, disclosureVersion: "2025-01" });
+  return row.id;
+}
+
+const fern = await onboardedUser(FORMER);
+const fernId = await formerRow(FORMER, fern.userId);
+await db.insert(compensation).values({
+  employeeId: fernId,
+  periodAmount: "3000",
+  frequency: "monthly",
+  effectiveFrom: "2025-01-01",
+  effectiveTo: null,
+});
+await db.insert(w4Elections).values({
+  employeeId: fernId,
+  filingStatus: "single",
+  taxYear: 2025,
+  federalExempt: false,
+  effectiveFrom: "2025-01-01",
+  filedDate: "2024-12-15",
+  renewalDeadline: null,
+});
+await db.insert(employeeWorkStates).values({
+  employeeId: fernId,
+  stateCode: "TX",
+  effectiveFrom: "2024-01-02",
+  effectiveTo: null,
+});
+await db.insert(employeeResidences).values({
+  employeeId: fernId,
+  country: "US",
+  stateCode: "TX",
+  localityCode: null,
+  effectiveFrom: "2024-01-02",
+  source: "admin",
+  createdBy: adminInvite.userId,
+});
+{
+  const period = monthlyPeriod(2025, 12, 15);
+  const onPayDate = { db, config, clock: () => new Date(`${period.payDate}T12:00:00Z`) };
+  const { run } = await generateDraft(onPayDate, {
+    employeeId: fernId,
+    period,
+    createdBy: adminInvite.userId,
+  });
+  for (const action of ["approve", "issue"] as const) {
+    await transitionRun(onPayDate, { publicId: run.publicId, action, actorId: adminInvite.userId });
+  }
+}
+// The 2025 W-2 posted online (as the January notice records it), then the job ended.
+await db.transaction(async (tx) => {
+  await lockEmployee(tx, fernId);
+  const figures = readableBoxes(await employeeW2Figures(tx, fernId, FORMER.taxYear));
+  await furnishCurrent(tx, {
+    employeeId: fernId,
+    taxYear: FORMER.taxYear,
+    figures,
+    method: "portal_notice",
+    actorId: null,
+  });
+});
+await db
+  .update(employees)
+  .set({ status: "terminated", terminationDate: "2025-12-20" })
+  .where(eq(employees.id, fernId));
+
+const gil = await onboardedUser(FORMER_CLOSED);
+const gilId = await formerRow(FORMER_CLOSED, gil.userId);
+await pglite.query(
+  `INSERT INTO w2_furnishings (employee_id, tax_year, boxes_hash, hash_version, corrected, method, furnished_at)
+   VALUES ($1, 2024, $2, 1, false, 'portal_notice', '2025-01-06T16:00:00Z')`,
+  [gilId, "e".repeat(64)],
+);
+await db
+  .update(employees)
+  .set({ status: "terminated", terminationDate: "2024-06-28" })
+  .where(eq(employees.id, gilId));
+await db
+  .update(authUser)
+  .set({ banned: true, banReason: "w2_access_ended" })
+  .where(eq(authUser.id, gil.userId));
+
 mkdirSync(dirname(STATE_FILE), { recursive: true });
 writeFileSync(
   STATE_FILE,
@@ -321,6 +469,18 @@ writeFileSync(
         historyThrough: qaSeed.payroll.historyThrough,
         draftPeriod: qaSeed.payroll.draftPeriod,
         w2Year,
+      },
+      former: {
+        email: FORMER.email,
+        password: FORMER.password,
+        totpSecret: fern.totpSecret,
+        legalName: FORMER.name,
+        taxYear: FORMER.taxYear,
+      },
+      formerClosed: {
+        email: FORMER_CLOSED.email,
+        password: FORMER_CLOSED.password,
+        totpSecret: gil.totpSecret,
       },
     },
     null,
