@@ -12,17 +12,31 @@ import type { Guards } from "../plugins/guards.js";
 import { inviteUser, initiateReset, unlockUser, UserServiceError } from "../auth/users.js";
 import { requestContext } from "../auth/audit.js";
 import { toHeaders } from "../plugins/guards.js";
+import { w2AccessEnded } from "../auth/former-employee.js";
+import { localDate } from "../payroll/run-dates.js";
 
 interface AdminDeps {
   auth: Auth;
   db: Db;
   config: AppConfig;
   guards: Guards;
+  /** Test override: the wall clock for the (j)(6) window (PAY-217). */
+  clock?: () => Date;
 }
 
 export function registerAdminRoutes(app: FastifyInstance, deps: AdminDeps): void {
-  const { guards } = deps;
+  const { guards, db, config } = deps;
   const admin = guards.requireRole("admin");
+
+  /**
+   * PAY-217 (brief §4.5): a reset or unlock of a former employee whose
+   * (j)(6) windows have all closed would lead nowhere (the guard refuses
+   * every request) — 409 w2_access_ended, nothing changed.
+   */
+  async function accessEnded(userId: string): Promise<boolean> {
+    const now = deps.clock ?? (() => new Date());
+    return w2AccessEnded(db, userId, localDate(now(), config.appTz), config.appTz);
+  }
 
   app.post("/api/admin/users", { preHandler: admin }, async (req, reply) => {
     const body = z
@@ -58,6 +72,7 @@ export function registerAdminRoutes(app: FastifyInstance, deps: AdminDeps): void
 
   app.post("/api/admin/users/:userId/reset", { preHandler: admin }, async (req, reply) => {
     const { userId } = req.params as { userId: string };
+    if (await accessEnded(userId)) return reply.code(409).send({ error: "w2_access_ended" });
     try {
       const result = await initiateReset(
         deps,
@@ -82,6 +97,7 @@ export function registerAdminRoutes(app: FastifyInstance, deps: AdminDeps): void
 
   app.post("/api/admin/users/:userId/unlock", { preHandler: admin }, async (req, reply) => {
     const { userId } = req.params as { userId: string };
+    if (await accessEnded(userId)) return reply.code(409).send({ error: "w2_access_ended" });
     try {
       await unlockUser(deps, userId, req.authUser!.id, requestContext(toHeaders(req)));
       return { ok: true };

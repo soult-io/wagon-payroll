@@ -38,6 +38,13 @@ import { revokeOutstandingSetupTokens } from "../auth/tokens.js";
 import { w2ConsentState, withdrawW2Consent } from "../filings/w2-consent.js";
 import { FilingServiceError } from "../filings/shared.js";
 import { templateContext } from "../notify/outbox.js";
+import {
+  EMPLOYEE_TERMINATED,
+  employeeW2Access,
+  formerW2AccessOf,
+  TERMINATION_BAN_REASONS,
+} from "../auth/former-employee.js";
+import { localDate } from "../payroll/run-dates.js";
 
 /** The admin signed in within FRESH_SESSION_MS (Better Auth freshAge). */
 function sessionIsFresh(createdAt: Date | string | undefined): boolean {
@@ -70,6 +77,8 @@ interface Deps {
   db: Db;
   config: AppConfig;
   guards: Guards;
+  /** Test override: the wall clock for the (j)(6) window (PAY-217). */
+  clock?: () => Date;
 }
 
 const addressSchema = z.object({
@@ -84,6 +93,8 @@ const addressSchema = z.object({
 export function registerAdminEmployeeRoutes(app: FastifyInstance, deps: Deps): void {
   const { auth, db, config, guards } = deps;
   const admin = guards.requireRole("admin");
+  /** PAY-217: today in the company time zone, for the (j)(6) window. */
+  const today = () => localDate((deps.clock ?? (() => new Date()))(), config.appTz);
 
   async function audit(
     actorId: string,
@@ -124,6 +135,8 @@ export function registerAdminEmployeeRoutes(app: FastifyInstance, deps: Deps): v
       hasTaxId: Boolean(employee.taxId),
       // PAY-208 (S16): the W-2 delivery state — dates only, no terms text.
       w2Consent: await w2ConsentState(db, employee.id),
+      // PAY-217: a former employee's open (j)(6) window — null otherwise.
+      formerW2Access: await formerW2AccessOf(db, employee, today(), config.appTz),
       user: employee.userId
         ? { id: employee.userId, email: userEmail, banned: userBanned, banReason: userBanReason }
         : null,
@@ -349,8 +362,37 @@ export function registerAdminEmployeeRoutes(app: FastifyInstance, deps: Deps): v
     }
   });
 
-  /** Disable (terminate + ban linked user) or re-enable. */
-  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: route handler with linear validation guard chain
+  /**
+   * PAY-217 (brief §4.1-§4.3): keep the auth row in step with the status.
+   * Termination always ends the sessions; the login stays (no ban, no auth
+   * event) while a W-2 furnished online is inside its (j)(6) window, else
+   * it is banned "employee_terminated". Rehire lifts only a termination ban
+   * (employee_terminated / w2_access_ended): a lockout or a pending
+   * enrollment stays. Returns the last day of the open window, or null.
+   */
+  async function syncLoginWithStatus(
+    employee: { id: number; userId: string | null; status: string },
+    userBanReason: string | null,
+  ): Promise<string | null> {
+    if (!employee.userId) return null;
+    const ctx = await auth.$context;
+    if (employee.status !== "terminated") {
+      if (userBanReason !== null && TERMINATION_BAN_REASONS.has(userBanReason)) {
+        await ctx.internalAdapter.updateUser(employee.userId, { banned: false, banReason: null });
+      }
+      return null;
+    }
+    await ctx.internalAdapter.deleteUserSessions(employee.userId);
+    const access = await employeeW2Access(db, employee, today(), config.appTz);
+    if (access.kind === "w2_only") return access.accessThrough;
+    await ctx.internalAdapter.updateUser(employee.userId, {
+      banned: true,
+      banReason: EMPLOYEE_TERMINATED,
+    });
+    return null;
+  }
+
+  /** Disable (terminate; W-2-only login or ban) or re-enable. */
   app.post("/api/admin/employees/:employeeId/status", { preHandler: admin }, async (req, reply) => {
     const employeeId = Number((req.params as { employeeId: string }).employeeId);
     const body = z
@@ -365,13 +407,18 @@ export function registerAdminEmployeeRoutes(app: FastifyInstance, deps: Deps): v
     if (!body.success)
       return reply.code(400).send({ error: "invalid_body", details: body.error.issues });
 
-    const rows = await db.select().from(employees).where(eq(employees.id, employeeId)).limit(1);
-    const employee = rows[0];
-    if (!employee) return reply.code(404).send({ error: "not_found" });
-    if (employee.status === body.data.status) {
+    const found = await db
+      .select({ status: employees.status, banReason: authUser.banReason })
+      .from(employees)
+      .leftJoin(authUser, eq(authUser.id, employees.userId))
+      .where(eq(employees.id, employeeId))
+      .limit(1);
+    const before = found[0];
+    if (!before) return reply.code(404).send({ error: "not_found" });
+    if (before.status === body.data.status) {
       return reply
         .code(409)
-        .send({ error: "no_op", message: `employee is already '${employee.status}'` });
+        .send({ error: "no_op", message: `employee is already '${before.status}'` });
     }
 
     const terminating = body.data.status === "terminated";
@@ -386,27 +433,19 @@ export function registerAdminEmployeeRoutes(app: FastifyInstance, deps: Deps): v
       })
       .where(eq(employees.id, employeeId))
       .returning();
-
-    // Auth stays in sync: terminated employees lose access immediately.
-    if (employee.userId) {
-      const ctx = await auth.$context;
-      if (terminating) {
-        await ctx.internalAdapter.updateUser(employee.userId, {
-          banned: true,
-          banReason: "employee_terminated",
-        });
-        await ctx.internalAdapter.deleteUserSessions(employee.userId);
-      } else {
-        await ctx.internalAdapter.updateUser(employee.userId, { banned: false, banReason: null });
-      }
-    }
+    const row = updated[0]!;
+    const w2AccessThrough = await syncLoginWithStatus(row, before.banReason);
 
     await audit(
       req.authUser!.id,
       terminating ? "employee.disable" : "employee.enable",
       String(employeeId),
-      { status: employee.status },
-      { status: updated[0]!.status, terminationDate: updated[0]!.terminationDate },
+      { status: before.status },
+      {
+        status: row.status,
+        terminationDate: row.terminationDate,
+        ...(w2AccessThrough ? { w2AccessThrough } : {}),
+      },
     );
     return { employee: await employeeWithUser(employeeId) };
   });
