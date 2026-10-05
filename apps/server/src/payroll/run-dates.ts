@@ -110,3 +110,22 @@ export function localDate(instant: Date, timeZone: string): string {
   const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
   return `${get("year")}-${get("month")}-${get("day")}`;
 }
+
+/**
+ * PAY-217: the first instant of the company-local calendar date `date`
+ * (YYYY-MM-DD) in `timeZone` — the inverse of localDate for midnight. Found
+ * by bisection over the ±15 h around UTC midnight (localDate is monotonic in
+ * the instant), so DST and odd offsets need no table.
+ */
+export function localDayStart(date: string, timeZone: string): Date {
+  const [y, m, d] = date.split("-").map(Number) as [number, number, number];
+  const utcMidnight = Date.UTC(y, m - 1, d);
+  let lo = utcMidnight - 15 * 3_600_000; // localDate(lo) < date
+  let hi = utcMidnight + 15 * 3_600_000; // localDate(hi) >= date
+  while (hi - lo > 1) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (localDate(new Date(mid), timeZone) >= date) hi = mid;
+    else lo = mid;
+  }
+  return new Date(hi);
+}

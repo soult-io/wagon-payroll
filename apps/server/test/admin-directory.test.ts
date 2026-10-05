@@ -120,6 +120,12 @@ describe("employee directory", () => {
     // (Simulate by unbanning directly — the full onboarding flow is covered elsewhere.)
     const [row] = await t.db.select().from(employees).where(eq(employees.id, employeeId));
     const userId = row!.userId!;
+    // PAY-217 round 2 (C7): termination keeps a pending_enrollment ban, so
+    // the account must be active first (as the comment above intends).
+    await t.db
+      .update(authUser)
+      .set({ banned: false, banReason: null })
+      .where(eq(authUser.id, userId));
 
     const disable = await adminReq("POST", `/api/admin/employees/${employeeId}/status`, {
       status: "terminated",

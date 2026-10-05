@@ -37,6 +37,8 @@ export const TARGETS = {
       "test/pay-193-*.test.ts",
       // PAY-208: W-2 consent v2 (terms, channel, notices, contact).
       "test/pay-208-*.test.ts",
+      // PAY-217: former employees keep W-2-only access (corrections, daily job).
+      "test/pay-217-*.test.ts",
       // Import from src/filings without the module in their names.
       "test/calendar.test.ts",
       "test/mailing-address.test.ts",

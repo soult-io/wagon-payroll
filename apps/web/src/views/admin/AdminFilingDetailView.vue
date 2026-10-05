@@ -42,6 +42,7 @@ import {
   type AdjustmentInput,
   type FilingAttachment,
   type FilingCorrection,
+  type FormerEmployeeW2Access,
   type TaxAdjustmentRow,
   type TaxFilingRow,
   type W2FiguresRow,
@@ -118,6 +119,39 @@ const w2ReconsentNeeded = ref(0);
 const w2ContactReady = ref(true);
 /** PAY-208 ((j)(5)(ii)): consented notices of this year that bounced. */
 const w2Undelivered = ref<{ employeeId: number; legalName: string; failedOn: string }[]>([]);
+/** PAY-217: former employees who can still get this W-2 online ((j)(6)). */
+const w2Former = ref<FormerEmployeeW2Access[]>([]);
+const SIGN_IN_TEXT: Record<FormerEmployeeW2Access["signIn"], string> = {
+  can_sign_in: "Can sign in",
+  locked: "Locked out",
+  setting_up: "Setting up",
+  no_sign_in: "Can't sign in",
+};
+
+/** PAY-217: record that a former employee got the current W-2 on paper (confirmed first, C3). */
+function markFormerHanded(row: FormerEmployeeW2Access): void {
+  const year = filing.value?.year;
+  if (year === undefined) return;
+  confirm.require({
+    message: `Only do this after you have handed or mailed ${row.legalName} their ${year} W-2 on paper. This can't be undone.`,
+    header: `Mark ${row.legalName}'s W-2 as handed on paper?`,
+    icon: "pi pi-exclamation-triangle",
+    rejectProps: { label: "Cancel", severity: "secondary", text: true },
+    acceptProps: { label: "Yes, mark it handed" },
+    accept: async () => {
+      markPaperBusy.value = row.employeeId;
+      try {
+        await adminFilingsApi.w2MarkGivenOnPaper(row.employeeId, year);
+        applyW2List(await adminFilingsApi.w2List(year));
+        notify.success(`${row.legalName}'s W-2 is marked as handed on paper.`);
+      } catch (err) {
+        notify.error(err, "Could not mark the W-2 as handed");
+      } finally {
+        markPaperBusy.value = null;
+      }
+    },
+  });
+}
 /** PAY-24: uploaded confirmation/evidence documents (metadata only). */
 const attachments = ref<FilingAttachment[]>([]);
 /** PAY-25: past worksheet corrections (audit trail on the detail page). */
@@ -176,6 +210,7 @@ function applyW2List(list: Awaited<ReturnType<typeof adminFilingsApi.w2List>>): 
   w2ReconsentNeeded.value = list.reconsentNeeded ?? 0;
   w2ContactReady.value = list.contactReady ?? true;
   w2Undelivered.value = list.undeliveredNotices ?? [];
+  w2Former.value = list.formerEmployeeAccess ?? [];
 }
 
 /** Round 4: the row has a state line in a state whose year-level tax check holds the W-3. */
@@ -966,6 +1001,55 @@ onMounted(async () => {
           {{ undeliveredNoticesText(w2Undelivered.map((u) => `${u.legalName} (email failed ${longDate(u.failedOn)})`), filing.year) }}
         </Message>
 
+        <!-- PAY-217 step (b): former employees who can still get this W-2 online. -->
+        <section
+          v-if="!w2LoadError && w2Former.length > 0"
+          class="former-access"
+          data-testid="w2-former-access"
+        >
+          <h4 style="margin: 0">Former employees who can still get this W-2 online</h4>
+          <p class="muted small" style="margin: 0">
+            These people no longer work here. A W-2 you gave them online must stay online through
+            the date shown, so they can still sign in to download it. If someone shows Locked out,
+            unlock them under Settings → Users. If someone can't sign in, give them a paper copy and
+            select Mark handed on paper.
+          </p>
+          <div class="former-list" role="list">
+            <div v-for="row in w2Former" :key="row.employeeId" class="former-row" role="listitem">
+              <div class="former-cell">
+                <span class="muted small block">Name</span>
+                <strong>{{ row.legalName }}</strong>
+              </div>
+              <div class="former-cell">
+                <span class="muted small block">Job ended</span>
+                {{ row.terminationDate ? longDate(row.terminationDate) : "—" }}
+              </div>
+              <div class="former-cell">
+                <span class="muted small block">Online through</span>
+                {{ longDate(row.accessThrough) }}
+              </div>
+              <div class="former-cell">
+                <span class="muted small block">Sign-in</span>
+                {{ SIGN_IN_TEXT[row.signIn] }}
+              </div>
+              <div class="former-cell">
+                <span class="muted small block">Paper copy</span>
+                <span v-if="row.paperHandedOn">Handed {{ longDate(row.paperHandedOn) }}</span>
+                <Button
+                  v-else
+                  label="Mark handed on paper"
+                  :aria-label="`Mark handed on paper: ${row.legalName}`"
+                  icon="pi pi-check"
+                  size="small"
+                  text
+                  :loading="markPaperBusy === row.employeeId"
+                  @click="markFormerHanded(row)"
+                />
+              </div>
+            </div>
+          </div>
+        </section>
+
         <!-- Spec 24 (PAY-116) PR-4 (carry-over e): warning only, never a hold. -->
         <Message
           v-if="!w2LoadError && box15MissingState"
@@ -1549,6 +1633,39 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+/* PAY-217: former-employee W-2 access — a row per person, cards on small screens. */
+.former-access {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0.75rem 0;
+}
+.former-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.former-row {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.5rem;
+  align-items: start;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--p-surface-border, #e4e4e7);
+  border-radius: 6px;
+}
+.former-cell {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.former-cell .block {
+  display: block;
+}
+@media (max-width: 640px) {
+  .former-row {
+    grid-template-columns: 1fr;
+  }
+}
 .dialog-actions {
   justify-content: flex-end;
 }

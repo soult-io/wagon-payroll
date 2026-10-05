@@ -450,6 +450,8 @@ export interface AdminEmployeeDetail {
   hasTaxId: boolean;
   /** PAY-208 — W-2 delivery state (dates only, no terms text). */
   w2Consent?: AdminW2ConsentState;
+  /** PAY-217 — a former employee's open W-2 window; null otherwise. */
+  formerW2Access?: { accessThrough: string; years: number[] } | null;
   user: {
     id: string;
     email: string | null;
@@ -569,6 +571,7 @@ export interface Paged<T> {
 // ---------------------------------------------------------------------------
 
 import { notifySessionExpired } from "./session-expired";
+import { isW2AccessOnly, notifyW2AccessOnly } from "./former-access";
 
 export class ApiError extends Error {
   constructor(
@@ -611,6 +614,9 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     } catch {
       // non-JSON error body — keep defaults
     }
+    // PAY-217: a former employee reached a screen they no longer have
+    // (403 w2_access_only) — send them to the W-2 screen.
+    if (isW2AccessOnly(res.status, body)) notifyW2AccessOnly();
     throw new ApiError(res.status, code, message, details, body);
   }
   // 204 No Content (e.g. DELETE of a state ID) has no body to parse.
@@ -1499,6 +1505,18 @@ export interface W2FiguresRow {
   furnishedOn: string | null;
 }
 
+/** PAY-217 — one former employee who can still get the year's W-2 online (admin list). */
+export interface FormerEmployeeW2Access {
+  employeeId: number;
+  legalName: string;
+  terminationDate: string | null;
+  /** Last day (ISO) the year stays online for them. */
+  accessThrough: string;
+  signIn: "can_sign_in" | "locked" | "setting_up" | "no_sign_in";
+  /** Company-local date the current W-2 was handed on paper, else null. */
+  paperHandedOn: string | null;
+}
+
 /** PAY-162 — one W-2 year on the employee's list; `ready` = downloadable now. */
 export interface MyW2Year {
   year: number;
@@ -1658,6 +1676,8 @@ export const adminFilingsApi = {
       contactReady: boolean;
       /** PAY-208 ((j)(5)(ii)) — consented notices of the year that bounced. */
       undeliveredNotices: { employeeId: number; legalName: string; failedOn: string }[];
+      /** PAY-217 — former employees who can still get this W-2 online. */
+      formerEmployeeAccess: FormerEmployeeW2Access[];
     }>(`/api/admin/annual-forms/w2?year=${year}`),
   w2PdfUrl: (employeeId: number, year: number) =>
     `/api/admin/annual-forms/w2/${employeeId}/pdf?year=${year}`,
@@ -1733,10 +1753,36 @@ export interface W2ConsentStatus {
   effectiveOn?: string;
 }
 
+/**
+ * PAY-217 — on the former employee's W-2 list: the company and the W-2
+ * contact to ask for help or a paper copy.
+ */
+export interface FormerW2Info {
+  companyName: string;
+  contact: W2Contact | null;
+}
+
+/** PAY-217 — GET /api/me: the session user plus the access scope. */
+export interface MeResponse {
+  user: { id: string; email: string; name: string; role: string; twoFactorEnabled: boolean };
+  /** "w2_only" = a former employee inside a (j)(6) window: the W-2 screen only. */
+  access: "full" | "w2_only";
+  /** w2_only: the last day (ISO) any of their W-2s stays online. */
+  w2AccessThrough?: string;
+}
+
+export const meApi = {
+  get: () => get<MeResponse>("/api/me"),
+};
+
 /** PAY-11 — employee's own W-2s (available from January of the next year). */
 export const myW2Api = {
-  /** PAY-208: + upcomingYear — the latest paid year whose W-2 is not out yet. */
-  list: () => get<{ w2s: MyW2Year[]; upcomingYear: number | null }>("/api/my/w2"),
+  /**
+   * PAY-208: + upcomingYear — the latest paid year whose W-2 is not out yet.
+   * PAY-217: + former (former employees only; their years furnished online).
+   */
+  list: () =>
+    get<{ w2s: MyW2Year[]; upcomingYear: number | null; former?: FormerW2Info }>("/api/my/w2"),
   pdfUrl: (year: number) => `/api/my/w2/${year}/pdf`,
   consent: () => get<W2ConsentStatus>("/api/my/w2/consent"),
   /** PAY-208 D-B: the one-page test PDF with a single-use code. */

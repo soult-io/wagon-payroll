@@ -18,6 +18,7 @@ import { and, desc, eq, gte, inArray, like, or } from "drizzle-orm";
 import {
   appSettings,
   auditEvents,
+  authUser,
   emailOutbox,
   employees,
   taxFilings,
@@ -31,7 +32,7 @@ import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
 import { templateContext } from "../notify/outbox.js";
 import { lockEmployee, type Tx } from "../payroll/locks.js";
-import { localDate } from "../payroll/run-dates.js";
+import { localDate, localDayStart } from "../payroll/run-dates.js";
 import { AnnualFiguresDefectError } from "./w2-boxes.js";
 import {
   employeeW2Figures,
@@ -56,11 +57,17 @@ import {
   furnishingState,
   hashVersionFor,
   isCorrected,
+  latestRow,
   recordFurnishing,
   w2FiguresHash,
 } from "./w2-furnish-core.js";
-import { errorClass, FilingServiceError, todayIso } from "./shared.js";
-import { consentCoversYear, consentRowOf, electronicW2Channel } from "./w2-consent.js";
+import { errorClass, FilingServiceError } from "./shared.js";
+import {
+  consentCoversYear,
+  consentRowOf,
+  electronicW2Channel,
+  onlineW2Windows,
+} from "./w2-consent.js";
 import { furnishCurrent } from "./w2-furnish-core.js";
 
 export {
@@ -91,6 +98,50 @@ interface Deps {
 // ---------------------------------------------------------------------------
 
 /**
+ * PAY-217: a former employee asked for a year that is not online for them
+ * — never furnished online, its window closed, or its current figures were
+ * never posted (SME ruling R3, reading B). One error for every cause (no
+ * enumeration); the route answers 409 w2_not_available.
+ */
+export class W2NotAvailableError extends Error {
+  constructor() {
+    super("W-2 not available online");
+    this.name = "W2NotAvailableError";
+  }
+}
+
+/** The online methods: a W-2 posted (portal_notice) or downloaded (employee_download). */
+const ONLINE_METHODS: ReadonlySet<string> = new Set(["portal_notice", "employee_download"]);
+
+/**
+ * PAY-217 (SME R3): some online furnishing of the year carries `hash` —
+ * the figures were posted (or downloaded) online, so a former employee may
+ * get them again. A correction not yet posted by the daily reconcile has
+ * no such row.
+ */
+function figuresWentOnline(rows: readonly FurnishingRow[], hash: string, year: number): boolean {
+  const version = hashVersionFor(year);
+  return rows.some(
+    (r) => ONLINE_METHODS.has(r.method) && r.boxesHash === hash && r.hashVersion === version,
+  );
+}
+
+/**
+ * PAY-217: true when a former employee's download of `year` would succeed
+ * on its figures — the current figures went online (figuresWentOnline).
+ * The list's `downloadable` flag; the PDF route re-checks under the lock.
+ */
+export async function currentFiguresWentOnline(
+  db: Pick<Db, "select">,
+  employeeId: number,
+  year: number,
+): Promise<boolean> {
+  const hash = await currentHash(db, employeeId, year);
+  if (hash === null) return false;
+  return figuresWentOnline(await furnishingRows(db, employeeId, year), hash, year);
+}
+
+/**
  * R2/R7: build the employee packet for the CURRENT figures, record the
  * furnishing and render the PDF in ONE transaction: lock → figures → insert
  * → render. The row commits only when the PDF bytes exist (PR-3 R2): a
@@ -99,15 +150,35 @@ interface Deps {
  * FILING_CLOSE_LOCK → SYNC_LOCK) is unchanged; the employee lock is held for
  * the render (about a second). CORRECTED when the employee may hold a copy
  * with other figures.
+ *
+ * PAY-217 `formerEmployee`: after the lock, the year must be inside an
+ * online window on `today` (onlineW2Windows) and its current figures must
+ * have gone online (figuresWentOnline) — else W2NotAvailableError and
+ * nothing is recorded or rendered. Both checks sit inside the locked
+ * transaction, so a correction committing meanwhile is never rendered
+ * before the reconcile posts it.
  */
 export async function furnishAndRender(
   deps: Deps,
   employeeId: number,
   year: number,
-  furnishing: { method: "employee_download" | "admin_print"; actorId: string },
+  furnishing: {
+    method: "employee_download" | "admin_print";
+    actorId: string;
+    formerEmployee?: { today: string };
+  },
 ): Promise<Buffer> {
   return deps.db.transaction(async (tx) => {
     await lockEmployee(tx, employeeId);
+    if (furnishing.formerEmployee) {
+      const windows = await onlineW2Windows(
+        tx,
+        employeeId,
+        furnishing.formerEmployee.today,
+        deps.config.appTz,
+      );
+      if (!windows.some((w) => w.taxYear === year)) throw new W2NotAvailableError();
+    }
     const { input, boxes } = await w2InputWithBoxes(
       { db: tx, config: deps.config },
       employeeId,
@@ -115,6 +186,12 @@ export async function furnishAndRender(
       // PAY-208: the January gate on the company-local date, like the list.
       { requireBundledForm: true, today: localDate(new Date(), deps.config.appTz) },
     );
+    if (furnishing.formerEmployee) {
+      const hash = w2FiguresHash(employeeId, year, boxes);
+      if (!figuresWentOnline(await furnishingRows(tx, employeeId, year), hash, year)) {
+        throw new W2NotAvailableError();
+      }
+    }
     const { corrected } = await furnishCurrent(tx, {
       employeeId,
       taxYear: year,
@@ -227,11 +304,11 @@ export async function furnishingViews(
   const ids = figures.map((f) => f.employeeId);
   const rows = await furnishingRowsByEmployee(deps.db, ids, year);
   const electronic = await electronicW2Channel(deps.db, ids, year);
-  const withdrawn = await withdrawalTimes(deps.db, ids);
+  const cutoffs = await offChannelCutoffs(deps.db, ids, deps.config.appTz);
   return new Map(
     figures.map((f) => {
       const consented = electronic.has(f.employeeId);
-      const electronicUntil = consented ? null : (withdrawn.get(f.employeeId) ?? null);
+      const electronicUntil = consented ? null : (cutoffs.get(f.employeeId) ?? null);
       return [
         f.employeeId,
         viewOf(
@@ -246,22 +323,55 @@ export async function furnishingViews(
   );
 }
 
-/** The withdrawal time of every withdrawn consent among `ids`. */
-async function withdrawalTimes(
+/**
+ * PAY-208 + PAY-217: when the employee left the electronic channel — the
+ * consent withdrawal, or the first company-local instant of the termination
+ * date (a terminated row without a date: its last update, else the epoch —
+ * every posting then needs paper too), whichever is
+ * earlier. A portal_notice posted at or after it is not a delivery: a
+ * correction posted online then is ALSO owed on paper (federal SME rulings
+ * 2026-10-04 and 2026-10-05 R2). null = still on the channel's terms.
+ */
+function offChannelCutoff(
+  employee: { status: string; terminationDate: string | null; updatedAt: Date | null },
+  withdrawnAt: Date | null,
+  appTz: string,
+): Date | null {
+  const terminated =
+    employee.status !== "terminated"
+      ? null
+      : employee.terminationDate
+        ? localDayStart(employee.terminationDate, appTz)
+        : (employee.updatedAt ?? new Date(0));
+  if (withdrawnAt === null) return terminated;
+  if (terminated === null) return withdrawnAt;
+  return withdrawnAt.getTime() < terminated.getTime() ? withdrawnAt : terminated;
+}
+
+/** offChannelCutoff of every employee among `ids` that has one. */
+async function offChannelCutoffs(
   db: Pick<Db, "select">,
   ids: readonly number[],
+  appTz: string,
 ): Promise<Map<number, Date>> {
   if (ids.length === 0) return new Map();
   const rows = await db
     .select({
-      employeeId: w2DeliveryConsents.employeeId,
+      id: employees.id,
+      status: employees.status,
+      terminationDate: employees.terminationDate,
+      updatedAt: employees.updatedAt,
       withdrawnAt: w2DeliveryConsents.withdrawnAt,
     })
-    .from(w2DeliveryConsents)
-    .where(inArray(w2DeliveryConsents.employeeId, [...ids]));
-  return new Map(
-    rows.flatMap((r) => (r.withdrawnAt === null ? [] : [[r.employeeId, r.withdrawnAt] as const])),
-  );
+    .from(employees)
+    .leftJoin(w2DeliveryConsents, eq(w2DeliveryConsents.employeeId, employees.id))
+    .where(inArray(employees.id, [...ids]));
+  const out = new Map<number, Date>();
+  for (const r of rows) {
+    const cutoff = offChannelCutoff(r, r.withdrawnAt ?? null, appTz);
+    if (cutoff !== null) out.set(r.id, cutoff);
+  }
+  return out;
 }
 
 /**
@@ -515,41 +625,85 @@ async function sendPaperCourtesy(
 }
 
 /**
- * PAY-208 (federal SME ruling 2026-10-04): the employee withdrew AFTER the
- * year's W-2 was posted online under a consent that covered the year, is
- * still active with a login (N3: a portal_notice or an employee_download
- * before the withdrawal) — a correction is then posted online too (with
- * the IMPORTANT notice) and, because they withdrew, also owed on paper
- * (correctionToFurnish stays set until paper_handed).
+ * PAY-208 + PAY-217 (federal SME rulings 2026-10-04 and 2026-10-05 R1/R4,
+ * 26 CFR 31.6051-1(j)(5)(iii)): the year was furnished ONLINE under a
+ * consent that covered it — a portal_notice or an employee_download (N3)
+ * before any withdrawal. A correction of such a year is posted online too
+ * (with the IMPORTANT notice), whatever the employment status and a later
+ * withdrawal, and even after the access window closed (the posting opens a
+ * new 90-day window). The employee who left the channel (withdrew or was
+ * terminated) is ALSO owed the correction on paper (offChannelCutoff).
  */
-function withdrewAfterOnlineFurnishing(
+function yearWentOnline(
   rows: readonly FurnishingRow[],
-  withdrawnAt: Date,
   consent: { disclosureVersion: string; withdrawnAt: Date | null } | undefined,
   taxYear: number,
-  employee: { userId: string | null; status: string },
 ): boolean {
-  if (consent === undefined || employee.userId === null || employee.status !== "active") {
-    return false;
-  }
+  if (consent === undefined) return false;
   if (!consentCoversYear({ ...consent, withdrawnAt: null }, taxYear)) return false;
-  // N3: a download is online furnishing too.
+  const until = consent.withdrawnAt;
   return rows.some(
     (r) =>
-      (r.method === "portal_notice" || r.method === "employee_download") &&
-      r.furnishedAt.getTime() < withdrawnAt.getTime(),
+      ONLINE_METHODS.has(r.method) && (until === null || r.furnishedAt.getTime() < until.getTime()),
   );
+}
+
+/**
+ * Post the corrected W-2 online (a corrected portal_notice with `hash`) and
+ * queue the IMPORTANT w2_changed mail; when the employee left the channel
+ * (withdrawn or terminated) the mail also says a paper copy is coming (SME
+ * R2, round 2 N3). false when the latest portal_notice already
+ * carries these figures (D2: never mail twice).
+ */
+async function postCorrectionOnline(
+  tx: Tx,
+  config: AppConfig,
+  c: {
+    employeeId: number;
+    userId: string;
+    former: boolean;
+    paperToo: boolean;
+    taxYear: number;
+    hash: string;
+    today: string;
+  },
+): Promise<boolean> {
+  const posted = await recordFurnishing(tx, {
+    employeeId: c.employeeId,
+    taxYear: c.taxYear,
+    boxesHash: c.hash,
+    corrected: true,
+    method: "portal_notice",
+    actorId: null,
+  });
+  if (!posted) return false;
+  // N2: posted today — online through the later of Oct 15 and today + 90 days.
+  const rendered = tplW2Changed(await templateContext(tx, config), {
+    taxYear: c.taxYear,
+    consented: true,
+    accessThrough: electronicW2AccessThrough(c.taxYear, c.today),
+    ...(c.former ? { former: true } : {}),
+    ...(c.paperToo ? { paperToo: true } : {}),
+  });
+  await tx.insert(emailOutbox).values({
+    userId: c.userId,
+    eventType: EVENT_TYPE.w2Changed,
+    subject: rendered.subject,
+    bodyHtml: rendered.html,
+  });
+  return true;
 }
 
 /**
  * R6 + review round D1: when the employee may hold a copy with other figures
  * and the latest DELIVERY of their channel is not the current figures,
  * furnish the correction. The electronic channel of the year (PAY-208:
- * electronicW2Channel(…, taxYear)) → the w2_changed (consented) mail and a
- * portal_notice furnishing (corrected) → "w2_changed_notice_sent"; so does
- * an employee who withdrew after the online W-2 (withdrewAfterOnlineFurnishing),
- * whose correction is then also owed on paper. Otherwise → paper: a courtesy mail
- * when there is a login → "w2_paper_correction_needed". Not furnished,
+ * electronicW2Channel(…, taxYear)) or a year that went online
+ * (yearWentOnline: PAY-217 R1, also for a withdrawn or terminated employee)
+ * → a portal_notice furnishing (corrected) and the IMPORTANT w2_changed mail
+ * → "w2_changed_notice_sent"; a former employee's mail also says a paper
+ * copy is coming (R2, one combined mail). Otherwise → paper: a courtesy
+ * mail when there is a login → "w2_paper_correction_needed". Not furnished,
  * filed with SSA, blocked or not yet available → null. The caller holds the
  * employee lock in `tx`.
  */
@@ -570,40 +724,26 @@ export async function furnishCorrectionIfNeeded(
   if (employee?.employmentType !== "w2") return null;
   const consented = (await electronicW2Channel(tx, [employeeId], taxYear)).has(employeeId);
   const consent = await consentRowOf(tx, employeeId);
-  const withdrawnAt = consented ? null : (consent?.withdrawnAt ?? null);
+  const electronicUntil = consented
+    ? null
+    : offChannelCutoff(employee, consent?.withdrawnAt ?? null, config.appTz);
   const version = hashVersionFor(taxYear);
-  const state = furnishingState(rows, hash, { consented, version, electronicUntil: withdrawnAt });
+  const state = furnishingState(rows, hash, { consented, version, electronicUntil });
   if (!state.correctionToFurnish) return null;
-  const postOnline =
-    consented ||
-    (withdrawnAt !== null &&
-      withdrewAfterOnlineFurnishing(rows, withdrawnAt, consent, taxYear, employee) &&
-      // C-L7: inside the window, extended by the latest corrected posting.
-      today <= electronicW2AccessThrough(taxYear, latestCorrectedPostedOn(rows, config.appTz)));
+  const postOnline = consented || yearWentOnline(rows, consent, taxYear);
   if (postOnline && employee.userId) {
-    const posted = await recordFurnishing(tx, {
+    const posted = await postCorrectionOnline(tx, config, {
       employeeId,
+      userId: employee.userId,
+      former: employee.status === "terminated",
+      // Round 2 N3: off the channel (withdrawn or terminated) → paper too.
+      paperToo: !consented,
       taxYear,
-      boxesHash: hash,
-      corrected: true,
-      method: "portal_notice",
-      actorId: null,
+      hash,
+      today,
     });
     // The latest notice already carries these figures (D2): never mail twice.
-    if (!posted) return null;
-    // N2: posted today — online through the later of Oct 15 and today + 90 days.
-    const rendered = tplW2Changed(await templateContext(tx, config), {
-      taxYear,
-      consented: true,
-      accessThrough: electronicW2AccessThrough(taxYear, today),
-    });
-    await tx.insert(emailOutbox).values({
-      userId: employee.userId,
-      eventType: EVENT_TYPE.w2Changed,
-      subject: rendered.subject,
-      bodyHtml: rendered.html,
-    });
-    return "w2_changed_notice_sent";
+    return posted ? "w2_changed_notice_sent" : null;
   }
   if (employee.userId) {
     await sendPaperCourtesy(tx, config, employee.userId, employeeId, taxYear, rows, hash);
@@ -867,4 +1007,104 @@ async function stateCountsForYear(
     }
   }
   return [...perState].map(([stateCode, employees]) => ({ stateCode, taxYear, employees }));
+}
+
+// ---------------------------------------------------------------------------
+// PAY-217: former employees who can still get the year online (admin list)
+// ---------------------------------------------------------------------------
+
+export type FormerSignIn = "can_sign_in" | "locked" | "setting_up" | "no_sign_in";
+
+export interface FormerEmployeeW2Row {
+  employeeId: number;
+  legalName: string;
+  terminationDate: string | null;
+  /** Company-local ISO date: the last day the year stays online for them. */
+  accessThrough: string;
+  signIn: FormerSignIn;
+  /** Company-local date of the latest paper_handed row with the CURRENT figures, else null. */
+  paperHandedOn: string | null;
+}
+
+/** The sign-in state an admin acts on, from the user row. */
+function signInState(user: { banned: boolean | null; banReason: string | null } | null) {
+  if (user === null) return "no_sign_in" as const;
+  if (!user.banned) return "can_sign_in" as const;
+  if (user.banReason === "lockout") return "locked" as const;
+  if (user.banReason === "pending_enrollment") return "setting_up" as const;
+  return "no_sign_in" as const;
+}
+
+/**
+ * PAY-217 step (b), brief §6.3: the terminated employees whose `year` W-2
+ * went online and is inside its (j)(6) window on `today` — the admin hands
+ * paper to anyone who cannot sign in. Names and dates only (no SSN,
+ * address, email or amount). Sorted by name.
+ */
+export async function formerEmployeeW2Access(
+  deps: Deps,
+  year: number,
+  figures: readonly W2Figures[],
+  today: string,
+): Promise<FormerEmployeeW2Row[]> {
+  const { db, config } = deps;
+  const people = await db
+    .selectDistinct({
+      employeeId: employees.id,
+      legalName: employees.legalName,
+      terminationDate: employees.terminationDate,
+      userId: employees.userId,
+    })
+    .from(employees)
+    .innerJoin(w2Furnishings, eq(w2Furnishings.employeeId, employees.id))
+    .where(
+      and(
+        eq(employees.status, "terminated"),
+        eq(w2Furnishings.taxYear, year),
+        inArray(w2Furnishings.method, [...ONLINE_METHODS]),
+      ),
+    );
+  const byId = new Map(figures.map((f) => [f.employeeId, f]));
+  const out: FormerEmployeeW2Row[] = [];
+  for (const p of people) {
+    const windows = await onlineW2Windows(db, p.employeeId, today, config.appTz);
+    const open = windows.find((w) => w.taxYear === year);
+    if (!open) continue;
+    const users = p.userId
+      ? await db
+          .select({ banned: authUser.banned, banReason: authUser.banReason })
+          .from(authUser)
+          .where(eq(authUser.id, p.userId))
+          .limit(1)
+      : [];
+    out.push({
+      employeeId: p.employeeId,
+      legalName: p.legalName,
+      terminationDate: p.terminationDate,
+      accessThrough: open.accessThrough,
+      signIn: signInState(users[0] ?? null),
+      paperHandedOn: await paperHandedOn(db, p.employeeId, year, byId.get(p.employeeId), config),
+    });
+  }
+  return out.sort((a, b) =>
+    a.legalName < b.legalName ? -1 : a.legalName > b.legalName ? 1 : a.employeeId - b.employeeId,
+  );
+}
+
+/** Company-local date of the latest paper_handed row of `year` with the current figures. */
+async function paperHandedOn(
+  db: Pick<Db, "select">,
+  employeeId: number,
+  year: number,
+  figures: W2Figures | undefined,
+  config: AppConfig,
+): Promise<string | null> {
+  if (figures === undefined || isW2Blocked(figures) || figures.box1Cents === null) return null;
+  const hash = w2FiguresHash(employeeId, year, figures as ReadableW2Figures);
+  const version = hashVersionFor(year);
+  const rows = (await furnishingRows(db, employeeId, year)).filter(
+    (r) => r.method === "paper_handed" && r.boxesHash === hash && r.hashVersion === version,
+  );
+  const latest = latestRow(rows);
+  return latest ? localDate(latest.furnishedAt, config.appTz) : null;
 }

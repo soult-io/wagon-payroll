@@ -8,6 +8,11 @@
  * - requireRole('admin'): server-side role check, never client claims.
  * - requireEmployeeSelf: resolves session user → employees row; cross-tenant
  *   access gets 404 (no enumeration), missing link gets 403.
+ * - PAY-217 (deny by default): every session route refuses a former
+ *   employee — 403 w2_access_only for a W-2-only user unless the route opts
+ *   in with config `formerEmployeeW2: true` (GET /api/me, GET /api/my/w2,
+ *   GET /api/my/w2/:year/pdf), 403 account_disabled once no window is open.
+ *   The scope is derived per request (auth/former-employee.ts), never stored.
  */
 
 import type { FastifyReply, FastifyRequest } from "fastify";
@@ -15,7 +20,10 @@ import { eq } from "drizzle-orm";
 import { authSession, employees } from "@payroll/db";
 import type { Auth } from "../auth/auth.js";
 import type { Db } from "../db.js";
+import type { AppConfig } from "../config.js";
 import { writeAuthEvent, AUTH_EVENT, requestContext } from "../auth/audit.js";
+import { type FormerEmployeeAccess, formerEmployeeAccess } from "../auth/former-employee.js";
+import { localDate } from "../payroll/run-dates.js";
 
 type Employee = typeof employees.$inferSelect;
 
@@ -47,6 +55,16 @@ declare module "fastify" {
     authUser: SessionUser | null;
     authSession: SessionInfo | null;
     employee: Employee | null;
+    /** PAY-217: the session user's derived access (set by requireAuth). */
+    access: FormerEmployeeAccess | null;
+  }
+  interface FastifyContextConfig {
+    /**
+     * PAY-217: the route serves a former employee with W-2-only access.
+     * Absent = refused (403 w2_access_only). Only GET /api/me, GET
+     * /api/my/w2 and GET /api/my/w2/:year/pdf carry it.
+     */
+    formerEmployeeW2?: boolean;
   }
 }
 
@@ -71,8 +89,29 @@ export interface Guards {
   ) => (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
 }
 
-export function createGuards(deps: { auth: Auth; db: Db }): Guards {
-  const { auth, db } = deps;
+/**
+ * PAY-217: a former employee reaches only the routes that opt in — W-2 only
+ * on any other route → w2_access_only; no open window → account_disabled
+ * (the same body as a ban). null = allowed.
+ */
+function scopeRefusal(
+  access: FormerEmployeeAccess,
+  routeOptsIn: boolean,
+): "account_disabled" | "w2_access_only" | null {
+  if (access.kind === "none") return "account_disabled";
+  if (access.kind === "w2_only" && !routeOptsIn) return "w2_access_only";
+  return null;
+}
+
+export function createGuards(deps: {
+  auth: Auth;
+  db: Db;
+  config: Pick<AppConfig, "appTz">;
+  /** Test override: the wall clock for the (j)(6) window (company-local date). */
+  clock?: () => Date;
+}): Guards {
+  const { auth, db, config } = deps;
+  const clock = deps.clock ?? (() => new Date());
 
   async function loadSession(req: FastifyRequest) {
     const result = await auth.api.getSession({ headers: toHeaders(req) });
@@ -110,8 +149,20 @@ export function createGuards(deps: { auth: Auth; db: Db }): Guards {
         .set({ updatedAt: new Date(now) })
         .where(eq(authSession.id, session.id));
     }
+    const access = await formerEmployeeAccess(
+      db,
+      user.id,
+      localDate(clock(), config.appTz),
+      config.appTz,
+    );
+    const refused = scopeRefusal(access, req.routeOptions.config.formerEmployeeW2 === true);
+    if (refused) {
+      await reply.code(403).send({ error: refused });
+      return;
+    }
     req.authUser = user;
     req.authSession = session;
+    req.access = access;
   }
 
   function requireRole(role: "admin" | "employee") {

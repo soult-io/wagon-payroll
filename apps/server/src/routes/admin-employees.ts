@@ -38,6 +38,13 @@ import { revokeOutstandingSetupTokens } from "../auth/tokens.js";
 import { w2ConsentState, withdrawW2Consent } from "../filings/w2-consent.js";
 import { FilingServiceError } from "../filings/shared.js";
 import { templateContext } from "../notify/outbox.js";
+import {
+  banTerminatedLogin,
+  employeeW2Access,
+  formerW2AccessOf,
+  liftTerminationBan,
+} from "../auth/former-employee.js";
+import { localDate } from "../payroll/run-dates.js";
 
 /** The admin signed in within FRESH_SESSION_MS (Better Auth freshAge). */
 function sessionIsFresh(createdAt: Date | string | undefined): boolean {
@@ -70,6 +77,8 @@ interface Deps {
   db: Db;
   config: AppConfig;
   guards: Guards;
+  /** Test override: the wall clock for the (j)(6) window (PAY-217). */
+  clock?: () => Date;
 }
 
 const addressSchema = z.object({
@@ -84,6 +93,8 @@ const addressSchema = z.object({
 export function registerAdminEmployeeRoutes(app: FastifyInstance, deps: Deps): void {
   const { auth, db, config, guards } = deps;
   const admin = guards.requireRole("admin");
+  /** PAY-217: today in the company time zone, for the (j)(6) window. */
+  const today = () => localDate((deps.clock ?? (() => new Date()))(), config.appTz);
 
   async function audit(
     actorId: string,
@@ -124,6 +135,8 @@ export function registerAdminEmployeeRoutes(app: FastifyInstance, deps: Deps): v
       hasTaxId: Boolean(employee.taxId),
       // PAY-208 (S16): the W-2 delivery state — dates only, no terms text.
       w2Consent: await w2ConsentState(db, employee.id),
+      // PAY-217: a former employee's open (j)(6) window — null otherwise.
+      formerW2Access: await formerW2AccessOf(db, employee, today(), config.appTz),
       user: employee.userId
         ? { id: employee.userId, email: userEmail, banned: userBanned, banReason: userBanReason }
         : null,
@@ -349,64 +362,108 @@ export function registerAdminEmployeeRoutes(app: FastifyInstance, deps: Deps): v
     }
   });
 
-  /** Disable (terminate + ban linked user) or re-enable. */
-  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: route handler with linear validation guard chain
+  /**
+   * PAY-217 (brief §4.1-§4.3, round 2 N1/L1/L3/C7): keep the auth row in
+   * step with the status. Termination ends the sessions and revokes any
+   * outstanding invite / reset link; the login stays (no ban, no auth event)
+   * while a W-2 furnished online is inside its (j)(6) window, else it is
+   * banned (banTerminatedLogin: w2_access_ended when a W-2 went online,
+   * else employee_terminated; a lockout / pending enrollment is kept).
+   * Rehire lifts only a termination ban, in one conditional UPDATE.
+   * Returns the last day of the open window, or null.
+   */
+  async function syncLoginWithStatus(employee: {
+    id: number;
+    userId: string | null;
+    status: string;
+  }): Promise<string | null> {
+    if (!employee.userId) return null;
+    if (employee.status !== "terminated") {
+      await liftTerminationBan(db, employee.userId);
+      return null;
+    }
+    const ctx = await auth.$context;
+    await ctx.internalAdapter.deleteUserSessions(employee.userId);
+    await revokeOutstandingSetupTokens(db, employee.userId);
+    const access = await employeeW2Access(db, employee, today(), config.appTz);
+    if (access.kind === "w2_only") return access.accessThrough;
+    await banTerminatedLogin(db, employee.id, employee.userId);
+    return null;
+  }
+
+  const statusBody = z.object({
+    status: z.enum(["active", "terminated"]),
+    terminationDate: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .optional(),
+  });
+
+  /**
+   * The status change to apply, or the refusal: 400 invalid_body, 404,
+   * 409 no_op, 400 termination_date_in_future (round 2 C6; the default
+   * date is today in the company time zone, C5).
+   */
+  async function statusChange(
+    employeeId: number,
+    raw: unknown,
+  ): Promise<
+    | { ok: true; status: "active" | "terminated"; before: string; terminationDate: string | null }
+    | { ok: false; code: number; body: Record<string, unknown> }
+  > {
+    const body = statusBody.safeParse(raw);
+    if (!body.success) {
+      return { ok: false, code: 400, body: { error: "invalid_body", details: body.error.issues } };
+    }
+    const found = await db
+      .select({ status: employees.status })
+      .from(employees)
+      .where(eq(employees.id, employeeId))
+      .limit(1);
+    const before = found[0];
+    if (!before) return { ok: false, code: 404, body: { error: "not_found" } };
+    if (before.status === body.data.status) {
+      const message = `employee is already '${before.status}'`;
+      return { ok: false, code: 409, body: { error: "no_op", message } };
+    }
+    if (body.data.status !== "terminated") {
+      return { ok: true, status: body.data.status, before: before.status, terminationDate: null };
+    }
+    const terminationDate = body.data.terminationDate ?? today();
+    if (terminationDate > today()) {
+      return { ok: false, code: 400, body: { error: "termination_date_in_future" } };
+    }
+    return { ok: true, status: "terminated", before: before.status, terminationDate };
+  }
+
+  /** Disable (terminate; W-2-only login or ban) or re-enable. */
   app.post("/api/admin/employees/:employeeId/status", { preHandler: admin }, async (req, reply) => {
     const employeeId = Number((req.params as { employeeId: string }).employeeId);
-    const body = z
-      .object({
-        status: z.enum(["active", "terminated"]),
-        terminationDate: z
-          .string()
-          .regex(/^\d{4}-\d{2}-\d{2}$/)
-          .optional(),
-      })
-      .safeParse(req.body);
-    if (!body.success)
-      return reply.code(400).send({ error: "invalid_body", details: body.error.issues });
-
-    const rows = await db.select().from(employees).where(eq(employees.id, employeeId)).limit(1);
-    const employee = rows[0];
-    if (!employee) return reply.code(404).send({ error: "not_found" });
-    if (employee.status === body.data.status) {
-      return reply
-        .code(409)
-        .send({ error: "no_op", message: `employee is already '${employee.status}'` });
-    }
-
-    const terminating = body.data.status === "terminated";
+    const change = await statusChange(employeeId, req.body);
+    if (!change.ok) return reply.code(change.code).send(change.body);
+    const terminating = change.status === "terminated";
     const updated = await db
       .update(employees)
       .set({
-        status: body.data.status,
-        terminationDate: terminating
-          ? (body.data.terminationDate ?? new Date().toISOString().slice(0, 10))
-          : null,
+        status: change.status,
+        terminationDate: change.terminationDate,
         updatedAt: new Date(),
       })
       .where(eq(employees.id, employeeId))
       .returning();
-
-    // Auth stays in sync: terminated employees lose access immediately.
-    if (employee.userId) {
-      const ctx = await auth.$context;
-      if (terminating) {
-        await ctx.internalAdapter.updateUser(employee.userId, {
-          banned: true,
-          banReason: "employee_terminated",
-        });
-        await ctx.internalAdapter.deleteUserSessions(employee.userId);
-      } else {
-        await ctx.internalAdapter.updateUser(employee.userId, { banned: false, banReason: null });
-      }
-    }
+    const row = updated[0]!;
+    const w2AccessThrough = await syncLoginWithStatus(row);
 
     await audit(
       req.authUser!.id,
       terminating ? "employee.disable" : "employee.enable",
       String(employeeId),
-      { status: employee.status },
-      { status: updated[0]!.status, terminationDate: updated[0]!.terminationDate },
+      { status: change.before },
+      {
+        status: row.status,
+        terminationDate: row.terminationDate,
+        ...(w2AccessThrough ? { w2AccessThrough } : {}),
+      },
     );
     return { employee: await employeeWithUser(employeeId) };
   });

@@ -1,11 +1,38 @@
 /**
  * Mount Better Auth at /api/auth/* (spec 3). Converts Fastify requests to Fetch
  * Requests for auth.handler and streams the response back, preserving Set-Cookie.
+ *
+ * PAY-217 (brief D217-4): a session whose user is a former employee (W-2
+ * only, or no open window) reaches only sign-in, the TOTP / backup-code
+ * steps, get-session and sign-out; every other Better Auth path —
+ * change-password, update-user, two-factor management, session lists,
+ * /admin/*, any future plugin path — answers 403 w2_access_only. A request
+ * without a session passes unchanged (sign-in must keep working).
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Auth } from "../auth/auth.js";
 import type { AppConfig } from "../config.js";
+import type { Db } from "../db.js";
+import { formerEmployeeAccess } from "./former-employee.js";
+import { toHeaders } from "../plugins/guards.js";
+import { localDate } from "../payroll/run-dates.js";
+
+/** PAY-217: the Better Auth calls a former employee's session may make (method + exact path). */
+const FORMER_EMPLOYEE_AUTH_PATHS: ReadonlySet<string> = new Set([
+  "POST /sign-in/email",
+  "POST /two-factor/verify-totp",
+  "POST /backup-code/verify",
+  "GET /get-session",
+  "POST /sign-out",
+]);
+
+/** "METHOD /path" of a request under /api/auth, without the query string. */
+function authPathKey(req: FastifyRequest): string {
+  const url = req.raw.url ?? "";
+  const path = url.split("?")[0]!.slice("/api/auth".length);
+  return `${req.method} ${path}`;
+}
 
 function toFetchRequest(req: FastifyRequest, config: AppConfig): Request {
   const url = new URL(req.raw.url ?? "/", config.baseUrl);
@@ -36,9 +63,19 @@ async function sendFetchResponse(reply: FastifyReply, response: Response): Promi
 
 export function mountBetterAuth(
   app: FastifyInstance,
-  deps: { auth: Auth; config: AppConfig },
+  deps: { auth: Auth; db: Db; config: AppConfig; clock?: () => Date },
 ): void {
-  const { auth, config } = deps;
+  const { auth, db, config } = deps;
+  const clock = deps.clock ?? (() => new Date());
+
+  /** True when the request carries a session of a former employee (W-2 only or none). */
+  async function formerSession(req: FastifyRequest): Promise<boolean> {
+    const session = await auth.api.getSession({ headers: toHeaders(req) });
+    if (!session) return false;
+    const today = localDate(clock(), config.appTz);
+    const access = await formerEmployeeAccess(db, session.user.id, today, config.appTz);
+    return access.kind !== "full";
+  }
   app.route({
     method: ["GET", "POST"],
     url: "/api/auth/*",
@@ -61,6 +98,9 @@ export function mountBetterAuth(
       },
     },
     handler: async (req, reply) => {
+      if (!FORMER_EMPLOYEE_AUTH_PATHS.has(authPathKey(req)) && (await formerSession(req))) {
+        return reply.code(403).send({ error: "w2_access_only" });
+      }
       const response = await auth.handler(toFetchRequest(req, config));
       await sendFetchResponse(reply, response);
     },

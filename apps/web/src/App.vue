@@ -44,6 +44,8 @@ const { appEnv, brandName } = useRuntimeConfig();
  * exists) neither worker-type-bound item renders.
  */
 const employeeNav = computed(() => {
+  // PAY-217: a former employee has one screen — their W-2s.
+  if (auth.access === "w2_only") return [{ label: "Your W-2s", name: "my-w2-access" }];
   const items = [{ label: "Dashboard", name: "my-dashboard" }];
   if (auth.employmentType === "w2") items.push({ label: PAYSLIPS_NAV_LABEL, name: "my-payslips" });
   if (auth.employmentType === "1099") items.push({ label: "Invoices", name: "my-invoices" });
@@ -125,7 +127,11 @@ async function logout() {
     <div v-if="appEnv === 'qa'" class="qa-banner" role="status">QA — synthetic data</div>
     <header v-if="signedIn" class="topbar">
       <div class="brand-row">
-        <RouterLink :to="{ name: 'my-dashboard' }" class="brand">{{ brandName }}</RouterLink>
+        <RouterLink
+          :to="{ name: auth.access === 'w2_only' ? 'my-w2-access' : 'my-dashboard' }"
+          class="brand"
+          >{{ brandName }}</RouterLink
+        >
         <span class="user-chip">
           {{ auth.user?.name }}
           <span v-if="auth.isAdmin" class="role">admin</span>

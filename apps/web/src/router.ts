@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from "vue-router";
 import { pinia } from "./stores/pinia";
 import { useAuthStore } from "./stores/auth";
+import { FORMER_W2_ROUTE_NAME, formerEmployeeRedirect } from "./lib/former-access";
 import LoginView from "./views/LoginView.vue";
 
 /**
@@ -74,6 +75,13 @@ export const router = createRouter({
       path: "/my/requests/:publicId",
       name: "my-request-detail",
       component: () => import("./views/my/MyRequestDetailView.vue"),
+      meta: { requiresAuth: true },
+    },
+    // PAY-217: a former employee's only screen — the W-2s given online.
+    {
+      path: "/my/w2",
+      name: "my-w2-access",
+      component: () => import("./views/my/MyW2AccessView.vue"),
       meta: { requiresAuth: true },
     },
     {
@@ -224,20 +232,32 @@ router.beforeEach(async (to) => {
   if (to.meta.requiresAuth && !auth.user) {
     return { name: "login", query: { redirect: to.fullPath } };
   }
+  // PAY-217: a former employee reaches the W-2 screen only — checked before
+  // anything that calls an API they are refused (ensureEmployee).
+  const former = formerEmployeeRedirect(auth.access, to);
+  if (former) return former;
+  if (to.name === FORMER_W2_ROUTE_NAME && auth.access !== "w2_only") {
+    return { name: "my-dashboard" };
+  }
   if (to.name === "my-dashboard" && auth.isAdmin) {
     return { name: "admin-dashboard" };
   }
   if (to.meta.requiresAdmin && !auth.isAdmin) {
     return { name: "my-dashboard" };
   }
-  // PAY-8: worker-type-bound routes (Payslips = W-2, Invoices = contractors).
-  // A direct URL from the wrong type redirects to the dashboard, matching the
-  // scoped nav — no empty pages for features that can never apply.
-  if (to.meta.workerType) {
-    await auth.ensureEmployee();
-    if (auth.employmentType !== to.meta.workerType) {
-      return { name: "my-dashboard" };
-    }
-  }
-  return true;
+  return workerTypeRedirect(to.meta.workerType, auth);
 });
+
+/**
+ * PAY-8: worker-type-bound routes (Payslips = W-2, Invoices = contractors).
+ * A direct URL from the wrong type redirects to the dashboard, matching the
+ * scoped nav — no empty pages for features that can never apply.
+ */
+async function workerTypeRedirect(
+  workerType: unknown,
+  auth: ReturnType<typeof useAuthStore>,
+): Promise<true | { name: "my-dashboard" }> {
+  if (!workerType) return true;
+  await auth.ensureEmployee();
+  return auth.employmentType === workerType ? true : { name: "my-dashboard" };
+}

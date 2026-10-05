@@ -225,23 +225,40 @@ export function furnishingState<R extends FurnishingRef>(
 ): FurnishingState<R> {
   const latest = latestRow(rows);
   const corrected = rows.some((r) => !sameFigures(r, currentHash, opts.version));
-  const deliveredCurrent = (method: FurnishMethod, until?: Date | null) => {
-    const eligible =
-      until === undefined || until === null
-        ? rows
-        : rows.filter((r) => r.furnishedAt.getTime() < until.getTime());
-    const row = latestRow(eligible, method);
-    return row !== null && sameFigures(row, currentHash, opts.version);
-  };
+  const latestNotice = latestRow(rows, "portal_notice");
   const delivered = opts.consented
-    ? deliveredCurrent("portal_notice")
-    : deliveredCurrent("paper_handed") || deliveredCurrent("portal_notice", opts.electronicUntil);
+    ? latestNotice !== null && sameFigures(latestNotice, currentHash, opts.version)
+    : offChannelDelivered(rows, currentHash, opts.version, opts.electronicUntil ?? null);
   return {
     furnished: latest !== null,
     corrected,
     correctionToFurnish: corrected && !delivered,
     latest,
   };
+}
+
+/**
+ * PAY-217 round 2 (C1): off the electronic channel, a delivery is a
+ * paper_handed row or a portal_notice posted before `until` (the withdrawal
+ * or the termination). It counts as current only when it carries the
+ * current figures AND no later row (by id) carries other figures — so
+ * figures that go A → B → A owe the A copy again after B was delivered.
+ */
+function offChannelDelivered(
+  rows: readonly FurnishingRef[],
+  currentHash: string,
+  version: number | undefined,
+  until: Date | null,
+): boolean {
+  const isDelivery = (r: FurnishingRef) =>
+    r.method === "paper_handed" ||
+    (r.method === "portal_notice" && (until === null || r.furnishedAt.getTime() < until.getTime()));
+  return rows.some(
+    (r) =>
+      isDelivery(r) &&
+      sameFigures(r, currentHash, version) &&
+      !rows.some((o) => o.id > r.id && !sameFigures(o, currentHash, version)),
+  );
 }
 
 /**

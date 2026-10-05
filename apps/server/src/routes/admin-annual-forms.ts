@@ -61,7 +61,7 @@ import {
 import { formatCents } from "@payroll/shared";
 import type { W2Issue } from "../filings/w2-boxes.js";
 import { electronicW2Channel, readW2Contact, reconsentNeededFor } from "../filings/w2-consent.js";
-import { undeliveredW2Notices } from "../filings/w2-furnish.js";
+import { formerEmployeeW2Access, undeliveredW2Notices } from "../filings/w2-furnish.js";
 import { PDF_RATE_LIMIT, refuseCrossSite } from "../plugins/fetch-site.js";
 import { FilingServiceError } from "../filings/shared.js";
 import { localDate } from "../payroll/run-dates.js";
@@ -76,6 +76,8 @@ interface Deps {
   db: Db;
   config: AppConfig;
   guards: Guards;
+  /** Test override: the wall clock for the (j)(6) window (PAY-217). */
+  clock?: () => Date;
 }
 
 const yearQuery = z.object({ year: z.coerce.number().int().min(2020).max(2100) });
@@ -208,6 +210,13 @@ export function registerAdminAnnualFormRoutes(app: FastifyInstance, deps: Deps):
       contactReady: (await readW2Contact(db)).ready,
       // PAY-208 ((j)(5)(ii)): consented notices of the year that bounced.
       undeliveredNotices: await undeliveredW2Notices(db, q.data.year, config.appTz),
+      // PAY-217 step (b): former employees who can still get this W-2 online.
+      formerEmployeeAccess: await formerEmployeeW2Access(
+        { db, config },
+        q.data.year,
+        figures,
+        localDate((deps.clock ?? (() => new Date()))(), config.appTz),
+      ),
     };
   });
 

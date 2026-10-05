@@ -19,6 +19,7 @@ import { PgBoss } from "pg-boss";
 import nodemailer from "nodemailer";
 import { eq, isNull } from "drizzle-orm";
 import { authUser, employees, paySchedules } from "@payroll/db";
+import { syncFormerEmployeeLogins } from "../auth/former-employee.js";
 import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
 import { generateDraftsForPeriod, monthlyPeriod } from "./runs.js";
@@ -83,6 +84,15 @@ export async function annualTick(deps: { db: Db; config: AppConfig }): Promise<v
   const reconcile = await annualStep("W-2 reconcile", () => reconcileW2Furnishings({ db, config }));
   if (reconcile && reconcile.followUps + reconcile.failed > 0) {
     console.log(`[filings] W-2 corrections: ${JSON.stringify(reconcile)}`);
+  }
+  // PAY-217: after the reconcile, so a correction posted online today
+  // re-opens a former employee's sign-in the same day (SME R4); a closed
+  // (j)(6) window bans the login. Counts only in the log.
+  const formers = await annualStep("former-employee sign-in", () =>
+    syncFormerEmployeeLogins({ db, config }),
+  );
+  if (formers && formers.ended + formers.restored + formers.failed > 0) {
+    console.log(`[auth] former-employee sign-in: ${JSON.stringify(formers)}`);
   }
   // PAY-208 (D-D): once per employee per terms version — "please review the
   // updated online-W-2 terms" to consenters on earlier terms.

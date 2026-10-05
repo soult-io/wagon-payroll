@@ -60,7 +60,12 @@ export async function buildApp(deps: BuildAppDeps = {}) {
   const database = deps.database ?? createDb(config);
   const { db, dialect } = database;
   const auth = createAuth({ config, db, dialect });
-  const guards = createGuards({ auth, db });
+  const guards = createGuards({
+    auth,
+    db,
+    config,
+    ...(deps.clock ? { clock: deps.clock } : {}),
+  });
 
   const app = Fastify({
     logger: deps.logStream
@@ -84,9 +89,10 @@ export async function buildApp(deps: BuildAppDeps = {}) {
     brandName: config.brandName,
   }));
 
-  mountBetterAuth(app, { auth, config });
+  mountBetterAuth(app, { auth, db, config, ...(deps.clock ? { clock: deps.clock } : {}) });
   registerOnboardingRoutes(app, { auth, db, config, guards });
-  registerAdminRoutes(app, { auth, db, config, guards });
+  const clockDep = deps.clock ? { clock: deps.clock } : {};
+  registerAdminRoutes(app, { auth, db, config, guards, ...clockDep });
   registerAdminPayrollRoutes(app, {
     db,
     config,
@@ -105,7 +111,7 @@ export async function buildApp(deps: BuildAppDeps = {}) {
   registerMyRoutes(app, { db, config, guards });
   registerMyInvoiceRoutes(app, { db, guards });
   registerAdminNotificationRoutes(app, { db, config, guards });
-  registerAdminEmployeeRoutes(app, { auth, db, config, guards });
+  registerAdminEmployeeRoutes(app, { auth, db, config, guards, ...clockDep });
   registerAdminSettingsRoutes(app, { db, config, guards });
   registerAdminStateIdRoutes(app, { db, config, guards });
   registerAdminContractorRoutes(app, { db, config, guards });
@@ -114,7 +120,7 @@ export async function buildApp(deps: BuildAppDeps = {}) {
   registerAdminFilingRoutes(app, { db, config, guards });
   registerAdminStateTaxRoutes(app, { db, guards });
   registerAdminLocalTaxRoutes(app, { db, config, guards });
-  registerAdminAnnualFormRoutes(app, { db, config, guards });
+  registerAdminAnnualFormRoutes(app, { db, config, guards, ...clockDep });
   registerExportRoutes(app, { db, config });
   registerQaRoutes(app, { config }); // no-op unless APP_ENV=qa (spec 14 §3)
   registerStubRoutes(app, guards);
