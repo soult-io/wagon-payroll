@@ -30,6 +30,7 @@ import { syncAnnualFilings } from "../src/filings/annual.js";
 import { snapshotHash, type RunSnapshot } from "../src/payroll/snapshot.js";
 import { createTestApp, type TestContext } from "./helpers.js";
 import { inviteAndOnboard, login, sessionHeader, TEST_PASSWORD } from "./flow-helpers.js";
+import { consentViaApi } from "./w2-consent-fixture.js";
 
 const TODAY = "2026-09-29";
 
@@ -125,11 +126,8 @@ async function linkedEmployee(email: string, name: string) {
   const user = await inviteAndOnboard(t, { email, name });
   const employeeId = await createEmployee(name, user.userId);
   const session = sessionHeader((await login(t, email, TEST_PASSWORD)).sessionCookie);
-  const consent = await t.app.inject({
-    method: "POST",
-    url: "/api/my/w2/consent",
-    headers: session,
-  });
+  // PAY-208: contact + current disclosure version + test-PDF code (w2-consent-fixture.ts).
+  const consent = await consentViaApi(t, session);
   expect(consent.statusCode, consent.body).toBe(200);
   return { employeeId, session };
 }
@@ -237,6 +235,8 @@ describe("D2 employee W-2 list carries ready per year, no reason codes", () => {
           corrected: false,
           downloadable: true,
           formCount: 1,
+          // PAY-208 N1 ((j)(6)): Oct 15, 2026 (Thursday).
+          accessThrough: "2026-10-15",
         },
         {
           year: 2024,
@@ -245,8 +245,12 @@ describe("D2 employee W-2 list carries ready per year, no reason codes", () => {
           corrected: false,
           downloadable: false,
           formCount: null,
+          // PAY-208 N1 ((j)(6)): Oct 15, 2025 (Wednesday).
+          accessThrough: "2025-10-15",
         },
       ],
+      // PAY-208 (2.2b): no issued year waiting for January.
+      upcomingYear: null,
     });
   });
 
@@ -261,8 +265,12 @@ describe("D2 employee W-2 list carries ready per year, no reason codes", () => {
           corrected: false,
           downloadable: false,
           formCount: null,
+          // PAY-208 N1 ((j)(6)): Oct 15, 2024 (Tuesday).
+          accessThrough: "2024-10-15",
         },
       ],
+      // PAY-208 (2.2b): no issued year waiting for January.
+      upcomingYear: null,
     });
   });
 });

@@ -141,7 +141,7 @@ body {
 
 .kv {
   display: grid;
-  grid-template-columns: minmax(140px, 220px) 1fr;
+  grid-template-columns: minmax(140px, 220px) minmax(0, 1fr);
   gap: 0.4rem 1rem;
   margin: 0;
 }
@@ -153,6 +153,22 @@ body {
 
 .kv dd {
   margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* PAY-208 UX: one column at phone width (label above value). */
+@media (max-width: 600px) {
+  .kv {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 0.15rem;
+  }
+  .kv dt {
+    margin-top: 0.6rem;
+  }
+  .kv dt:first-child {
+    margin-top: 0;
+  }
 }
 
 /* Responsive: on small screens DataTables overflow horizontally with a hint. */

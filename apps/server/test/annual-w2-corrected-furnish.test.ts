@@ -315,8 +315,12 @@ describe("R7/R8 list fields", () => {
           corrected: false,
           downloadable: true,
           formCount: 1,
+          // PAY-208 N1 ((j)(6)): Oct 15, 2026 (Thursday); unchanged W-2, no correction.
+          accessThrough: "2026-10-15",
         },
       ],
+      // PAY-208 (2.2b): no issued year waiting for January.
+      upcomingYear: null,
     });
   });
 

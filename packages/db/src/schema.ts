@@ -59,6 +59,18 @@ export const company = pgTable("company", {
   ein: text("ein"),
   /** {line1,line2,city,state,zip,country} */
   address: jsonb("address"),
+  /**
+   * PAY-208 (26 CFR 31.6051-1(j)(3)(v)(A)): the W-2 contact — the person or
+   * department employees write to about W-2s (withdrawal, paper copies).
+   * Employer business data, shown to every employee and in W-2 emails, so
+   * stored in plain text like `address`; never logged. Online W-2s stay
+   * closed until name, phone, email and a mailing address exist.
+   */
+  w2ContactName: text("w2_contact_name"),
+  w2ContactPhone: text("w2_contact_phone"),
+  w2ContactEmail: text("w2_contact_email"),
+  /** Optional {line1,line2,city,state,zip,country}; null = use `address`. */
+  w2ContactAddress: jsonb("w2_contact_address"),
   createdAt: createdAt(),
 });
 
@@ -397,6 +409,13 @@ export const emailOutbox = pgTable(
     createdAt: createdAt(),
     /** Set on success. */
     sentAt: timestamp("sent_at", { withTimezone: true }).defaultNow(),
+    /**
+     * PAY-208 (D-A): an explicit recipient that overrides the user-id lookup
+     * — used only for the sign-in-email-change notice to the OLD address.
+     * PII: never logged, never returned by an API, set to null once the
+     * message is sent or fails for good.
+     */
+    recipientEmail: text("recipient_email"),
   },
   (t) => [
     check(
@@ -970,7 +989,8 @@ export const legacyMigrationMap = pgTable(
 );
 
 // ---------------------------------------------------------------------------
-// 11. PAY-19: W-2 electronic-delivery consent (Pub 1141 §2.4)
+// 11. PAY-19: W-2 electronic-delivery consent (26 CFR 31.6051-1(j); IRS Pub
+//     15-A (2026), "Furnishing Form W-2 to employees electronically")
 // ---------------------------------------------------------------------------
 
 /**
@@ -988,7 +1008,11 @@ export const w2DeliveryConsents = pgTable(
     employeeId: integer("employee_id")
       .notNull()
       .references(() => employees.id),
-    /** Version string of the disclosure text shown at consent time. */
+    /**
+     * Version string of the disclosure text shown at consent time. PAY-208:
+     * a "2025-01" consent covers tax years before 2026 only; from 2026 the
+     * version must be in W2_CONSENT_VERSIONS_FROM_2026 (re-consent).
+     */
     disclosureVersion: text("disclosure_version").notNull(),
     consentedAt: timestamp("consented_at", { withTimezone: true }).notNull().defaultNow(),
     withdrawnAt: timestamp("withdrawn_at", { withTimezone: true }),

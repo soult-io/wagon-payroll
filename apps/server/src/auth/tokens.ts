@@ -59,7 +59,10 @@ export async function consumeSetupToken(db: Db, id: number): Promise<void> {
 }
 
 /** Invalidate any outstanding tokens for a user (e.g. when a new one is issued). */
-export async function revokeOutstandingSetupTokens(db: Db, userId: string): Promise<void> {
+export async function revokeOutstandingSetupTokens(
+  db: Pick<Db, "update">,
+  userId: string,
+): Promise<void> {
   await db
     .update(setupTokens)
     .set({ usedAt: new Date() })

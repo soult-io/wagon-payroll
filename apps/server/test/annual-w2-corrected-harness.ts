@@ -626,3 +626,44 @@ export async function pageShowsAll(
 export function hasAmount(text: string): boolean {
   return text.includes("$") || /\d+\.\d{2}\b/.test(text);
 }
+
+// ---------------------------------------------------------------- PAY-208 N1 oracle
+
+/**
+ * PAY-208 N1 — the access window of an employee-year, computed here from
+ * 26 CFR 31.6051-1(j)(6), independently of the app: October 15 of the
+ * following year (Saturday -> Monday, Sunday -> Monday; October 15-17 is
+ * never a federal holiday), or, when later, 90 days after the latest
+ * CORRECTED portal_notice posting (its company-local date in `appTz`).
+ * Read from the stored rows because furnished_at is the wall clock at the
+ * posting, not the app clock the suites fake.
+ */
+export async function oracleAccessThrough(
+  t: TestContext,
+  employeeId: number,
+  year: number,
+  appTz: string,
+): Promise<string> {
+  const oct15 = new Date(Date.UTC(year + 1, 9, 15));
+  const dow = oct15.getUTCDay();
+  if (dow === 6) oct15.setUTCDate(17);
+  if (dow === 0) oct15.setUTCDate(16);
+  const base = oct15.toISOString().slice(0, 10);
+  const r = await t.pglite.query<{ at: Date | null }>(
+    `SELECT max(furnished_at) AS at FROM w2_furnishings
+      WHERE employee_id = $1 AND tax_year = $2 AND method = 'portal_notice' AND corrected`,
+    [employeeId, year],
+  );
+  const at = r.rows[0]?.at;
+  if (!at) return base;
+  const local = new Intl.DateTimeFormat("en-CA", {
+    timeZone: appTz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(at));
+  const plus = new Date(`${local}T00:00:00Z`);
+  plus.setUTCDate(plus.getUTCDate() + 90);
+  const p = plus.toISOString().slice(0, 10);
+  return p > base ? p : base;
+}

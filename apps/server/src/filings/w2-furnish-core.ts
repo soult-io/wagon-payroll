@@ -212,22 +212,30 @@ export function latestRow<R extends { id: number; method: string }>(
 
 /**
  * R4 + review round D1/D3: the one owner of furnished / corrected /
- * correctionToFurnish. `consented` = active electronic consent AND a login.
+ * correctionToFurnish. `consented` = the electronic channel of the year
+ * (electronicW2Channel). PAY-208: `electronicUntil` (the withdrawal time,
+ * on the paper branch) — a portal_notice posted at or after it does not
+ * count as a delivery: a correction posted online after a withdrawal is
+ * still owed on paper (federal SME ruling 2026-10-04).
  */
 export function furnishingState<R extends FurnishingRef>(
   rows: readonly R[],
   currentHash: string,
-  opts: { consented: boolean; version?: number },
+  opts: { consented: boolean; version?: number; electronicUntil?: Date | null },
 ): FurnishingState<R> {
   const latest = latestRow(rows);
   const corrected = rows.some((r) => !sameFigures(r, currentHash, opts.version));
-  const deliveredCurrent = (method: FurnishMethod) => {
-    const row = latestRow(rows, method);
+  const deliveredCurrent = (method: FurnishMethod, until?: Date | null) => {
+    const eligible =
+      until === undefined || until === null
+        ? rows
+        : rows.filter((r) => r.furnishedAt.getTime() < until.getTime());
+    const row = latestRow(eligible, method);
     return row !== null && sameFigures(row, currentHash, opts.version);
   };
   const delivered = opts.consented
     ? deliveredCurrent("portal_notice")
-    : deliveredCurrent("paper_handed") || deliveredCurrent("portal_notice");
+    : deliveredCurrent("paper_handed") || deliveredCurrent("portal_notice", opts.electronicUntil);
   return {
     furnished: latest !== null,
     corrected,

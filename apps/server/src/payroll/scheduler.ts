@@ -28,6 +28,7 @@ import { sendDepositReminders, syncDeposits } from "../deposits/service.js";
 import { sendFilingReminders, syncFilings } from "../filings/service.js";
 import { sendW2AvailableNotices, syncAnnualFilings } from "../filings/annual.js";
 import { backfillW2Furnishings, reconcileW2Furnishings } from "../filings/w2-furnish.js";
+import { sendW2TermsUpdateNotices } from "../filings/w2-consent.js";
 import { errorClass } from "../filings/shared.js";
 
 const TICK_QUEUE = "payroll-draft-tick";
@@ -82,6 +83,14 @@ export async function annualTick(deps: { db: Db; config: AppConfig }): Promise<v
   const reconcile = await annualStep("W-2 reconcile", () => reconcileW2Furnishings({ db, config }));
   if (reconcile && reconcile.followUps + reconcile.failed > 0) {
     console.log(`[filings] W-2 corrections: ${JSON.stringify(reconcile)}`);
+  }
+  // PAY-208 (D-D): once per employee per terms version — "please review the
+  // updated online-W-2 terms" to consenters on earlier terms.
+  const terms = await annualStep("W-2 terms notices", () =>
+    sendW2TermsUpdateNotices({ db, config }),
+  );
+  if (terms && terms.sent > 0) {
+    console.log(`[filings] W-2 terms notices: ${JSON.stringify(terms)}`);
   }
   const w2Notices = await annualStep("W-2 notices", () => sendW2AvailableNotices({ db, config }));
   if (w2Notices && w2Notices.sent > 0) {

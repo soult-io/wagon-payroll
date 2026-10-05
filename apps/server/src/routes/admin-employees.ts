@@ -3,22 +3,67 @@
  * detail (with linked user), create, invite-or-resend (links the user to the
  * employee record), and disable/enable (employee status + auth ban stay in
  * sync). Every mutation writes audit_events.
+ *
+ * PAY-208: the detail carries the W-2 delivery state (w2Consent: none,
+ * current, outdated, withdrawn — no disclosure text); an admin records a
+ * written withdrawal ((j)(3)(v)(A), effective the day it is recorded, OD3)
+ * and changes an employee's sign-in email (D-A: a fresh admin session,
+ * masked audit, a notice to the old AND the new address).
  */
 
 import type { FastifyInstance } from "fastify";
-import { eq, ne } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import { z } from "zod";
-import { auditEvents, authUser, changeRequests, company, employees } from "@payroll/db";
+import {
+  auditEvents,
+  authUser,
+  changeRequests,
+  company,
+  emailOutbox,
+  employees,
+} from "@payroll/db";
+import { EVENT_TYPE, signInEmailChanged } from "@payroll/notifications";
 import { isoDate } from "@payroll/shared";
 import type { Auth } from "../auth/auth.js";
 import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
 import type { Guards } from "../plugins/guards.js";
 import { inviteUser, resendInvite, UserServiceError } from "../auth/users.js";
-import { requestContext } from "../auth/audit.js";
+import { AUTH_EVENT, requestContext, writeAuthEvent } from "../auth/audit.js";
 import { toHeaders } from "../plugins/guards.js";
 import { encryptField, maskLast4 } from "../crypto/field-encryption.js";
 import { addressForStorage, decryptAddress, encryptAddress } from "../crypto/address-encryption.js";
+import { PDF_RATE_LIMIT, refuseCrossSite } from "../plugins/fetch-site.js";
+import { revokeOutstandingSetupTokens } from "../auth/tokens.js";
+import { w2ConsentState, withdrawW2Consent } from "../filings/w2-consent.js";
+import { FilingServiceError } from "../filings/shared.js";
+import { templateContext } from "../notify/outbox.js";
+
+/** The admin signed in within FRESH_SESSION_MS (Better Auth freshAge). */
+function sessionIsFresh(createdAt: Date | string | undefined): boolean {
+  if (createdAt === undefined) return false;
+  return Date.now() - new Date(createdAt).getTime() <= FRESH_SESSION_MS;
+}
+
+/** Postgres unique_violation (23505), wherever the driver puts the code. */
+function isUniqueViolation(err: unknown): boolean {
+  for (let e: unknown = err, i = 0; e && i < 4; i += 1) {
+    if ((e as { code?: unknown }).code === "23505") return true;
+    e = (e as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/** Better Auth session.freshAge (auth.ts): a sensitive action needs a sign-in this recent. */
+export const FRESH_SESSION_MS = 60 * 60 * 1000;
+
+/** "renamed@example.com" → "r***@example.com" (audit rows never hold a full address). */
+export function maskEmail(email: string | null | undefined): string | null {
+  if (!email) return null;
+  const at = email.lastIndexOf("@");
+  if (at <= 0) return "***";
+  return `${email[0]}***${email.slice(at)}`;
+}
 
 interface Deps {
   auth: Auth;
@@ -77,6 +122,8 @@ export function registerAdminEmployeeRoutes(app: FastifyInstance, deps: Deps): v
       mailingAddress: decryptAddress(employee.mailingAddress, config.encryptionKey),
       // Presence flag only (spec 11 D20a) — the masked value stays server-side.
       hasTaxId: Boolean(employee.taxId),
+      // PAY-208 (S16): the W-2 delivery state — dates only, no terms text.
+      w2Consent: await w2ConsentState(db, employee.id),
       user: employee.userId
         ? { id: employee.userId, email: userEmail, banned: userBanned, banReason: userBanReason }
         : null,
@@ -363,4 +410,172 @@ export function registerAdminEmployeeRoutes(app: FastifyInstance, deps: Deps): v
     );
     return { employee: await employeeWithUser(employeeId) };
   });
+  /**
+   * PAY-208 ((j)(3)(v)(A)/(B), OD3): record a withdrawal the employee asked
+   * for in writing. Effective today (company-local), never back-dated; the
+   * same confirmation mail as a withdrawal on the consent page, or
+   * confirmation "paper_needed" when the employee has no sign-in. 404 when
+   * no consent is on file.
+   */
+  app.post(
+    "/api/admin/employees/:employeeId/w2-consent/withdraw",
+    { preHandler: [refuseCrossSite, admin] },
+    async (req, reply) => {
+      const employeeId = Number((req.params as { employeeId: string }).employeeId);
+      if (!Number.isInteger(employeeId) || employeeId <= 0) {
+        return reply.code(400).send({ error: "invalid_id" });
+      }
+      try {
+        const out = await withdrawW2Consent({ db, config }, employeeId, req.authUser!.id);
+        return {
+          w2Consent: await w2ConsentState(db, employeeId),
+          effectiveOn: out.effectiveOn,
+          confirmation: out.confirmation,
+        };
+      } catch (err) {
+        if (err instanceof FilingServiceError) return reply.code(404).send({ error: "not_found" });
+        throw err;
+      }
+    },
+  );
+
+  /**
+   * The employee's login for a sign-in email change, or null (no login).
+   * S-H1: pendingEnrollment — the user is still enrolling, so the admin
+   * re-sends the invite to the new address (nothing is sent automatically).
+   */
+  async function signInTarget(
+    employeeId: number,
+  ): Promise<{ userId: string; oldEmail: string; pendingEnrollment: boolean } | null> {
+    const rows = await db
+      .select({ userId: employees.userId, email: authUser.email, banReason: authUser.banReason })
+      .from(employees)
+      .leftJoin(authUser, eq(authUser.id, employees.userId))
+      .where(eq(employees.id, employeeId))
+      .limit(1);
+    const row = rows[0];
+    if (!row?.userId || !row.email) return null;
+    return {
+      userId: row.userId,
+      oldEmail: row.email,
+      pendingEnrollment: row.banReason === "pending_enrollment",
+    };
+  }
+
+  /** Another user signs in with `email` (case-insensitive). */
+  async function emailTakenByOther(email: string, userId: string): Promise<boolean> {
+    const taken = await db
+      .select({ id: authUser.id })
+      .from(authUser)
+      .where(and(sql`lower(${authUser.email}) = ${email}`, ne(authUser.id, userId)))
+      .limit(1);
+    return taken.length > 0;
+  }
+
+  /**
+   * D-A: the sign-in email change itself. One transaction: the new address,
+   * S-H1 revocation of every outstanding setup link, the masked audit row
+   * and the notice to the new and the old address. False when another
+   * change took the address first (S-L1: unique violation, no detail
+   * logged). After the commit, S-M2: every session of the user ends
+   * (R3-1: sessionsRevoked false when that fails).
+   */
+  async function applySignInEmailChange(c: {
+    employeeId: number;
+    userId: string;
+    oldEmail: string;
+    newEmail: string;
+    actorId: string;
+    headers: Headers;
+  }): Promise<{ sessionsRevoked: boolean } | null> {
+    const rendered = signInEmailChanged(await templateContext(db, config));
+    try {
+      await db.transaction(async (tx) => {
+        await tx
+          .update(authUser)
+          .set({ email: c.newEmail, updatedAt: new Date() })
+          .where(eq(authUser.id, c.userId));
+        await revokeOutstandingSetupTokens(tx, c.userId);
+        await tx.insert(auditEvents).values({
+          actorId: c.actorId,
+          action: "employee.sign_in_email_change",
+          entity: "employee",
+          entityId: String(c.employeeId),
+          before: { email: maskEmail(c.oldEmail) },
+          after: { email: maskEmail(c.newEmail), setupLinksRevoked: true },
+        });
+        const notice = {
+          userId: c.userId,
+          eventType: EVENT_TYPE.signInEmailChanged,
+          subject: rendered.subject,
+          bodyHtml: rendered.html,
+        };
+        await tx.insert(emailOutbox).values([notice, { ...notice, recipientEmail: c.oldEmail }]);
+      });
+    } catch (err) {
+      if (isUniqueViolation(err)) return null;
+      throw err;
+    }
+    // R3-1: the change stands even when ending the sessions fails — the
+    // admin is told (sessionsRevoked: false); the log names the error class
+    // only (never its message, which may carry an address).
+    try {
+      const ctx = await auth.$context;
+      await ctx.internalAdapter.deleteUserSessions(c.userId);
+      await writeAuthEvent(db, AUTH_EVENT.sessionRevoked, c.userId, requestContext(c.headers));
+      return { sessionsRevoked: true };
+    } catch (err) {
+      const cls = err instanceof Error ? err.constructor.name || "Error" : typeof err;
+      console.error(`[auth] sign-in email change: session revocation failed (${cls})`);
+      return { sessionsRevoked: false };
+    }
+  }
+
+  /**
+   * PAY-208 D-A ((j)(3)(vii): how an employee's W-2 email address is
+   * updated): change the email the employee signs in with. Needs a fresh
+   * admin session (signed in within FRESH_SESSION_MS — Better Auth's
+   * freshAge), refuses cross-site; 409 when another user has the address
+   * (any case), 404 when the employee has no sign-in. Audited with both
+   * addresses masked. The notice goes to the NEW address (user-id lookup)
+   * and the OLD one (the outbox recipient override, cleared once sent).
+   */
+  app.put(
+    "/api/admin/employees/:employeeId/sign-in-email",
+    // S-L2: 20 per minute per client, like the PDF routes.
+    { preHandler: [refuseCrossSite, admin], config: { rateLimit: PDF_RATE_LIMIT } },
+    async (req, reply) => {
+      const employeeId = Number((req.params as { employeeId: string }).employeeId);
+      if (!Number.isInteger(employeeId) || employeeId <= 0) {
+        return reply.code(400).send({ error: "invalid_id" });
+      }
+      if (!sessionIsFresh(req.authSession?.createdAt)) {
+        return reply.code(403).send({ error: "session_not_fresh" });
+      }
+      const body = z
+        .object({ email: z.string().trim().max(254).pipe(z.email()) })
+        .safeParse(req.body);
+      if (!body.success) return reply.code(400).send({ error: "invalid_body" });
+      const newEmail = body.data.email.toLowerCase();
+      const target = await signInTarget(employeeId);
+      if (!target) return reply.code(404).send({ error: "not_found" });
+      const { userId, oldEmail, pendingEnrollment } = target;
+      if (await emailTakenByOther(newEmail, userId)) {
+        return reply.code(409).send({ error: "email_exists" });
+      }
+      if (oldEmail.toLowerCase() === newEmail) {
+        return { changed: false, pendingEnrollment, sessionsRevoked: false };
+      }
+      const done = await applySignInEmailChange({
+        employeeId,
+        userId,
+        oldEmail,
+        newEmail,
+        actorId: req.authUser!.id,
+        headers: toHeaders(req),
+      });
+      if (!done) return reply.code(409).send({ error: "email_exists" });
+      return { changed: true, pendingEnrollment, sessionsRevoked: done.sessionsRevoked };
+    },
+  );
 }

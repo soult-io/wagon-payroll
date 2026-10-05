@@ -47,6 +47,7 @@ import { sendW2AvailableNotices, syncAnnualFilings } from "../src/filings/annual
 import { snapshotHash, type RunSnapshot } from "../src/payroll/snapshot.js";
 import { createTestApp, type TestContext } from "./helpers.js";
 import { inviteAndOnboard, login, sessionHeader, TEST_PASSWORD } from "./flow-helpers.js";
+import { consentViaApi } from "./w2-consent-fixture.js";
 
 const TODAY = "2026-09-29";
 
@@ -192,7 +193,8 @@ async function createEmployee(legalName: string, userId?: string): Promise<numbe
 }
 
 async function consent(session: Record<string, string>) {
-  const res = await t.app.inject({ method: "POST", url: "/api/my/w2/consent", headers: session });
+  // PAY-208: contact + current disclosure version (w2-consent-fixture.ts).
+  const res = await consentViaApi(t, session);
   expect(res.statusCode, res.body).toBe(200);
 }
 

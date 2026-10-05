@@ -511,3 +511,5 @@ export {
 } from "./forms/f941-field-map.js";
 
 export { renderInvoicePdf, type InvoicePdfInput } from "./invoice.js";
+
+export { renderAccessCheckPdf } from "./access-check.js";

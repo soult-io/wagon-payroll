@@ -18,7 +18,7 @@
  * available on January 1 of the following year (w2AvailableOn gate).
  */
 
-import { and, eq, inArray, is, isNull, like, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, is, like, ne, sql } from "drizzle-orm";
 import { PgTransaction } from "drizzle-orm/pg-core";
 import {
   appSettings,
@@ -29,7 +29,6 @@ import {
   payrollRuns,
   taxConfig,
   taxFilings,
-  w2DeliveryConsents,
 } from "@payroll/db";
 import { round2 } from "@payroll/engine/money";
 import { effectiveFutaRate } from "@payroll/engine";
@@ -45,8 +44,12 @@ import {
   type W2StateLineInput,
   type W3Input,
 } from "@payroll/documents";
-import { EVENT_TYPE, w2Available as tplW2Available } from "@payroll/notifications";
-import { formatCents } from "@payroll/shared";
+import {
+  EVENT_TYPE,
+  type TemplateContext,
+  w2Available as tplW2Available,
+} from "@payroll/notifications";
+import { electronicW2AccessThrough, formatCents, type W2Contact } from "@payroll/shared";
 import type { Db } from "../db.js";
 import { stateDepositedByYear, stateWithholdingByYear } from "../deposits/service.js";
 import {
@@ -63,7 +66,9 @@ import { templateContext } from "../notify/outbox.js";
 import { AddressUnreadableError, w2EmployeeAddressAt } from "../change-requests/address-history.js";
 import { decryptField, fieldKey } from "../crypto/field-encryption.js";
 import { lockEmployee } from "../payroll/locks.js";
+import { localDate } from "../payroll/run-dates.js";
 import { furnishCurrent } from "./w2-furnish-core.js";
+import { electronicW2Channel, readW2Contact, W2_CONSENT_GATE_FROM_TAX_YEAR } from "./w2-consent.js";
 import {
   type Deps,
   errorClass,
@@ -116,7 +121,12 @@ export function w2AvailableOn(year: number): string {
   return `${year + 1}-01-01`;
 }
 
-export function isW2Available(year: number, today: string = todayIso()): boolean {
+/**
+ * PAY-208 (R3-5): `today` is the company-local ISO date
+ * (localDate(now, config.appTz)) — every January gate passes it; there is
+ * no UTC default.
+ */
+export function isW2Available(year: number, today: string): boolean {
   return today >= w2AvailableOn(year);
 }
 
@@ -1372,7 +1382,7 @@ export async function w2InputWithBoxes(
   opts: { today?: string; requireBundledForm?: boolean } = {},
 ): Promise<W2InputWithBoxes> {
   const { db, config } = deps;
-  if (!isW2Available(year, opts.today)) {
+  if (!isW2Available(year, opts.today ?? localDate(new Date(), config.appTz))) {
     throw new FilingServiceError(
       "invalid_transition",
       `W-2 for ${year} becomes available on ${w2AvailableOn(year)}`,
@@ -1487,7 +1497,7 @@ export async function w3InputFor(
   opts: { today?: string; requireBundledForm?: boolean } = {},
 ): Promise<W3Input> {
   const { db, config } = deps;
-  if (!isW2Available(year, opts.today)) {
+  if (!isW2Available(year, opts.today ?? localDate(new Date(), config.appTz))) {
     throw new FilingServiceError(
       "invalid_transition",
       `W-3 for ${year} becomes available on ${w2AvailableOn(year)}`,
@@ -1528,15 +1538,17 @@ export async function w3InputFor(
 // Employee self-service queries
 // ---------------------------------------------------------------------------
 
-/**
- * W-2 years available to this user RIGHT NOW: their own issued runs, gated
- * to January of the following year, newest first.
- */
-export async function listMyW2Years(
-  db: Db,
-  userId: string,
-  today: string = todayIso(),
-): Promise<number[]> {
+/** Tax years with an issued run of one employee. */
+async function myEmployeeIssuedYears(db: Pick<Db, "selectDistinct">, employeeId: number) {
+  const rows = await db
+    .selectDistinct({ year: sql<number>`extract(year from ${payrollRuns.payDate})::int` })
+    .from(payrollRuns)
+    .where(and(eq(payrollRuns.employeeId, employeeId), eq(payrollRuns.status, "issued")));
+  return rows.map((r) => r.year);
+}
+
+/** Tax years with an issued run of the user's W-2 employee record (any availability). */
+async function myIssuedYears(db: Db, userId: string): Promise<number[]> {
   const employeeRows = await db
     .select({ id: employees.id })
     .from(employees)
@@ -1548,10 +1560,31 @@ export async function listMyW2Years(
     .selectDistinct({ year: sql<number>`extract(year from ${payrollRuns.payDate})::int` })
     .from(payrollRuns)
     .where(and(eq(payrollRuns.employeeId, employee.id), eq(payrollRuns.status, "issued")));
-  return rows
-    .map((r) => r.year)
+  return rows.map((r) => r.year);
+}
+
+/**
+ * W-2 years available to this user RIGHT NOW: their own issued runs, gated
+ * to January of the following year, newest first.
+ */
+export async function listMyW2Years(db: Db, userId: string, today: string): Promise<number[]> {
+  return (await myIssuedYears(db, userId))
     .filter((year) => isW2Available(year, today))
     .sort((a, b) => b - a);
+}
+
+/**
+ * PAY-208 (2.2b, OD5): the latest tax year with issued runs for this user
+ * whose W-2 is not available yet (null when none) — so the consent prompt
+ * shows before January.
+ */
+export async function myUpcomingW2Year(
+  db: Db,
+  userId: string,
+  today: string,
+): Promise<number | null> {
+  const upcoming = (await myIssuedYears(db, userId)).filter((y) => !isW2Available(y, today));
+  return upcoming.length > 0 ? Math.max(...upcoming) : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1575,13 +1608,24 @@ export async function notifiedYears(db: Pick<Db, "select">): Promise<number[]> {
   return Array.isArray(value) ? value.filter((n): n is number => Number.isInteger(n)) : [];
 }
 
+interface NoticeRecipient {
+  userId: string;
+  employeeId: number;
+  status: string;
+}
+
 /** W-2 employees (with a user account) who have issued runs in the year. */
 async function w2RecipientsForYear(
-  db: Db,
+  db: Pick<Db, "selectDistinct">,
   year: number,
-): Promise<{ userId: string; employeeId: number }[]> {
+  employeeId?: number,
+): Promise<NoticeRecipient[]> {
   const rows = await db
-    .selectDistinct({ userId: employees.userId, employeeId: employees.id })
+    .selectDistinct({
+      userId: employees.userId,
+      employeeId: employees.id,
+      status: employees.status,
+    })
     .from(payrollRuns)
     .innerJoin(employees, eq(payrollRuns.employeeId, employees.id))
     .where(
@@ -1591,27 +1635,13 @@ async function w2RecipientsForYear(
         sql`${payrollRuns.payDate} >= ${`${year}-01-01`}`,
         sql`${payrollRuns.payDate} <= ${`${year}-12-31`}`,
         sql`${employees.userId} IS NOT NULL`,
+        ...(employeeId === undefined ? [] : [eq(employees.id, employeeId)]),
       ),
     )
     .orderBy(employees.id);
   return rows.flatMap((r) =>
-    r.userId === null ? [] : [{ userId: r.userId, employeeId: r.employeeId }],
+    r.userId === null ? [] : [{ userId: r.userId, employeeId: r.employeeId, status: r.status }],
   );
-}
-
-/** True when the employee has an electronic W-2 delivery consent that is not withdrawn. */
-export async function hasActiveW2Consent(
-  db: Pick<Db, "select">,
-  employeeId: number,
-): Promise<boolean> {
-  const rows = await db
-    .select({ id: w2DeliveryConsents.id })
-    .from(w2DeliveryConsents)
-    .where(
-      and(eq(w2DeliveryConsents.employeeId, employeeId), isNull(w2DeliveryConsents.withdrawnAt)),
-    )
-    .limit(1);
-  return rows.length > 0;
 }
 
 /** The outbox marker of a year notice (one per recipient per year). */
@@ -1639,25 +1669,43 @@ async function yearNoticeQueued(
   return rows.length > 0;
 }
 
+/** What every year notice of one run renders with. */
+interface NoticeContext {
+  ctx: TemplateContext;
+  contact: W2Contact | null;
+  contactReady: boolean;
+}
+
+async function noticeContext(db: Db, config: AppConfig): Promise<NoticeContext> {
+  const { contact, ready } = await readW2Contact(db);
+  return { ctx: await templateContext(db, config), contact, contactReady: ready };
+}
+
 /**
  * One recipient's year notice, in its own transaction under the employee
- * lock. PAY-206 (R2, 26 CFR 31.6051-1(j)(5)): a recipient with active
- * consent at send time is furnished the current figures (portal_notice);
- * without consent nothing is furnished (they cannot download). Review round
- * D6: a consented recipient whose latest portal_notice already carries the
- * current figures (a rerun after a partial failure) is skipped — no row, no
- * mail; round 3 R2: so is a recipient without consent whose year notice is
- * already in the outbox. Returns true when a mail was queued.
+ * lock. PAY-206 (R2) + PAY-208 (26 CFR 31.6051-1(j)(5)): a recipient whose
+ * electronic channel covers the year (electronicW2Channel: a consent on
+ * terms that cover it, a login, status active) is furnished the current
+ * figures (portal_notice) and gets the legal notice (IMPORTANT subject,
+ * access and print). Anyone else gets the paper courtesy notice and nothing
+ * is furnished (they cannot download). Review round D6: a consented
+ * recipient whose latest portal_notice already carries the current figures
+ * (a rerun after a partial failure) is skipped — no row, no mail; round 3
+ * R2: so is a paper recipient whose year notice is already in the outbox.
+ * Returns true when a mail was queued.
  */
 async function sendOneW2AvailableNotice(
   db: Db,
-  recipient: { userId: string; employeeId: number },
+  recipient: NoticeRecipient,
   year: number,
-  rendered: { subject: string; html: string },
+  notice: NoticeContext,
 ): Promise<boolean> {
   return db.transaction(async (tx) => {
     await lockEmployee(tx, recipient.employeeId);
-    if (await hasActiveW2Consent(tx, recipient.employeeId)) {
+    const consented = (await electronicW2Channel(tx, [recipient.employeeId], year)).has(
+      recipient.employeeId,
+    );
+    if (consented) {
       const figures = readableBoxes(await employeeW2Figures(tx, recipient.employeeId, year));
       const { inserted } = await furnishCurrent(tx, {
         employeeId: recipient.employeeId,
@@ -1672,6 +1720,12 @@ async function sendOneW2AvailableNotice(
       // the record that this recipient already got the year's notice.
       return false;
     }
+    const rendered = tplW2Available(notice.ctx, {
+      taxYear: year,
+      consented,
+      contact: notice.contact,
+      canSwitchOnline: recipient.status === "active" && notice.contactReady,
+    });
     await tx.insert(emailOutbox).values({
       userId: recipient.userId,
       eventType: EVENT_TYPE.w2Available,
@@ -1691,16 +1745,63 @@ async function sendOneW2AvailableNotice(
 async function sendYearNotices(
   db: Db,
   year: number,
-  rendered: { subject: string; html: string },
+  notice: NoticeContext,
 ): Promise<{ sent: number; failed: number }> {
   let sent = 0;
   let failed = 0;
   for (const recipient of await w2RecipientsForYear(db, year)) {
     try {
-      if (await sendOneW2AvailableNotice(db, recipient, year, rendered)) sent += 1;
+      if (await sendOneW2AvailableNotice(db, recipient, year, notice)) sent += 1;
     } catch (err) {
       failed += 1;
       console.error(`[filings] W-2 notices: one ${year} recipient failed (${errorClass(err)})`);
+    }
+  }
+  return { sent, failed };
+}
+
+/**
+ * PAY-208 (2.2a): an employee who agrees (or agrees again) after the year
+ * notice went out is furnished then: for each year from the gate year that
+ * is available (company-local date), still inside its access window, with
+ * issued runs for the employee, a ready W-2, and whose notice went out
+ * (notified, or this employee's notice already queued by a run still in
+ * progress — C-L5), the consented year notice runs now
+ * (portal_notice + IMPORTANT mail; furnishCurrent dedupes, so a year
+ * already furnished online mails nothing). A failure is logged by error
+ * class only and the agreement stands (no scheduler retry yet, brief O3).
+ */
+export async function furnishAfterConsent(
+  deps: Deps,
+  employeeId: number,
+  today: string = localDate(new Date(), deps.config.appTz),
+): Promise<{ sent: number; failed: number }> {
+  const { db, config } = deps;
+  let sent = 0;
+  let failed = 0;
+  const notified = await notifiedYears(db);
+  const years = (await myEmployeeIssuedYears(db, employeeId)).filter(
+    (y) =>
+      y >= W2_CONSENT_GATE_FROM_TAX_YEAR &&
+      isW2Available(y, today) &&
+      today <= electronicW2AccessThrough(y),
+  );
+  if (years.length === 0) return { sent, failed };
+  const notice = await noticeContext(db, config);
+  for (const year of years) {
+    try {
+      const recipient = (await w2RecipientsForYear(db, year, employeeId))[0];
+      if (!recipient || (await myW2FormCount(db, employeeId, year)) === null) continue;
+      // C-L5: the year's notice went out — recorded as notified, or (a run
+      // still in progress) this employee's notice is already queued. A year
+      // not yet noticed at all is left to the run (T15b).
+      if (!notified.includes(year) && !(await yearNoticeQueued(db, recipient.userId, year))) {
+        continue;
+      }
+      if (await sendOneW2AvailableNotice(db, recipient, year, notice)) sent += 1;
+    } catch (err) {
+      failed += 1;
+      console.error(`[filings] W-2 late consent: one ${year} notice failed (${errorClass(err)})`);
     }
   }
   return { sent, failed };
@@ -1782,14 +1883,17 @@ export async function myW2FormCount(
  * notified years persist in app_settings. Content rules hold — the email
  * states the tax year and "log in to download", never amounts or SSN.
  * PAY-206: each consented recipient's notice records a portal_notice
- * furnishing in the same transaction (sendOneW2AvailableNotice).
+ * furnishing in the same transaction (sendOneW2AvailableNotice). PAY-208:
+ * the consented notice carries the (j)(5)(i) IMPORTANT subject; everyone
+ * else gets the paper courtesy notice. Always on (not a workflow toggle).
  */
 export async function sendW2AvailableNotices(
   deps: Deps,
   opts: { today?: string } = {},
 ): Promise<{ sent: number }> {
   const { db, config } = deps;
-  const today = opts.today ?? todayIso();
+  // PAY-208: the company-local date (Jan 1 in the company's time zone).
+  const today = opts.today ?? localDate(new Date(), config.appTz);
   const notified = await notifiedYears(db);
 
   const years = await db
@@ -1797,7 +1901,7 @@ export async function sendW2AvailableNotices(
     .from(payrollRuns)
     .where(eq(payrollRuns.status, "issued"));
 
-  const ctx = await templateContext(db, config);
+  const notice = await noticeContext(db, config);
 
   let sent = 0;
   for (const { year } of years) {
@@ -1805,8 +1909,7 @@ export async function sendW2AvailableNotices(
     // PAY-162: hold the year's notice while any of its W-2s is blocked (or
     // its figures cannot be computed); a later tick sends once resolved.
     if (!(await w2sIssuable(db, year))) continue;
-    const rendered = tplW2Available(ctx, { taxYear: year });
-    const out = await sendYearNotices(db, year, rendered);
+    const out = await sendYearNotices(db, year, notice);
     sent += out.sent;
     if (out.failed > 0) continue;
     notified.push(year);

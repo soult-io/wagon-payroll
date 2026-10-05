@@ -81,7 +81,11 @@ import {
   stateFilingChecklist,
   stateIdSourceTag,
   stateLineText,
+  reconsentBannerText,
   twoUpHelpText,
+  undeliveredNoticesText,
+  unrecordedPayText,
+  W2_CONTACT_MISSING_ADMIN_TEXT,
   W2_DOWNLOAD_STEP,
   W3_ON_HOLD_TEXT,
   W3_RECORDS_NOTE,
@@ -90,7 +94,7 @@ import {
 } from "../../lib/w2-filing";
 
 const route = useRoute();
-const { date, toIso } = useDates();
+const { date, longDate, toIso } = useDates();
 const { money } = useMoney();
 const notify = useNotify();
 const confirm = useConfirm();
@@ -108,6 +112,12 @@ const w2YearIssues = ref<W2Issue[]>([]);
 const w2Notified = ref(false);
 /** Spec 24 (PAY-116) PR-4 (I3): per-state tax check. */
 const stateChecks = ref<W2StateCheck[]>([]);
+/** PAY-208 (2.2d): employees on earlier online-W-2 terms for this year. */
+const w2ReconsentNeeded = ref(0);
+/** PAY-208 (A6): the W-2 contact is complete. */
+const w2ContactReady = ref(true);
+/** PAY-208 ((j)(5)(ii)): consented notices of this year that bounced. */
+const w2Undelivered = ref<{ employeeId: number; legalName: string; failedOn: string }[]>([]);
 /** PAY-24: uploaded confirmation/evidence documents (metadata only). */
 const attachments = ref<FilingAttachment[]>([]);
 /** PAY-25: past worksheet corrections (audit trail on the detail page). */
@@ -163,6 +173,9 @@ function applyW2List(list: Awaited<ReturnType<typeof adminFilingsApi.w2List>>): 
   w2FormAvailable.value = list.formAvailable;
   w2Notified.value = list.notified;
   stateChecks.value = list.stateChecks;
+  w2ReconsentNeeded.value = list.reconsentNeeded ?? 0;
+  w2ContactReady.value = list.contactReady ?? true;
+  w2Undelivered.value = list.undeliveredNotices ?? [];
 }
 
 /** Round 4: the row has a state line in a state whose year-level tax check holds the W-3. */
@@ -916,6 +929,43 @@ onMounted(async () => {
           SSA's copy) with the old figures, write VOID on it and don't send it.
         </Message>
 
+        <!-- PAY-210 (S18): always shown from 2026 — not tied to data. -->
+        <Message
+          v-if="unrecordedPayText(filing.year)"
+          severity="info"
+          :closable="false"
+          data-testid="w2-unrecorded-pay"
+        >
+          {{ unrecordedPayText(filing.year) }}
+        </Message>
+        <!-- PAY-208 (S12, A6): no W-2 contact — online W-2s are off. -->
+        <Message
+          v-if="!w2LoadError && !w2ContactReady && filing.year >= 2026"
+          severity="warn"
+          :closable="false"
+          data-testid="w2-contact-missing"
+        >
+          {{ W2_CONTACT_MISSING_ADMIN_TEXT }}
+        </Message>
+        <!-- PAY-208 (S8): reconsentNeeded employees agreed to earlier terms. -->
+        <Message
+          v-if="!w2LoadError && reconsentBannerText(w2ReconsentNeeded, filing.year)"
+          severity="warn"
+          :closable="false"
+          data-testid="w2-reconsent-banner"
+        >
+          {{ reconsentBannerText(w2ReconsentNeeded, filing.year) }}
+        </Message>
+        <!-- PAY-208 ((j)(5)(ii)): undeliveredNotices — the W-2 email bounced. -->
+        <Message
+          v-if="!w2LoadError && w2Undelivered.length > 0"
+          severity="warn"
+          :closable="false"
+          data-testid="w2-undelivered-notices"
+        >
+          {{ undeliveredNoticesText(w2Undelivered.map((u) => `${u.legalName} (email failed ${longDate(u.failedOn)})`), filing.year) }}
+        </Message>
+
         <!-- Spec 24 (PAY-116) PR-4 (carry-over e): warning only, never a hold. -->
         <Message
           v-if="!w2LoadError && box15MissingState"
@@ -1058,9 +1108,16 @@ onMounted(async () => {
                  latest copy reached the employee. -->
             <Column header="Delivery" style="min-width: 10rem">
               <template #body="{ data }">
+                <!-- PAY-208 (S9): consentOutdated = paper until they agree again. -->
                 <Tag
+                  v-if="data.consentOutdated"
+                  value="paper — needs to agree again"
+                  severity="warn"
+                />
+                <Tag
+                  v-else
                   :value="data.consented ? 'electronic' : 'paper'"
-                  :severity="data.consented ? 'success' : 'warn'"
+                  :severity="data.consented ? 'success' : 'secondary'"
                 />
                 <span :class="{ muted: data.furnished === 'none' }" style="display: block; margin-top: 0.25rem">
                   {{ furnishedText(data) }}
@@ -1146,7 +1203,7 @@ onMounted(async () => {
           <p class="muted small" style="margin: 0">
             PDFs render on demand — SSNs and addresses are decrypted at render time and never stored.
             Print the packet (Copies B/C/2 + instructions) for employees on paper delivery; employees
-            who consented download their own.
+            who get W-2s online download their own.
           </p>
           <!-- Spec 24 (PAY-116) PR-4 (U6): two-up pages. -->
           <p v-if="twoUpHelpText(filing.year, 'admin')" class="muted small" style="margin: 0">

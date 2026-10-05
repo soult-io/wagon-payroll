@@ -253,22 +253,52 @@ describe("C-d1 /api/my/w2 formCount (Dee W05: IL, MD, NC; consented; IDs set)", 
     return row;
   };
 
-  it("ready: formCount 2; key set exactly {year, availableOn, ready, corrected, downloadable, formCount}", async () => {
+  it("ready: formCount 2; key set exactly {year, availableOn, ready, corrected, downloadable, formCount, accessThrough (PAY-208 N1)}", async () => {
     const row = await my2026();
-    expect({ keys: Object.keys(row).sort(), ready: row.ready, formCount: row.formCount }).toEqual({
-      keys: ["availableOn", "corrected", "downloadable", "formCount", "ready", "year"],
+    expect({
+      keys: Object.keys(row).sort(),
+      ready: row.ready,
+      formCount: row.formCount,
+      accessThrough: row.accessThrough,
+    }).toEqual({
+      keys: [
+        "accessThrough",
+        "availableOn",
+        "corrected",
+        "downloadable",
+        "formCount",
+        "ready",
+        "year",
+      ],
       ready: true,
       formCount: 2,
+      // PAY-208 N1 ((j)(6)): Oct 15, 2027 is a Friday; no corrected posting.
+      accessThrough: "2027-10-15",
     });
   });
 
   it("NC ID removed (NC tax > 0 -> missing_state_id): ready false, formCount null (no count leaks from a held W-2)", async () => {
     await env.t.db.delete(companyStateIds).where(eq(companyStateIds.stateCode, "NC"));
     const row = await my2026();
-    expect({ keys: Object.keys(row).sort(), ready: row.ready, formCount: row.formCount }).toEqual({
-      keys: ["availableOn", "corrected", "downloadable", "formCount", "ready", "year"],
+    expect({
+      keys: Object.keys(row).sort(),
+      ready: row.ready,
+      formCount: row.formCount,
+      accessThrough: row.accessThrough,
+    }).toEqual({
+      keys: [
+        "accessThrough",
+        "availableOn",
+        "corrected",
+        "downloadable",
+        "formCount",
+        "ready",
+        "year",
+      ],
       ready: false,
       formCount: null,
+      // PAY-208 N1: the window is a date, not a figure; shown for a held W-2 too.
+      accessThrough: "2027-10-15",
     });
   });
 });

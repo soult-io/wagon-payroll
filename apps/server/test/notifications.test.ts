@@ -412,6 +412,14 @@ describe("PAY-8 audience scoping", () => {
     expect(events).not.toContain(EVENT_TYPE.contractorInvoicePaid);
   });
 
+  // PAY-208 (OD6, A7; 26 CFR 31.6051-1(j)(5)(i)): the W-2 year notice is the
+  // legal notice of an online W-2 — always on, never a toggle (fail-first).
+  it("PAY-208 T8: w2_available is not a toggleable workflow event on any settings surface", async () => {
+    expect((WORKFLOW_EVENTS as readonly string[]).includes(EVENT_TYPE.w2Available)).toBe(false);
+    expect(await getSettings(w2Cookie)).not.toContain(EVENT_TYPE.w2Available);
+    expect(await getSettings(adminCookie)).not.toContain(EVENT_TYPE.w2Available);
+  });
+
   it("a contractor sees contractor + shared events — never admin or w2 events", async () => {
     const events = await getSettings(contractorCookie);
     expect(events).toContain(EVENT_TYPE.contractorInvoiceReviewed);
