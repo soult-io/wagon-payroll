@@ -178,14 +178,14 @@ jobs:
 
       - name: Download vitest reports
         continue-on-error: true
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: verify-reporters
           path: _reporters/verify
 
       - name: Download e2e reports
         continue-on-error: true
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: e2e-reporters
           path: _reporters/e2e
