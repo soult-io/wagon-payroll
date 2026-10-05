@@ -422,6 +422,9 @@ interface FlaggedRow {
 export const QUARTER_NETTING_REASON =
   "covered by deposits for the same quarter (IRC 6656(e); Pub 15 (2026) §11)";
 
+/** PAY-226 R2-3: the reason for a superseded row whose month has L = 0 and D = 0. */
+export const NO_LIABILITY_REASON = "no liability for the month";
+
 const OPEN_STATUSES = ["pending", "overdue"];
 
 /** The quarter's inputs: live federal month rows by month, and the planner's months. */
@@ -499,9 +502,11 @@ function keptStatus(
   planned: "pending" | "overdue",
   lateIssue: boolean,
 ): "pending" | "overdue" {
-  // The daily tick leaves pending → overdue to its own flip step (counted
-  // there); the late-issue path flips in the issue transaction (EF-8d).
-  if (planned === "overdue" && row.status === "pending" && !lateIssue) return "pending";
+  // R2-1: the daily tick never changes the status here — its flip step
+  // marks pending rows overdue by their stored due date, and an overdue row
+  // never goes back to pending (no flip-flop when a stored due date differs
+  // from dueDateFor). Only the late-issue path decides status itself (EF-8d).
+  if (!lateIssue) return row.status === "overdue" ? "overdue" : "pending";
   return planned;
 }
 
@@ -583,6 +588,10 @@ async function syncFederalQuarter(
   const flagged = new Map<string, FlaggedRow>();
   for (const u of w.updates) {
     const flag = await updateFederal(db, u, now, opts.lateIssue, result);
+    if (flag === undefined) continue;
+    if (u.row.amount !== formatCents(u.cents)) {
+      await auditFederalRecomputed(db, opts.actorId, u, plan, monthsIn);
+    }
     if (flag) flagged.set(u.row.periodStart, flag);
   }
   for (const i of w.inserts) {
@@ -593,8 +602,14 @@ async function syncFederalQuarter(
 
   if (superseded.length > 0) {
     await auditFederalSuperseded(db, opts.actorId, { year, quarter, plan, monthsIn, superseded });
+    // The mail says the quarter's deposits cover it: netting months only.
     const mailed = w.cancelled.filter((ps) =>
-      superseded.some((r) => r.periodStart === ps && r.seq > 0),
+      superseded.some(
+        (r) =>
+          r.periodStart === ps &&
+          r.seq > 0 &&
+          supersedeReason(r, monthsIn) === QUARTER_NETTING_REASON,
+      ),
     );
     if (mailed.length > 0) await mailShortfallCancelled(db, config, mailed);
   }
@@ -627,8 +642,9 @@ async function supersedeFederal(
 }
 
 /**
- * Set the kept open row to the target and status. Returns the late issue's
- * flag when the row was flipped overdue or, already overdue, raised.
+ * Set the kept open row to the target and status. Returns undefined when
+ * nothing was written, else the late issue's flag when the row was flipped
+ * overdue or, already overdue, raised (null otherwise).
  */
 async function updateFederal(
   db: Tx,
@@ -636,16 +652,16 @@ async function updateFederal(
   now: Date,
   lateIssue: boolean,
   result: SyncResult,
-): Promise<FlaggedRow | null> {
+): Promise<FlaggedRow | null | undefined> {
   const target = formatCents(u.cents);
-  if (u.row.amount === target && u.row.status === u.status) return null;
+  if (u.row.amount === target && u.row.status === u.status) return undefined;
   // Race guard: a row recorded as deposited since the read keeps its amount.
   const updated = await db
     .update(taxDeposits)
     .set({ amount: target, status: u.status, updatedAt: now })
     .where(and(eq(taxDeposits.id, u.row.id), inArray(taxDeposits.status, OPEN_STATUSES)))
     .returning({ id: taxDeposits.id });
-  if (updated.length === 0) return null;
+  if (updated.length === 0) return undefined;
   result.recomputed += 1;
   const flipped = u.row.status === "pending" && u.status === "overdue";
   if (flipped) result.flippedOverdue += 1;
@@ -694,6 +710,40 @@ async function insertFederal(
   }
 }
 
+/** PAY-226 R2-2: an open federal row's amount changed (before/after cents, the quarter's L/D/pool). */
+async function auditFederalRecomputed(
+  db: Tx,
+  actorId: string,
+  u: FederalQuarterWrites["updates"][number],
+  plan: FederalQuarterPlan,
+  monthsIn: readonly FederalMonthInput[],
+): Promise<void> {
+  await db.insert(auditEvents).values({
+    actorId,
+    action: "tax_deposit.recomputed",
+    entity: "tax_deposit",
+    entityId: String(u.row.id),
+    before: { cents: parseCents(u.row.amount), status: u.row.status },
+    after: {
+      cents: u.cents,
+      status: u.status,
+      poolCents: plan.poolCents,
+      months: monthsIn.map((x) => ({ ...x })),
+    },
+  });
+}
+
+/**
+ * PAY-226 R2-3: why a row was superseded — its month has no liability and no
+ * deposit, or the quarter's deposits cover it.
+ */
+function supersedeReason(row: TaxDepositRow, monthsIn: readonly FederalMonthInput[]): string {
+  const m = monthsIn.find((x) => x.periodStart === row.periodStart);
+  return m && m.liabilityCents === 0 && m.depositedCents === 0
+    ? NO_LIABILITY_REASON
+    : QUARTER_NETTING_REASON;
+}
+
 /** PAY-226: one audit row per quarter sync that superseded federal rows. */
 async function auditFederalSuperseded(
   db: Tx,
@@ -706,6 +756,7 @@ async function auditFederalSuperseded(
     superseded: readonly TaxDepositRow[];
   },
 ): Promise<void> {
+  const reasons = q.superseded.map((r) => ({ id: r.id, reason: supersedeReason(r, q.monthsIn) }));
   await db.insert(auditEvents).values({
     actorId,
     action: "tax_deposit.shortfall_superseded",
@@ -722,7 +773,10 @@ async function auditFederalSuperseded(
     },
     after: {
       superseded: q.superseded.map((r) => r.id),
-      reason: QUARTER_NETTING_REASON,
+      reason: reasons.some((r) => r.reason === QUARTER_NETTING_REASON)
+        ? QUARTER_NETTING_REASON
+        : NO_LIABILITY_REASON,
+      reasons,
       poolCents: q.plan.poolCents,
       quarterExcessCents: q.plan.quarterExcessCents,
       months: q.monthsIn.map((x) => ({
@@ -1038,6 +1092,30 @@ async function applyPlan(
   }
 }
 
+/** First days ("YYYY-MM-DD") of quarters with an issued run or an open federal row, ascending. */
+async function federalQuarters(db: Tx): Promise<string[]> {
+  const runQuarters = await db
+    .selectDistinct({
+      periodStart: sql<string>`to_char(date_trunc('quarter', ${payrollRuns.payDate})::date, 'YYYY-MM-DD')`,
+    })
+    .from(payrollRuns)
+    .where(eq(payrollRuns.status, "issued"));
+  const rowQuarters = await db
+    .selectDistinct({
+      periodStart: sql<string>`to_char(date_trunc('quarter', ${taxDeposits.periodStart})::date, 'YYYY-MM-DD')`,
+    })
+    .from(taxDeposits)
+    .where(
+      and(
+        eq(taxDeposits.jurisdiction, "federal"),
+        eq(taxDeposits.periodKind, "month"),
+        inArray(taxDeposits.status, OPEN_STATUSES),
+      ),
+    );
+  const all = new Set([...runQuarters, ...rowQuarters].map((r) => r.periodStart));
+  return [...all].sort();
+}
+
 /**
  * Serialises the deposit sync (daily tick, seed-qa, e2e serve, and the
  * PAY-193 L4 late issue) — spec 23 §6. Last in the global lock order:
@@ -1076,15 +1154,10 @@ export async function syncDeposits(deps: Deps, opts: { today?: string } = {}): P
     // The federal loop shares the lock: two concurrent syncs would otherwise
     // both insert the same new federal month (select-then-insert).
     await tx.execute(SYNC_LOCK);
-    // PAY-226: federal rows are planned per 941 quarter (quarters with issued runs).
-    const quarters = await tx
-      .selectDistinct({
-        periodStart: sql<string>`to_char(date_trunc('quarter', ${payrollRuns.payDate})::date, 'YYYY-MM-DD')`,
-      })
-      .from(payrollRuns)
-      .where(eq(payrollRuns.status, "issued"))
-      .orderBy(sql`1`);
-    for (const { periodStart } of quarters) {
+    // PAY-226: federal rows are planned per 941 quarter — every quarter with
+    // an issued run or an open federal row (R2-4: its runs may all be void).
+    const quarters = await federalQuarters(tx);
+    for (const periodStart of quarters) {
       const year = Number(periodStart.slice(0, 4));
       const quarter = quarterOfMonth(Number(periodStart.slice(5, 7)));
       await syncFederalQuarter(tx, deps.config, year, quarter, today, result);
