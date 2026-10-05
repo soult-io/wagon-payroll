@@ -15,7 +15,7 @@
 import { loadConfig } from "../config.js";
 import { createDb } from "../db.js";
 import { createAuth } from "../auth/auth.js";
-import { QA_ADMIN, QA_EMPLOYEE_LOGIN, seedQaDataset } from "../qa/seed-qa.js";
+import { formatQaSeedSummary, seedQaDataset } from "../qa/seed-qa.js";
 
 const config = loadConfig();
 const { db, dialect, close } = createDb(config);
@@ -23,30 +23,7 @@ const auth = createAuth({ config, db, dialect });
 
 try {
   const summary = await seedQaDataset({ db, auth, config });
-  console.log("QA seed complete (idempotent):");
-  console.log(
-    `  users: ${summary.users.admin.email} (${summary.users.admin.created ? "created" : "already present"}), ` +
-      `${summary.users.employee.email} (${summary.users.employee.created ? "created" : "already present"})`,
-  );
-  const { payroll } = summary;
-  const year = new Date().toISOString().slice(0, 4);
-  const draft =
-    payroll.draftPeriod === null
-      ? `no current-period draft: ${year} tax tables not installed`
-      : `current-period draft ${payroll.draftPeriod} ${payroll.draftCreated ? "created" : "already present"}`;
-  console.log(
-    `  payroll: ${payroll.issued} run(s) issued, ${payroll.existing} already present, ${draft}`,
-  );
-  console.log(
-    `  tax years: latest covered ${payroll.latestCoveredYear}, ` +
-      `history through ${payroll.historyThrough ?? "none"}`,
-  );
-  console.log(
-    `  change request thread: ${summary.changeRequestCreated ? "created" : "already present"}`,
-  );
-  console.log(
-    `  credentials: see docs/qa.md (admin ${QA_ADMIN.email}, employee ${QA_EMPLOYEE_LOGIN.email})`,
-  );
+  for (const line of formatQaSeedSummary(summary)) console.log(line);
 } finally {
   await close();
 }

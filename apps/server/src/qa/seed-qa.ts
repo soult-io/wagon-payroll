@@ -604,6 +604,8 @@ async function ensureIssuedRun(
 }
 
 export interface QaPayrollSummary {
+  /** Today's year as the seed used it (from `today`, never the process clock). */
+  year: number;
   issued: number;
   existing: number;
   draftCreated: boolean;
@@ -613,6 +615,8 @@ export interface QaPayrollSummary {
   historyThrough: string | null;
   /** "YYYY-MM" of the current-period draft; null when today's year is not covered. */
   draftPeriod: string | null;
+  /** taxTableCoverage(year).missingStates when today's year is not covered, else []. */
+  missingStates: string[];
 }
 
 async function seedPayrollHistory(
@@ -651,6 +655,7 @@ async function seedPayrollHistory(
   const month = Number(today.slice(5, 7));
   let draftCreated = false;
   let draftPeriod: string | null = null;
+  const missingStates = L === year ? [] : (await taxTableCoverage(deps.db, year)).missingStates;
   if (L === year) {
     const period = monthlyPeriod(year, month, 15);
     draftPeriod = `${year}-${pad2(month)}`;
@@ -661,12 +666,14 @@ async function seedPayrollHistory(
     }
   }
   return {
+    year,
     issued,
     existing,
     draftCreated,
     latestCoveredYear: L,
     historyThrough,
     draftPeriod,
+    missingStates,
   };
 }
 
@@ -1124,6 +1131,34 @@ export interface QaSeedSummary {
   contractors: ContractorIds;
   payroll: QaPayrollSummary;
   changeRequestCreated: boolean;
+}
+
+/**
+ * The QA seed CLI's summary lines. Every date in them comes from the summary
+ * (the seed's own `today`), never from the process clock. No PII: emails of
+ * the fixed fake QA logins, counts, years, months and USPS codes only.
+ */
+export function formatQaSeedSummary(summary: QaSeedSummary): string[] {
+  const { users, payroll } = summary;
+  const created = (c: boolean) => (c ? "created" : "already present");
+  const missing =
+    payroll.missingStates.length > 0
+      ? ` (missing state tables: ${payroll.missingStates.join(", ")})`
+      : "";
+  const draft =
+    payroll.draftPeriod === null
+      ? `no current-period draft: ${payroll.year} tax tables not installed${missing}`
+      : `current-period draft ${payroll.draftPeriod} ${created(payroll.draftCreated)}`;
+  return [
+    "QA seed complete (idempotent):",
+    `  users: ${users.admin.email} (${created(users.admin.created)}), ` +
+      `${users.employee.email} (${created(users.employee.created)})`,
+    `  payroll: ${payroll.issued} run(s) issued, ${payroll.existing} already present, ${draft}`,
+    `  tax years: latest covered ${payroll.latestCoveredYear}, ` +
+      `history through ${payroll.historyThrough ?? "none"}`,
+    `  change request thread: ${created(summary.changeRequestCreated)}`,
+    `  credentials: see docs/qa.md (admin ${QA_ADMIN.email}, employee ${QA_EMPLOYEE_LOGIN.email})`,
+  ];
 }
 
 export interface QaSeedOptions {
