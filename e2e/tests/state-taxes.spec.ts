@@ -39,6 +39,13 @@ function adminUser() {
 const EMPLOYEE_NAME = LIVE_QA ? QA_EMPLOYEE_NAME : EPHEMERAL_EMPLOYEE_NAME;
 
 /**
+ * PAY-225: the fixed browser "now" of the election scenario. Mid-October 2026
+ * → the wizard's first-of-next-month default is 2026-11-01, a month the
+ * bundled IL-2026 and federal-2026 tables cover.
+ */
+const ELECTION_SCENARIO_NOW = "2026-10-15T12:00:00Z";
+
+/**
  * Open one employee's State tax tab.
  *
  * Named rather than "the first row": the boot now seeds the full QA dataset
@@ -93,6 +100,11 @@ test("ephemeral only: assign a work state and see it in the history", async ({ b
   const user = loadEphemeralState()?.admin;
   test.skip(!user, "ephemeral state missing — run the journeys first");
   const page = await newAuthedPage(browser, user!);
+  // PAY-225: the form's "Effective from" defaults to the BROWSER's today. The
+  // election scenario below issues a Nov 2026 run that needs this IL work
+  // state, so start the browser at the same scenario date (a running clock,
+  // see the election test): IL from 2026-10-15 on any real date.
+  await page.context().clock.install({ time: ELECTION_SCENARIO_NOW });
   try {
     await step(page, "Open the employee's State tax tab", async () => {
       await openStateTaxTab(page);
@@ -127,15 +139,27 @@ test("ephemeral only: employee state election flows request → approval → pay
   const state = loadEphemeralState();
   test.skip(!state, "ephemeral state missing — run the journeys first");
 
-  // The wizard defaults effective_from to the first of next month — compute
-  // that month so the payroll run generated below is covered by the election.
-  const now = new Date();
-  const effective = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-  const effYear = effective.getFullYear();
-  const effMonth = effective.getMonth() + 1;
+  // The wizard defaults effective_from to the first of next month in the
+  // BROWSER's clock. PAY-225: start every browser context of this scenario at
+  // ELECTION_SCENARIO_NOW, so the election starts 2026-11-01 and the run
+  // below is Nov 2026 on any real date (the IL-2026 literal stays valid and
+  // no run lands in a year without tax tables). clock.install, not
+  // setFixedTime: the clock must keep running. Vue's event invoker drops a
+  // bubbled handler when Date.now() has not moved since the handler was
+  // attached (runtime-dom `e._vts <= invoker.attached`), so a frozen clock
+  // silently swallows the admin's row click. The server keeps its own
+  // clock; the ephemeral app clock (2025-12-31) and the next unrun period
+  // (2025-12-01) both accept a 2026-11-01 effective date.
+  const scenarioNow = new Date(ELECTION_SCENARIO_NOW);
+  const effective = new Date(
+    Date.UTC(scenarioNow.getUTCFullYear(), scenarioNow.getUTCMonth() + 1, 1),
+  );
+  const effYear = effective.getUTCFullYear();
+  const effMonth = effective.getUTCMonth() + 1;
 
   // --- 1. Employee files the election through the change-request wizard ---
   const empCtx = await newContext(browser, { storageState: EMPLOYEE_SESSION_PATH });
+  await empCtx.clock.install({ time: ELECTION_SCENARIO_NOW });
   try {
     const emp = await empCtx.newPage();
     await step(emp, "Employee fills in an IL withholding election", async () => {
@@ -161,6 +185,7 @@ test("ephemeral only: employee state election flows request → approval → pay
 
   // --- 2. Admin approves the request ---
   const adminPage = await newAuthedPage(browser, state!.admin);
+  await adminPage.context().clock.install({ time: ELECTION_SCENARIO_NOW });
   let runPublicId = "";
   try {
     await step(adminPage, "Admin approves the election request", async () => {
@@ -195,6 +220,20 @@ test("ephemeral only: employee state election flows request → approval → pay
           }),
         });
         await expect(electionsCard.getByRole("cell", { name: "IL", exact: true })).toBeVisible();
+
+        // The Nov run below needs an IL work state in force on the election's
+        // effective date; say so by name if it is not.
+        const electionFrom = `${effYear}-${String(effMonth).padStart(2, "0")}-01`;
+        const wsRes = await adminPage.request.get(`/api/admin/employees/${id}/work-state`);
+        expect(wsRes.status()).toBe(200);
+        const { workStates } = (await wsRes.json()) as {
+          workStates: { stateCode: string; effectiveFrom: string; effectiveTo: string | null }[];
+        };
+        const ilFroms = workStates.filter((w) => w.stateCode === "IL").map((w) => w.effectiveFrom);
+        expect(
+          ilFroms.some((from) => from <= electionFrom),
+          `an IL work state starting on or before the election's ${electionFrom} (IL rows from: ${ilFroms.join(", ")})`,
+        ).toBe(true);
         return id;
       },
     );
@@ -223,6 +262,7 @@ test("ephemeral only: employee state election flows request → approval → pay
   // --- 5. The issued payslip shows the computed IL state withholding ---
   // IL 2026: 4.95% × (48000 − 2925 × 1 allowance) / 12 + $10 extra = $195.93.
   const empCtx2 = await newContext(browser, { storageState: EMPLOYEE_SESSION_PATH });
+  await empCtx2.clock.install({ time: ELECTION_SCENARIO_NOW });
   try {
     const emp = await empCtx2.newPage();
     await step(emp, "Issued payslip shows IL state withholding −$195.93", async () => {

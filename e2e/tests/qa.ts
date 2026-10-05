@@ -183,6 +183,31 @@ export interface EphemeralState {
   admin: { email: string; password: string; totpSecret: string };
   employee: { email: string; inviteUrl: string };
   run: { publicId: string };
+  /**
+   * PAY-81: the QA seed's own summary (years and months only), written by
+   * serve.ts so specs never derive a year from a clock. `draftPeriod` is null
+   * when today's year has no tax tables (Spec 14 §2 as amended, D-C = C1).
+   */
+  qa: {
+    latestCoveredYear: number;
+    historyThrough: string | null;
+    draftPeriod: string | null;
+    w2Year: number;
+  };
+}
+
+/** GET /api/admin/tax-tables/coverage (year-rollover guard brief §4.5). */
+export interface TaxTableCoverageResponse {
+  today: string;
+  latestCoveredYear: number | null;
+  years: { year: number; federal: boolean; missingStates: string[] }[];
+}
+
+/** Read the server's tax-table coverage (admin session on `page`). */
+export async function fetchTaxTableCoverage(page: Page): Promise<TaxTableCoverageResponse> {
+  const res = await page.request.get("/api/admin/tax-tables/coverage");
+  expect(res.status(), "GET /api/admin/tax-tables/coverage").toBe(200);
+  return (await res.json()) as TaxTableCoverageResponse;
 }
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -194,6 +219,66 @@ export function loadEphemeralState(): EphemeralState | null {
   } catch {
     return null;
   }
+}
+
+/** "YYYY-MM" of the month before `ym` ("YYYY-MM"). */
+export function previousMonth(ym: string): string {
+  const [y, m] = ym.split("-").map(Number) as [number, number];
+  return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`;
+}
+
+/**
+ * PAY-225 (brief §4.7, B8): the dates the read-only history specs assert,
+ * from the SERVER, never the runner's clock.
+ * - lastHistoryMonths: the month before server today when today's year has
+ *   tax tables; otherwise December of the latest covered year. One entry,
+ *   except on live QA in the midnight window where APP_TZ (the endpoint's
+ *   `today`) and UTC (the seed's date) fall in different months: on the 1st
+ *   the seed may still hold one month less, on the last day of a month one
+ *   month more. The spec accepts any listed month.
+ * - closedYear: min(server year − 1, latest covered year).
+ * Ephemeral boot: the QA seed's own summary in state.json (when uncovered the
+ * server year is above L, so min(Y − 1, L) = L). Live QA: the coverage
+ * endpoint (admin session on `page`).
+ */
+export async function serverHistoryDates(
+  page: Page,
+): Promise<{ lastHistoryMonths: string[]; closedYear: number }> {
+  if (!LIVE_QA) {
+    const state = loadEphemeralState();
+    if (!state) throw new Error("ephemeral state missing — e2e:serve writes it");
+    const { qa } = state;
+    if (qa.draftPeriod !== null) {
+      // Covered: the draft is the current period; history ends the month before.
+      const lastHistoryMonth = previousMonth(qa.draftPeriod);
+      expect(qa.historyThrough, "seed history ends the month before the draft").toBe(
+        lastHistoryMonth,
+      );
+      return {
+        lastHistoryMonths: [lastHistoryMonth],
+        closedYear: Number(qa.draftPeriod.slice(0, 4)) - 1,
+      };
+    }
+    const lastHistoryMonth = `${qa.latestCoveredYear}-12`;
+    expect(qa.historyThrough, "uncovered: history ends in December of L").toBe(lastHistoryMonth);
+    return { lastHistoryMonths: [lastHistoryMonth], closedYear: qa.latestCoveredYear };
+  }
+  const cov = await fetchTaxTableCoverage(page);
+  const serverYear = Number(cov.today.slice(0, 4));
+  const latest = cov.latestCoveredYear;
+  if (latest === null) throw new Error("coverage: no covered tax year");
+  const current = cov.years.find((y) => y.year === serverYear);
+  const covered = current?.federal === true && current.missingStates.length === 0;
+  if (!covered)
+    return { lastHistoryMonths: [`${latest}-12`], closedYear: Math.min(serverYear - 1, latest) };
+  const thisMonth = cov.today.slice(0, 7);
+  const months = [previousMonth(thisMonth)];
+  const day = Number(cov.today.slice(8, 10));
+  const [y, m] = thisMonth.split("-").map(Number) as [number, number];
+  const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  if (day === 1) months.push(previousMonth(previousMonth(thisMonth)));
+  if (day === lastDay) months.push(thisMonth);
+  return { lastHistoryMonths: months, closedYear: Math.min(serverYear - 1, latest) };
 }
 
 export const EMPLOYEE_SESSION_PATH = resolve(STATE_DIR, "employee-storage.json");

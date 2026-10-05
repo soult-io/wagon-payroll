@@ -1,10 +1,13 @@
 /**
- * Spec 24 (PAY-116) PR-4 Q2 e2e — the W-2/W-3 filing detail for the CURRENT
- * year: state lines per W-2, the state tax check, the W-3 records-copy note,
+ * Spec 24 (PAY-116) PR-4 Q2 e2e — the W-2/W-3 filing detail for the latest
+ * year with payroll history: state lines per W-2, the state tax check, the W-3 records-copy note,
  * and the "How to file" checklist. Ephemeral boot only (spec 14 §3): it
- * relies on apps/server/src/e2e/serve.ts inserting a current-year w2_w3
- * tax_filings row (status not_started, quarter 0) whose worksheet is filled
- * by refreshAnnualWorksheet. The QA seed (with the Q1 synthetic EIN) gives
+ * relies on apps/server/src/e2e/serve.ts inserting a w2_w3 tax_filings row
+ * for `w2Year` (status not_started, quarter 0) whose worksheet is filled by
+ * refreshAnnualWorksheet. PAY-225: the year comes from state.json qa.w2Year
+ * (the seed's latest covered tax year), never from the clock — from January 1
+ * until next year's tables are installed it is the closed year, which still
+ * has Ada's IL history. The QA seed (with the Q1 synthetic EIN) gives
  * Ada Testworth an IL line through the EIN default.
  *
  * Exact strings pinned: the rewritten download step (D-PL4) and C1 Illinois
@@ -25,17 +28,18 @@ const C1_IL =
   "Illinois: send your W-2s to the Illinois Department of Revenue electronically by January 31, or the next business day if January 31 falls on a weekend or holiday.";
 const AMOUNT = /\$?([\d,]+\.\d{2})/;
 
-test("ephemeral only: current-year W-2/W-3 detail shows IL state lines, the IL tax check, the W-3 records note and the IL checklist line (Spec 24 PR-4)", async ({
+test("ephemeral only: the latest year with history: W-2/W-3 detail shows IL state lines, the IL tax check, the W-3 records note and the IL checklist line (Spec 24 PR-4)", async ({
   browser,
 }) => {
-  test.skip(LIVE_QA, "relies on the ephemeral boot's current-year W-2/W-3 row (spec 14 §3)");
-  const user = loadEphemeralState()?.admin;
+  test.skip(LIVE_QA, "relies on the ephemeral boot's w2Year W-2/W-3 row (spec 14 §3)");
+  const state = loadEphemeralState();
+  const user = state?.admin;
   test.skip(!user, "ephemeral state missing — run the journeys first");
-  if (!user) return;
-  const year = String(new Date().getFullYear());
+  if (!user || !state) return;
+  const year = String(state.qa.w2Year);
   const page = await newAuthedPage(browser, user);
   try {
-    await step(page, "Open this year's W-2/W-3 filing", async () => {
+    await step(page, `Open the ${year} W-2/W-3 filing`, async () => {
       await page.goto(`/admin/filings?year=${year}`);
       const row = page
         .locator("tbody tr", { hasText: "W-2/W-3" })
