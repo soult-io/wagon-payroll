@@ -6,6 +6,25 @@ All notable changes to this project will be documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Former employees keep their online W-2s (PAY-217)** — when you end an
+  employee's job, they can still sign in to download the W-2s you gave them
+  online, until October 15 of the next year (the next business day if that's
+  a weekend), or 90 days after a corrected W-2 is posted if that's later. That
+  is all they can see: no payslips, profile or requests. Once the last of
+  those dates passes, their sign-in turns off by itself. If a W-2 they got
+  online is corrected after they leave, the corrected copy is posted for them
+  online with the usual email, and you also give them a paper copy. The W-2/W-3
+  page lists the former employees who can still get that year's W-2 online,
+  whether they can sign in, and lets you mark a paper copy handed.
+
+### Changed
+
+- **Re-enabling an employee (PAY-217)** — turning a former employee back to
+  active no longer clears a lockout or an unfinished sign-in setup; it only
+  undoes the sign-in block that ending the job added.
+
 ## [1.28.0] - 2026-10-04
 
 ### Added
