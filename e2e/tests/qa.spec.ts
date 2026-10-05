@@ -22,6 +22,7 @@ function must<T>(value: T | null | undefined, what: string): T {
 
 import {
   EMPLOYEE_SESSION_PATH,
+  fetchTaxTableCoverage,
   LIVE_QA,
   loadEphemeralState,
   loginAs,
@@ -102,17 +103,106 @@ test("scheduler draft: seeded current-period run shows in admin approvals (read-
   // ephemeral boot has no pg-boss scheduler context", but this assertion never
   // needed the scheduler — only the seeded row it leaves behind, which the boot
   // now has. Still strictly read-only.
+  //
+  // PAY-225 (Spec 14 §2 as amended, owner D-C = C1): the seed leaves a
+  // current-period draft ONLY while today's year has tax tables. Whether it
+  // does comes from the server, never the clock: the ephemeral boot writes the
+  // seed's own summary to state.json (qa.draftPeriod, null when uncovered);
+  // live QA asks GET /api/admin/tax-tables/coverage.
   const page = await newAuthedPage(browser, QA_ADMIN);
   try {
-    await step(page, "Current-period draft awaits approval in the runs list", async () => {
+    const expectation = await step(page, "Read whether today's year has tax tables", async () => {
+      if (!LIVE_QA) {
+        const qa = must(loadEphemeralState(), "ephemeral state (e2e:serve writes it)").qa;
+        return {
+          covered: qa.draftPeriod !== null,
+          draftPeriod: qa.draftPeriod,
+          latestCoveredYear: qa.latestCoveredYear,
+        };
+      }
+      const cov = await fetchTaxTableCoverage(page);
+      const serverYear = Number(cov.today.slice(0, 4));
+      const current = must(
+        cov.years.find((y) => y.year === serverYear),
+        `coverage entry for ${serverYear}`,
+      );
+      return {
+        covered: current.federal && current.missingStates.length === 0,
+        draftPeriod: null,
+        latestCoveredYear: must(cov.latestCoveredYear, "latestCoveredYear"),
+      };
+    });
+
+    // Ada's runs, from the read-only admin API (pay-date year filter is the
+    // server's; the list carries employee ids, not names).
+    const adaRuns = async () => {
+      const emps = await page.request.get("/api/admin/employees");
+      expect(emps.status()).toBe(200);
+      const { employees } = (await emps.json()) as {
+        employees: { id: number; legalName: string }[];
+      };
+      const ada = must(
+        employees.find((e) => e.legalName.startsWith(QA_DRAFT_EMPLOYEE_NAME)),
+        `${QA_DRAFT_EMPLOYEE_NAME} in the employee list`,
+      );
+      const runs = await page.request.get(`/api/admin/payroll-runs?employeeId=${ada.id}`);
+      expect(runs.status()).toBe(200);
+      return (
+        (await runs.json()) as {
+          runs: { periodStart: string; payDate: string; status: string }[];
+        }
+      ).runs;
+    };
+
+    if (expectation.covered) {
+      // The year filter is the PAY-date year (Spec 26); take it from the draft
+      // run itself, never from the browser's "current year" default (§4.6).
+      const year = await step(page, "Find the current-period draft's pay-date year", async () => {
+        const runs = await adaRuns();
+        const draft = runs.find(
+          (r) =>
+            r.status === "awaiting_approval" &&
+            (expectation.draftPeriod === null || r.periodStart.startsWith(expectation.draftPeriod)),
+        );
+        return Number(must(draft, "Ada's awaiting-approval run").payDate.slice(0, 4));
+      });
+      await step(page, "Current-period draft awaits approval in the runs list", async () => {
+        await page.goto(`/admin/payroll?year=${year}`);
+        // The seed leaves ONE current-period draft awaiting approval, Ada's.
+        // Scoped to her so this cannot pass on some other run's row.
+        // Read-only assertion — never approve/void here.
+        const row = page
+          .locator("tr", { hasText: "Awaiting approval" })
+          .filter({ hasText: QA_DRAFT_EMPLOYEE_NAME });
+        await expect(row.first()).toBeVisible();
+      });
+      return;
+    }
+
+    // Uncovered (C1): no current-period draft, and the last covered year's
+    // December run is issued, not left open (C2 rejected).
+    const nextYear = expectation.latestCoveredYear + 1;
+    await step(page, "No current-period draft while the year has no tax tables", async () => {
+      const open = (await adaRuns()).filter((r) =>
+        ["draft", "awaiting_approval", "approved"].includes(r.status),
+      );
+      expect(open, `${QA_DRAFT_EMPLOYEE_NAME} has no open run`).toEqual([]);
+      await page.goto(`/admin/payroll?year=${nextYear}&status=awaiting_approval`);
+      await expect(page.getByText("No runs")).toBeVisible();
+      await expect(page.locator("tr", { hasText: "Awaiting approval" })).toHaveCount(0);
+    });
+
+    // PAY-103 R18: the missing-tax-tables banner replaces the draft. It ships
+    // in PR-5; remove this skip there.
+    test.skip(!expectation.covered, "PAY-103 banner pending");
+    await step(page, "Missing-tax-tables banner names the year", async () => {
+      const cov = await fetchTaxTableCoverage(page);
       await page.goto("/admin/payroll");
-      // The list defaults to the current year; the seed leaves ONE current-period
-      // draft awaiting approval, Ada's. Scoped to her so this cannot pass on some
-      // other run's row. Read-only assertion — never approve/void here.
-      const row = page
-        .locator("tr", { hasText: "Awaiting approval" })
-        .filter({ hasText: QA_DRAFT_EMPLOYEE_NAME });
-      await expect(row.first()).toBeVisible();
+      const banner = page.getByTestId("missing-tax-tables-banner");
+      await expect(banner).toBeVisible();
+      for (const y of cov.years.filter((e) => !e.federal || e.missingStates.length > 0)) {
+        await expect(banner).toContainText(String(y.year));
+      }
     });
   } finally {
     await page.context().close();

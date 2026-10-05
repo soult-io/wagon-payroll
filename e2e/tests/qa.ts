@@ -183,6 +183,31 @@ export interface EphemeralState {
   admin: { email: string; password: string; totpSecret: string };
   employee: { email: string; inviteUrl: string };
   run: { publicId: string };
+  /**
+   * PAY-81: the QA seed's own summary (years and months only), written by
+   * serve.ts so specs never derive a year from a clock. `draftPeriod` is null
+   * when today's year has no tax tables (Spec 14 §2 as amended, D-C = C1).
+   */
+  qa: {
+    latestCoveredYear: number;
+    historyThrough: string | null;
+    draftPeriod: string | null;
+    w2Year: number;
+  };
+}
+
+/** GET /api/admin/tax-tables/coverage (year-rollover guard brief §4.5). */
+export interface TaxTableCoverageResponse {
+  today: string;
+  latestCoveredYear: number | null;
+  years: { year: number; federal: boolean; missingStates: string[] }[];
+}
+
+/** Read the server's tax-table coverage (admin session on `page`). */
+export async function fetchTaxTableCoverage(page: Page): Promise<TaxTableCoverageResponse> {
+  const res = await page.request.get("/api/admin/tax-tables/coverage");
+  expect(res.status(), "GET /api/admin/tax-tables/coverage").toBe(200);
+  return (await res.json()) as TaxTableCoverageResponse;
 }
 
 const HERE = dirname(fileURLToPath(import.meta.url));
