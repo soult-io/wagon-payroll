@@ -6,7 +6,8 @@
  * posted, when later), even after the job ends. The list holds only the
  * years given online whose window is still open (server-computed); no
  * payslips, profile or consent. A corrected W-2 is posted here too and
- * labelled CORRECTED; the company also gives it on paper.
+ * labelled CORRECTED (the IMPORTANT mail says a paper copy is coming; the
+ * footer offers paper on request).
  */
 import { computed, onMounted, ref } from "vue";
 import Message from "primevue/message";
@@ -81,7 +82,7 @@ onMounted(async () => {
           </span>
           <span v-if="w2.corrected && w2.downloadable" class="muted small block">
             This replaces any earlier {{ w2.year }} W-2 you may have. Use this one for your tax
-            return. {{ company }} will also give you a paper copy.
+            return.
           </span>
           <template v-if="w2.downloadable">
             <span v-for="line in w2HelpLines(w2)" :key="line" class="muted small block">
