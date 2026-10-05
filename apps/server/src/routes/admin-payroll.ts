@@ -32,6 +32,7 @@ import {
 } from "../payroll/runs.js";
 import { localDate } from "../payroll/run-dates.js";
 import { getYearEndStatus } from "../payroll/year-end.js";
+import { latestCoveredYear, taxTableCoverage } from "../payroll/tax-coverage.js";
 
 interface AdminPayrollDeps {
   db: Db;
@@ -448,6 +449,18 @@ export function registerAdminPayrollRoutes(app: FastifyInstance, deps: AdminPayr
   });
 
   // -------------------------------------------------------------- tax tables
+
+  // Read-only coverage of the installed tax tables (PAY-225). Lists the
+  // current year, plus next year from Dec 1 (company-local date). Each entry
+  // comes from taxTableCoverage, the one coverage definition. No PII.
+  app.get("/api/admin/tax-tables/coverage", { preHandler: admin }, async () => {
+    const today = localDate(now(), config.appTz);
+    const year = Number(today.slice(0, 4));
+    const years = today.slice(5) >= "12-01" ? [year, year + 1] : [year];
+    const coverage = [];
+    for (const y of years) coverage.push(await taxTableCoverage(db, y));
+    return { today, latestCoveredYear: await latestCoveredYear(db, year), years: coverage };
+  });
 
   app.get("/api/admin/tax-config", { preHandler: admin }, async (req) => {
     const q = z
