@@ -128,29 +128,24 @@ const SIGN_IN_TEXT: Record<FormerEmployeeW2Access["signIn"], string> = {
   no_sign_in: "Can't sign in",
 };
 
-/** PAY-217: record that a former employee got the current W-2 on paper. */
-function markFormerHanded(row: FormerEmployeeW2Access): void {
+/**
+ * PAY-217: record that a former employee got the current W-2 on paper. One
+ * click, no confirm step: the action only records a handed copy (idempotent
+ * while the figures stand) and the row shows the date right away.
+ */
+async function markFormerHanded(row: FormerEmployeeW2Access): Promise<void> {
   const year = filing.value?.year;
   if (year === undefined) return;
-  confirm.require({
-    message: `Only do this after you have handed or mailed ${row.legalName} their ${year} W-2 on paper.`,
-    header: `Mark ${row.legalName}'s W-2 as handed on paper?`,
-    icon: "pi pi-check",
-    rejectProps: { label: "Cancel", severity: "secondary", text: true },
-    acceptProps: { label: "Yes, mark it handed" },
-    accept: async () => {
-      markPaperBusy.value = row.employeeId;
-      try {
-        await adminFilingsApi.w2MarkGivenOnPaper(row.employeeId, year);
-        applyW2List(await adminFilingsApi.w2List(year));
-        notify.success(`${row.legalName}'s W-2 is marked as handed on paper.`);
-      } catch (err) {
-        notify.error(err, "Could not mark the W-2 as handed");
-      } finally {
-        markPaperBusy.value = null;
-      }
-    },
-  });
+  markPaperBusy.value = row.employeeId;
+  try {
+    await adminFilingsApi.w2MarkGivenOnPaper(row.employeeId, year);
+    applyW2List(await adminFilingsApi.w2List(year));
+    notify.success(`${row.legalName}'s W-2 is marked as handed on paper.`);
+  } catch (err) {
+    notify.error(err, "Could not mark the W-2 as handed");
+  } finally {
+    markPaperBusy.value = null;
+  }
 }
 /** PAY-24: uploaded confirmation/evidence documents (metadata only). */
 const attachments = ref<FilingAttachment[]>([]);
@@ -1042,7 +1037,7 @@ onMounted(async () => {
                   size="small"
                   text
                   :loading="markPaperBusy === row.employeeId"
-                  @click="markFormerHanded(row)"
+                  @click="void markFormerHanded(row)"
                 />
               </div>
             </div>
