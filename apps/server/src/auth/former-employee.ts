@@ -23,8 +23,15 @@
  * that ban again when a later correction re-opens a window (SME R4).
  */
 
-import { and, eq, isNotNull } from "drizzle-orm";
-import { auditEvents, authEvents, authSession, authUser, employees } from "@payroll/db";
+import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import {
+  auditEvents,
+  authEvents,
+  authSession,
+  authUser,
+  employees,
+  w2Furnishings,
+} from "@payroll/db";
 import type { AppConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { onlineW2Windows } from "../filings/w2-consent.js";
@@ -48,6 +55,59 @@ export const TERMINATION_BAN_REASONS: ReadonlySet<string> = new Set([
   EMPLOYEE_TERMINATED,
   W2_ACCESS_ENDED,
 ]);
+
+/** Bans that termination keeps and neither rehire nor the job ever lifts (C7). */
+export const KEPT_BAN_REASONS: readonly string[] = ["lockout", "pending_enrollment"];
+
+/** True when any W-2 of the employee was furnished online (portal_notice / employee_download). */
+export async function hasOnlineW2(db: ReadDb, employeeId: number): Promise<boolean> {
+  const rows = await db
+    .select({ id: w2Furnishings.id })
+    .from(w2Furnishings)
+    .where(
+      and(
+        eq(w2Furnishings.employeeId, employeeId),
+        inArray(w2Furnishings.method, ["portal_notice", "employee_download"]),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
+}
+
+/**
+ * PAY-217 round 2 (N1/M2, C7): ban a terminated employee's login whose
+ * windows are all closed — "w2_access_ended" when a W-2 went online (a
+ * later online correction lets the daily job re-open it, SME R4), else
+ * "employee_terminated". A lockout or pending_enrollment ban is kept: the
+ * conditional UPDATE leaves it as it is.
+ */
+export async function banTerminatedLogin(
+  db: Pick<Db, "select" | "update">,
+  employeeId: number,
+  userId: string,
+): Promise<void> {
+  const reason = (await hasOnlineW2(db, employeeId)) ? W2_ACCESS_ENDED : EMPLOYEE_TERMINATED;
+  await db
+    .update(authUser)
+    .set({ banned: true, banReason: reason, updatedAt: new Date() })
+    .where(
+      and(
+        eq(authUser.id, userId),
+        sql`NOT (coalesce(${authUser.banned}, false) AND coalesce(${authUser.banReason}, '') IN ('lockout', 'pending_enrollment'))`,
+      ),
+    );
+}
+
+/**
+ * PAY-217 round 2 (L1): rehire lifts a termination ban only while it is
+ * still one at the moment of the write (a lockout written meanwhile stays).
+ */
+export async function liftTerminationBan(db: Pick<Db, "update">, userId: string): Promise<void> {
+  await db
+    .update(authUser)
+    .set({ banned: false, banReason: null, updatedAt: new Date() })
+    .where(and(eq(authUser.id, userId), inArray(authUser.banReason, [...TERMINATION_BAN_REASONS])));
+}
 
 export interface W2Window {
   taxYear: number;
@@ -139,26 +199,45 @@ function changeFor(
   return null;
 }
 
-/** Apply one change in its own transaction (ban + sessions + events, or unban + events). */
+/** The user row still has the banned / banReason the job read (round 2 L2). */
+function sameBanState(user: { userId: string; banned: boolean | null; banReason: string | null }) {
+  return and(
+    eq(authUser.id, user.userId),
+    user.banned ? eq(authUser.banned, true) : sql`coalesce(${authUser.banned}, false) = false`,
+    user.banReason === null
+      ? sql`${authUser.banReason} IS NULL`
+      : eq(authUser.banReason, user.banReason),
+  );
+}
+
+/** The auth row values the job writes. */
+function banWrite(change: "ended" | "restored") {
+  return change === "ended"
+    ? { banned: true, banReason: W2_ACCESS_ENDED, updatedAt: new Date() }
+    : { banned: false, banReason: null, updatedAt: new Date() };
+}
+
+/**
+ * Apply one change in its own transaction (ban + sessions + events, or
+ * unban + events). Round 2 L2: the UPDATE only applies while the user row
+ * still has the banned / banReason the job read; when it changed meanwhile
+ * (e.g. a lockout) nothing is written and false is returned.
+ */
 async function applyChange(
   db: Db,
   employeeId: number,
-  userId: string,
+  user: { userId: string; banned: boolean | null; banReason: string | null },
   change: "ended" | "restored",
-): Promise<void> {
-  await db.transaction(async (tx) => {
-    if (change === "ended") {
-      await tx
-        .update(authUser)
-        .set({ banned: true, banReason: W2_ACCESS_ENDED, updatedAt: new Date() })
-        .where(eq(authUser.id, userId));
-      await tx.delete(authSession).where(eq(authSession.userId, userId));
-    } else {
-      await tx
-        .update(authUser)
-        .set({ banned: false, banReason: null, updatedAt: new Date() })
-        .where(eq(authUser.id, userId));
-    }
+): Promise<boolean> {
+  const { userId } = user;
+  return db.transaction(async (tx) => {
+    const written = await tx
+      .update(authUser)
+      .set(banWrite(change))
+      .where(sameBanState(user))
+      .returning({ id: authUser.id });
+    if (written.length === 0) return false;
+    if (change === "ended") await tx.delete(authSession).where(eq(authSession.userId, userId));
     await tx.insert(authEvents).values({
       userId,
       event: change === "ended" ? AUTH_EVENT.userDisabled : AUTH_EVENT.userEnabled,
@@ -173,6 +252,7 @@ async function applyChange(
       before: null,
       after: change === "ended" ? { banReason: W2_ACCESS_ENDED } : { banReason: null },
     });
+    return true;
   });
 }
 
@@ -222,8 +302,7 @@ export async function syncFormerEmployeeLogins(
       );
       const change = changeFor(access, r, restore);
       if (change === null) continue;
-      await applyChange(db, r.employeeId, r.userId, change);
-      out[change] += 1;
+      if (await applyChange(db, r.employeeId, r, change)) out[change] += 1;
     } catch (err) {
       out.failed += 1;
       console.error(
