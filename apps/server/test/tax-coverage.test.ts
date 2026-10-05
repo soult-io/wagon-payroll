@@ -187,7 +187,10 @@ describe("V2 who counts: unpaid, terminated, and out-of-year work states add not
   });
 });
 
-describe("V3 latestCoveredYear follows federal AND state coverage", () => {
+// Steps build on each other (one database, seeded in order): never shuffled.
+describe("V3 latestCoveredYear follows federal AND state coverage", {
+  shuffle: false,
+}, () => {
   let t: TestContext;
   beforeAll(async () => {
     t = await createTestApp();

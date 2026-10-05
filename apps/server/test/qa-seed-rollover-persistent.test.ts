@@ -56,7 +56,10 @@ async function installSynthetic2027(t: TestContext): Promise<void> {
   await seedSyntheticIlDepositSchedule2027(t.db);
 }
 
-describe("R4 + R5 persistent DB: 2026-12-15 → 2027-01-02 → 2027-02-02 → (2027 tables land) → 2027-03-02 ×2", () => {
+// Steps build on each other (one database, seeded in order): never shuffled.
+describe("R4 + R5 persistent DB: 2026-12-15 → 2027-01-02 → 2027-02-02 → (2027 tables land) → 2027-03-02 ×2", {
+  shuffle: false,
+}, () => {
   let t: TestContext;
   let s1: SeedOutcome;
   let bob1: BobRow[] = [];
