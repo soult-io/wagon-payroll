@@ -27,6 +27,28 @@ interface AuthState {
   w2AccessThrough: string | null;
 }
 
+/**
+ * PAY-217: the access scope from GET /api/me. A refused /api/me (403
+ * account_disabled: the W-2 window closed) means no usable session; any
+ * other failure keeps the session with full access (the server still
+ * enforces the scope on every call).
+ */
+async function accessOf(): Promise<{
+  access: Access | null;
+  through: string | null;
+  usable: boolean;
+}> {
+  try {
+    const me = await meApi.get();
+    return { access: me.access, through: me.w2AccessThrough ?? null, usable: true };
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 403) {
+      return { access: null, through: null, usable: false };
+    }
+    return { access: "full", through: null, usable: true };
+  }
+}
+
 export const useAuthStore = defineStore("auth", {
   state: (): AuthState => ({
     user: null,
@@ -50,29 +72,17 @@ export const useAuthStore = defineStore("auth", {
     async refresh(): Promise<void> {
       try {
         const { data } = await authClient.getSession();
-        this.user = (data?.user as SessionUser | undefined) ?? null;
-        await this.loadAccess();
+        const user = (data?.user as SessionUser | undefined) ?? null;
+        // PAY-217: the scope first, then the user — watchers on `user`
+        // (App.vue's employee probe) must already see a former employee.
+        const scope = user ? await accessOf() : { access: null, through: null, usable: false };
+        this.access = scope.access;
+        this.w2AccessThrough = scope.through;
+        this.user = scope.usable ? user : null;
       } catch {
         this.user = null;
       } finally {
         this.loaded = true;
-      }
-    },
-    /**
-     * PAY-217: the access scope from GET /api/me. A refused /api/me (403
-     * account_disabled: the W-2 window closed) means no usable session.
-     */
-    async loadAccess(): Promise<void> {
-      this.access = null;
-      this.w2AccessThrough = null;
-      if (!this.user) return;
-      try {
-        const me = await meApi.get();
-        this.access = me.access;
-        this.w2AccessThrough = me.w2AccessThrough ?? null;
-      } catch (err) {
-        if (err instanceof ApiError && err.status === 403) this.user = null;
-        else this.access = "full";
       }
     },
     /**
