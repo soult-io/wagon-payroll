@@ -277,6 +277,14 @@ const isTerminated = computed(() => employee.value?.status === "terminated");
 const accountState = computed(() => {
   const u = employee.value?.user;
   if (!u) return { label: "Not invited", canInvite: true, canResend: false };
+  // PAY-217: a former employee who can still sign in for their W-2s.
+  const former = employee.value?.formerW2Access;
+  if (isTerminated.value && former && !(u.banned && u.banReason === "lockout"))
+    return {
+      label: `Former employee · W-2 access until ${longDate(former.accessThrough)}`,
+      canInvite: false,
+      canResend: false,
+    };
   if (u.banned && u.banReason === "pending_enrollment")
     return { label: "Invite pending", canInvite: false, canResend: true };
   if (u.banned)

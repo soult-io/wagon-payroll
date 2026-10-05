@@ -120,6 +120,9 @@ export function useNotify() {
       if (err.status === 403) return "You do not have access to that.";
       if (err.status === 404) return "Not found.";
       if (err.code === "duplicate_pending") return "A pending request of this type already exists.";
+      // PAY-217: a reset / unlock of a former employee whose W-2 access is over.
+      if (err.code === "w2_access_ended")
+        return "This person's job has ended and their online W-2 access is over, so they can't sign in. Give them any W-2 they need on paper.";
       if (err.code === "effective_date") return err.message;
       return payrollRunMessage(err) ?? w4WindowMessage(err) ?? err.message;
     }
