@@ -6,24 +6,33 @@ All notable changes to this project will be documented here. Format follows
 
 ## [Unreleased]
 
+## [1.29.0] - 2026-10-05
+
 ### Added
 
+- **W-2 delivery consent, updated terms (PAY-208)** — the W-2 section of the employee's Payslips page now spells out the terms for getting W-2s online: paper is the default, what the agreement covers, how to withdraw
+  and that a paper copy can be asked for at any time, who to contact, what
+  you need to open a W-2, and when it's posted and how long it stays. To
+  agree, the employee opens a test PDF and types the code shown in it.
+  Employees who agreed to the earlier terms get W-2s for 2026 and later on
+  paper until they agree again, and get one email asking them to review the new terms (sent once the W-2 contact is filled in). A new "W-2 contact" on Config → Company (name, phone, email and a mailing address, or the company address) must be filled in before anyone can agree. Saving a change to it, or to the company address it uses, emails the new details to everyone who gets W-2s online. The yearly W-2 email can no longer be turned off. Employees who get W-2s online get it with the subject "IMPORTANT TAX RETURN DOCUMENT AVAILABLE"; everyone else gets a notice that their W-2 will be given to them on paper. Withdrawals are confirmed by email (or by you in writing if the employee has no sign-in), and the W-2/W-3 page lists employees whose "W-2 is ready" email couldn't be sent, until you record a paper copy. The employee page shows how each employee gets their W-2, and you can record a withdrawal they asked for in writing.
+- **Change an employee's sign-in email (PAY-208)** — admins can change it
+  from the employee page; old invite and reset links stop working, the
+  employee is signed out everywhere, and both addresses get a notice.
 - **Former employees keep their online W-2s (PAY-217)** — when you end an
   employee's job, they can still sign in to download the W-2s you gave them
-  online, until October 15 of the next year (the next business day if that's
-  a weekend), or 90 days after a corrected W-2 is posted if that's later. That
+  online, until October 15 of the year after that W-2's tax year (the next business day if that's a weekend), or 90 days after a corrected W-2 is posted if that's later. That
   is all they can see: no payslips, profile or requests. Once the last of
   those dates passes, their sign-in turns off by itself. If a W-2 they got
   online is corrected after they leave, the corrected copy is posted for them
   online with the usual email, and you also give them a paper copy. The W-2/W-3
   page lists the former employees who can still get that year's W-2 online,
-  whether they can sign in, and lets you mark a paper copy handed.
+  whether they can sign in, and lets you mark a paper copy handed. Employees disabled before this update stay signed out; give them their W-2s on paper.
 
 ### Changed
 
 - **Re-enabling an employee (PAY-217)** — turning a former employee back to
-  active no longer clears a lockout or an unfinished sign-in setup; it only
-  undoes the sign-in block that ending the job added.
+  active no longer clears a lockout or an unfinished sign-in setup; it only undoes the sign-in block that ending the job added. Ending a job now also cancels any unused invite or reset link, and Reset and Unlock in Settings → Users are refused once a former employee's online W-2 access has ended.
 
 ### Fixed
 
@@ -31,10 +40,7 @@ All notable changes to this project will be documented here. Format follows
   deposit that was more than its month's taxes now covers a short month in
   the same quarter, the way the IRS applies deposits (most recent month
   first). An extra "overdue" deposit is no longer shown when the quarter is
-  already paid in full. Extra deposits the quarter already covers are
-  cancelled (kept in the history), and admins who were emailed about one get
-  a short "no payment needed" email. Only recorded deposits count as paid;
-  an overdue amount is updated when payroll for its month changes.
+  already paid in full. Deposits still to pay that the quarter already covers are marked Replaced and leave the Tax deposits list, and admins who were emailed about an extra deposit get a short "no payment needed" email. Only deposits you record as made count as paid, so an overdue deposit is no longer treated as paid; an overdue amount now goes up or down when payroll for its month changes.
 
 ## [1.28.0] - 2026-10-04
 
