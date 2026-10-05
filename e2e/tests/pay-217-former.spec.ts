@@ -192,8 +192,14 @@ test("PAY-217 T-27 former employee: TOTP sign-in lands on the W-2 card only, dow
         .getByRole("button", { name: /Mark handed on paper/ })
         .first()
         .click();
-      const confirm = admin.getByRole("dialog").getByRole("button", { name: /Mark|Confirm|Yes/ });
-      if (await confirm.count()) await confirm.first().click();
+      // C3 (round 2): the action asks for confirmation first (confirm.require).
+      const dialog = admin.locator('[role="alertdialog"], [role="dialog"]').first();
+      await expect(dialog).toBeVisible();
+      await expect(section.getByText(/Handed/)).toHaveCount(0);
+      await dialog
+        .getByRole("button", { name: /Yes|Confirm|Mark/ })
+        .first()
+        .click();
       await expect(section.getByText(/Handed/).first()).toBeVisible();
     });
   } finally {
