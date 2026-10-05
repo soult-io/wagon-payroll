@@ -41,6 +41,7 @@ import {
   EVENT_TYPE,
   taxDepositDue as tplTaxDepositDue,
   taxDepositShortfall as tplTaxDepositShortfall,
+  taxDepositShortfallCancelled as tplTaxDepositShortfallCancelled,
   taxDepositSyncFailed as tplTaxDepositSyncFailed,
   type TemplateContext,
 } from "@payroll/notifications";
@@ -58,6 +59,11 @@ import {
   type PeriodKind,
   type StateSchedule,
 } from "./periods.js";
+import {
+  planFederalQuarter,
+  type FederalMonthInput,
+  type FederalQuarterPlan,
+} from "./federal-quarter.js";
 import {
   nextSeq,
   PlanInputError,
@@ -402,139 +408,363 @@ async function mailShortfall(
   }
 }
 
-/** A deposit row a sync inserted, or (`flipped`) an existing pending row it flipped overdue. */
+/**
+ * A deposit row a sync inserted, or (`flipped`) an existing open row it
+ * flipped or raised overdue on the late-issue path.
+ */
 interface FlaggedRow {
   seq: number;
   status: string;
   flipped?: boolean;
 }
 
-/**
- * The open federal pending row takes max(0, R). EF-8d: on the late-issue path
- * (`pastDue` = late issue and its due date has passed) a row with something
- * to pay is also flipped to 'overdue' in the issue transaction, before the
- * nightly sync would do it. Returns the flipped row, else null.
- */
-async function updatePendingFederal(
-  db: Tx,
-  pending: TaxDepositRow,
-  remainder: number,
-  pastDue: boolean,
-  result: SyncResult,
-): Promise<FlaggedRow | null> {
-  const target = formatCents(Math.max(0, remainder));
-  const flip = pastDue && remainder > 0;
-  if (pending.amount === target && !flip) return null;
-  // Race guard: a row recorded as deposited since the read keeps its amount.
-  const updated = await db
-    .update(taxDeposits)
-    .set({ amount: target, ...(flip ? { status: "overdue" } : {}), updatedAt: new Date() })
-    .where(and(eq(taxDeposits.id, pending.id), eq(taxDeposits.status, "pending")))
-    .returning({ id: taxDeposits.id });
-  result.recomputed += updated.length;
-  if (!flip || updated.length === 0) return null;
-  result.flippedOverdue += 1;
-  return { seq: pending.seq, status: "overdue", flipped: true };
+/** PAY-226: the reason recorded on every quarter-netting supersession. */
+export const QUARTER_NETTING_REASON =
+  "covered by deposits for the same quarter (IRC 6656(e); Pub 15 (2026) §11)";
+
+const OPEN_STATUSES = ["pending", "overdue"];
+
+/** The quarter's inputs: live federal month rows by month, and the planner's months. */
+interface FederalQuarterState {
+  liveBy: Map<string, TaxDepositRow[]>;
+  monthsIn: FederalMonthInput[];
+}
+
+/** What a quarter plan writes, decided before any write. */
+interface FederalQuarterWrites {
+  supersede: TaxDepositRow[];
+  /** Months whose mailed (seq > 0) row is cancelled outright (target 0). */
+  cancelled: string[];
+  updates: { row: TaxDepositRow; cents: number; status: "pending" | "overdue" }[];
+  inserts: { periodStart: string; seq: number; cents: number; status: string }[];
 }
 
 /**
- * Federal (PAY-9, PAY-193 D9.6): one month row per pay month, plus shortfall
- * rows. Deposited and overdue rows are frozen. L = the month's liability,
- * F = Σ live deposited + overdue rows, R = L − F. The open pending row (at
- * most one, the highest seq) takes max(0, R); with no pending row and R > 0 a
- * shortfall row (seq = max + 1) is inserted on the ORIGINAL due date,
- * overdue if that date has passed. R < 0 writes nothing (overpayment is out
- * of scope). The first row of a month (seq 0) is inserted as before —
- * pending, or (PAY-193 L4, `lateIssue`: the late-issue path) overdue
- * when its due date has passed and it has something to pay; on that path an
- * existing past-due pending row is flipped to overdue too (EF-8d). Returns
- * the row it inserted or flipped, if any (the late issue's follow-up).
+ * Months of the quarter with an issued run or a live federal month row:
+ * L = the month's liability, D = Σ live deposited rows (any deposited_on).
  */
-async function syncFederalDeposit(
+async function loadFederalQuarter(
+  db: Tx,
+  year: number,
+  quarter: number,
+): Promise<FederalQuarterState> {
+  const first = periodStartFor(year, (quarter - 1) * 3 + 1);
+  const runMonths = await db
+    .selectDistinct({
+      periodStart: sql<string>`to_char(date_trunc('month', ${payrollRuns.payDate})::date, 'YYYY-MM-DD')`,
+    })
+    .from(payrollRuns)
+    .where(
+      and(
+        eq(payrollRuns.status, "issued"),
+        sql`date_trunc('quarter', ${payrollRuns.payDate})::date = ${first}::date`,
+      ),
+    );
+  const liveRows = await db
+    .select()
+    .from(taxDeposits)
+    .where(
+      and(
+        eq(taxDeposits.jurisdiction, "federal"),
+        eq(taxDeposits.periodKind, "month"),
+        sql`date_trunc('quarter', ${taxDeposits.periodStart})::date = ${first}::date`,
+        liveDeposit,
+      ),
+    )
+    .orderBy(asc(taxDeposits.seq), asc(taxDeposits.id));
+
+  const liveBy = new Map<string, TaxDepositRow[]>();
+  for (const r of liveRows) liveBy.set(r.periodStart, [...(liveBy.get(r.periodStart) ?? []), r]);
+  const runSet = new Set(runMonths.map((r) => r.periodStart));
+  const monthsIn: FederalMonthInput[] = [];
+  for (let month = (quarter - 1) * 3 + 1; month <= quarter * 3; month += 1) {
+    const periodStart = periodStartFor(year, month);
+    const live = liveBy.get(periodStart) ?? [];
+    if (!runSet.has(periodStart) && live.length === 0) continue;
+    const depositedCents = live
+      .filter((r) => r.status === "deposited")
+      .reduce((s, r) => s + parseCents(r.amount), 0);
+    monthsIn.push({
+      periodStart,
+      liabilityCents: parseCents(await computeDepositAmount(db, year, month)),
+      depositedCents,
+    });
+  }
+  return { liveBy, monthsIn };
+}
+
+/** The new status of the open row kept for a month with something to pay. */
+function keptStatus(
+  row: TaxDepositRow,
+  planned: "pending" | "overdue",
+  lateIssue: boolean,
+): "pending" | "overdue" {
+  // The daily tick leaves pending → overdue to its own flip step (counted
+  // there); the late-issue path flips in the issue transaction (EF-8d).
+  if (planned === "overdue" && row.status === "pending" && !lateIssue) return "pending";
+  return planned;
+}
+
+/** Pure: the writes that make the live rows match the plan (PAY-226 rule 6). */
+function federalQuarterWrites(
+  plan: FederalQuarterPlan,
+  liveBy: Map<string, TaxDepositRow[]>,
+  lateIssue: boolean,
+): FederalQuarterWrites {
+  const w: FederalQuarterWrites = { supersede: [], cancelled: [], updates: [], inserts: [] };
+  for (const m of plan.months) {
+    const live = liveBy.get(m.periodStart) ?? [];
+    const open = live.filter((r) => OPEN_STATUSES.includes(r.status));
+    if (m.status === "none") {
+      w.supersede.push(...open);
+      if (open.some((r) => r.seq > 0)) w.cancelled.push(m.periodStart);
+      continue;
+    }
+    // Open rows are seq-ascending: keep the lowest, supersede the others.
+    const [keep, ...others] = open;
+    w.supersede.push(...others);
+    if (keep) {
+      w.updates.push({
+        row: keep,
+        cents: m.targetCents,
+        status: keptStatus(keep, m.status, lateIssue),
+      });
+      continue;
+    }
+    const seq = nextSeq(live);
+    // A month's first row is inserted pending by the tick (its flip step
+    // marks it overdue); a shortfall row, or the late issue, uses the plan.
+    const status = seq === 0 && !lateIssue ? "pending" : m.status;
+    w.inserts.push({ periodStart: m.periodStart, seq, cents: m.targetCents, status });
+  }
+  return w;
+}
+
+/**
+ * Federal (PAY-9, PAY-193 D9.6, PAY-226): one quarter of federal month rows,
+ * planned by `planFederalQuarter` — deposits net within the 941 quarter (IRC
+ * 6656(e)(1); Pub 15 (2026) §11). Months = those of the quarter with an
+ * issued run or a live row. Only `deposited` rows count as paid; open
+ * (pending/overdue) rows are recalculated. Per month:
+ *  - target 0 → every open row is superseded;
+ *  - target > 0 → the lowest-seq open row carries the target (other open rows
+ *    are superseded); with no open row a row is inserted — seq 0 when the
+ *    month has no live row, else a shortfall row (seq = max + 1, audited and
+ *    mailed) on the ORIGINAL due date.
+ * Supersessions are audited in one `tax_deposit.shortfall_superseded` row; a
+ * superseded seq > 0 row (it was mailed) gets one cancellation mail per active
+ * admin when its month needs nothing more. Deposited rows are never touched.
+ * Seq 0 rows are inserted pending, except on the late-issue path (PAY-193 L4,
+ * `lateIssue`) when past due — there an open past-due row is flipped (or, if
+ * already overdue, raised) in the issue transaction (EF-8c/8d). Returns, per
+ * month, the row it inserted, flipped or raised (the late issue's follow-up).
+ */
+async function syncFederalQuarter(
   db: Tx,
   config: AppConfig,
-  periodStart: string,
+  year: number,
+  quarter: number,
   today: string,
   result: SyncResult,
   opts: { actorId: string; lateIssue: boolean } = {
     actorId: "scheduler",
     lateIssue: false,
   },
-): Promise<{ flagged: FlaggedRow | null }> {
-  const year = Number(periodStart.slice(0, 4));
-  const month = Number(periodStart.slice(5, 7));
-  const amount = await computeDepositAmount(db, year, month);
-  const dueDate = dueDateFor(year, month);
+): Promise<Map<string, FlaggedRow>> {
+  const { liveBy, monthsIn } = await loadFederalQuarter(db, year, quarter);
+  const plan = planFederalQuarter({ months: monthsIn, today });
+  const w = federalQuarterWrites(plan, liveBy, opts.lateIssue);
+  const now = new Date();
 
-  const live = await db
-    .select()
-    .from(taxDeposits)
+  // Supersede first: a superseded row never blocks an update or an insert.
+  const superseded = await supersedeFederal(db, w.supersede, now);
+  result.superseded += superseded.length;
+
+  const flagged = new Map<string, FlaggedRow>();
+  for (const u of w.updates) {
+    const flag = await updateFederal(db, u, now, opts.lateIssue, result);
+    if (flag) flagged.set(u.row.periodStart, flag);
+  }
+  for (const i of w.inserts) {
+    await insertFederal(db, config, year, i, liveBy.get(i.periodStart) ?? [], opts.actorId);
+    result.created += 1;
+    flagged.set(i.periodStart, { seq: i.seq, status: i.status });
+  }
+
+  if (superseded.length > 0) {
+    await auditFederalSuperseded(db, opts.actorId, { year, quarter, plan, monthsIn, superseded });
+    const mailed = w.cancelled.filter((ps) =>
+      superseded.some((r) => r.periodStart === ps && r.seq > 0),
+    );
+    if (mailed.length > 0) await mailShortfallCancelled(db, config, mailed);
+  }
+  return flagged;
+}
+
+/** Supersede open rows; returns the rows actually superseded, id ascending. */
+async function supersedeFederal(
+  db: Tx,
+  rows: readonly TaxDepositRow[],
+  now: Date,
+): Promise<TaxDepositRow[]> {
+  if (rows.length === 0) return [];
+  const done = await db
+    .update(taxDeposits)
+    .set({ status: "superseded", supersededAt: now, updatedAt: now })
+    // Guard: a row recorded as deposited since the read is never superseded.
     .where(
       and(
-        eq(taxDeposits.jurisdiction, "federal"),
-        eq(taxDeposits.periodStart, periodStart),
-        eq(taxDeposits.periodKind, "month"),
-        liveDeposit,
+        inArray(
+          taxDeposits.id,
+          rows.map((r) => r.id),
+        ),
+        inArray(taxDeposits.status, OPEN_STATUSES),
       ),
     )
-    .orderBy(desc(taxDeposits.seq), desc(taxDeposits.id));
+    .returning({ id: taxDeposits.id });
+  const ids = new Set(done.map((r) => r.id));
+  return rows.filter((r) => ids.has(r.id)).sort((a, b) => a.id - b.id);
+}
 
-  if (live.length === 0) {
-    const status =
-      opts.lateIssue && dueDate < today && parseCents(amount) > 0 ? "overdue" : "pending";
-    await db.insert(taxDeposits).values({
-      jurisdiction: "federal",
-      periodStart,
-      amount,
-      dueDate,
-      status,
-      createdBy: opts.actorId,
-    });
-    result.created += 1;
-    return { flagged: { seq: 0, status } };
-  }
+/**
+ * Set the kept open row to the target and status. Returns the late issue's
+ * flag when the row was flipped overdue or, already overdue, raised.
+ */
+async function updateFederal(
+  db: Tx,
+  u: FederalQuarterWrites["updates"][number],
+  now: Date,
+  lateIssue: boolean,
+  result: SyncResult,
+): Promise<FlaggedRow | null> {
+  const target = formatCents(u.cents);
+  if (u.row.amount === target && u.row.status === u.status) return null;
+  // Race guard: a row recorded as deposited since the read keeps its amount.
+  const updated = await db
+    .update(taxDeposits)
+    .set({ amount: target, status: u.status, updatedAt: now })
+    .where(and(eq(taxDeposits.id, u.row.id), inArray(taxDeposits.status, OPEN_STATUSES)))
+    .returning({ id: taxDeposits.id });
+  if (updated.length === 0) return null;
+  result.recomputed += 1;
+  const flipped = u.row.status === "pending" && u.status === "overdue";
+  if (flipped) result.flippedOverdue += 1;
+  const raised = u.row.status === "overdue" && u.cents > parseCents(u.row.amount);
+  if (!lateIssue || u.status !== "overdue" || !(flipped || raised)) return null;
+  return { seq: u.row.seq, status: "overdue", flipped: true };
+}
 
-  let frozen = 0;
-  for (const r of live) if (r.status !== "pending") frozen += parseCents(r.amount);
-  const remainder = parseCents(amount) - frozen;
-  const pending = live.find((r) => r.status === "pending");
-  if (pending) {
-    const pastDue = opts.lateIssue && dueDate < today;
-    return { flagged: await updatePendingFederal(db, pending, remainder, pastDue, result) };
-  }
-  if (remainder <= 0) return { flagged: null };
-  const seq = nextSeq(live);
-  const status = dueDate < today ? "overdue" : "pending";
+/** Insert a month's row; a shortfall row (seq > 0) is audited and mailed (PAY-193). */
+async function insertFederal(
+  db: Tx,
+  config: AppConfig,
+  year: number,
+  i: FederalQuarterWrites["inserts"][number],
+  live: readonly TaxDepositRow[],
+  actorId: string,
+): Promise<void> {
   const inserted = await db
     .insert(taxDeposits)
     .values({
       jurisdiction: "federal",
-      periodStart,
-      seq,
-      amount: formatCents(remainder),
-      dueDate,
-      status,
-      createdBy: opts.actorId,
+      periodStart: i.periodStart,
+      seq: i.seq,
+      amount: formatCents(i.cents),
+      dueDate: dueDateFor(year, Number(i.periodStart.slice(5, 7))),
+      status: i.status,
+      createdBy: actorId,
     })
     .returning({ id: taxDeposits.id });
-  result.created += 1;
+  if (i.seq === 0) return;
   for (const { id } of inserted) {
-    await auditShortfall(db, opts.actorId, id, {
+    await auditShortfall(db, actorId, id, {
       jurisdiction: "federal",
-      periodStart,
+      periodStart: i.periodStart,
       periodKind: "month",
-      seq,
-      cents: remainder,
+      seq: i.seq,
+      cents: i.cents,
     });
     await mailShortfall(db, config, {
       jurisdiction: "federal",
-      periodStart,
+      periodStart: i.periodStart,
       periodKind: "month",
-      overdue: status === "overdue",
+      overdue: i.status === "overdue",
       earlierDeposited: live.some((r) => r.status === "deposited"),
     });
   }
-  return { flagged: { seq, status } };
+}
+
+/** PAY-226: one audit row per quarter sync that superseded federal rows. */
+async function auditFederalSuperseded(
+  db: Tx,
+  actorId: string,
+  q: {
+    year: number;
+    quarter: number;
+    plan: FederalQuarterPlan;
+    monthsIn: readonly FederalMonthInput[];
+    superseded: readonly TaxDepositRow[];
+  },
+): Promise<void> {
+  await db.insert(auditEvents).values({
+    actorId,
+    action: "tax_deposit.shortfall_superseded",
+    entity: "tax_deposit",
+    entityId: `federal:${q.year}-Q${q.quarter}`,
+    before: {
+      rows: q.superseded.map((r) => ({
+        id: r.id,
+        periodStart: r.periodStart,
+        seq: r.seq,
+        cents: parseCents(r.amount),
+        status: r.status,
+      })),
+    },
+    after: {
+      superseded: q.superseded.map((r) => r.id),
+      reason: QUARTER_NETTING_REASON,
+      poolCents: q.plan.poolCents,
+      quarterExcessCents: q.plan.quarterExcessCents,
+      months: q.monthsIn.map((x) => ({
+        ...x,
+        targetCents: q.plan.months.find((p) => p.periodStart === x.periodStart)?.targetCents ?? 0,
+      })),
+    },
+  });
+}
+
+/**
+ * PAY-226: one email_outbox row per active admin when a mailed shortfall row
+ * (seq > 0) was superseded because the quarter covers it. No amounts. Own
+ * savepoint: a failure writes no mail rows, is logged, and never loses the
+ * supersession or its audit row.
+ */
+async function mailShortfallCancelled(
+  db: Tx,
+  config: AppConfig,
+  periodStarts: readonly string[],
+): Promise<void> {
+  try {
+    await db.transaction(async (sp) => {
+      const userIds = await adminUserIds(sp);
+      if (userIds.length === 0) return;
+      const ctx = await templateContext(sp, config);
+      const rendered = tplTaxDepositShortfallCancelled(ctx, {
+        jurisdictionLabel: stateName("federal"),
+        periodLabels: periodStarts.map((ps) => periodLabel(ps, "month")),
+      });
+      await sp.insert(emailOutbox).values(
+        userIds.map((userId) => ({
+          userId,
+          eventType: EVENT_TYPE.taxDepositShortfallCancelled,
+          subject: rendered.subject,
+          bodyHtml: rendered.html,
+        })),
+      );
+    });
+  } catch (err) {
+    console.warn(`[deposits] shortfall cancellation mail for federal failed (${failureCode(err)})`);
+  }
 }
 
 /** One (state, year, quarter) planning unit (spec 23 §6). */
@@ -846,15 +1076,18 @@ export async function syncDeposits(deps: Deps, opts: { today?: string } = {}): P
     // The federal loop shares the lock: two concurrent syncs would otherwise
     // both insert the same new federal month (select-then-insert).
     await tx.execute(SYNC_LOCK);
-    const months = await tx
+    // PAY-226: federal rows are planned per 941 quarter (quarters with issued runs).
+    const quarters = await tx
       .selectDistinct({
-        periodStart: sql<string>`to_char(date_trunc('month', ${payrollRuns.payDate})::date, 'YYYY-MM-DD')`,
+        periodStart: sql<string>`to_char(date_trunc('quarter', ${payrollRuns.payDate})::date, 'YYYY-MM-DD')`,
       })
       .from(payrollRuns)
       .where(eq(payrollRuns.status, "issued"))
       .orderBy(sql`1`);
-    for (const { periodStart } of months) {
-      await syncFederalDeposit(tx, deps.config, periodStart, today, result);
+    for (const { periodStart } of quarters) {
+      const year = Number(periodStart.slice(0, 4));
+      const quarter = quarterOfMonth(Number(periodStart.slice(5, 7)));
+      await syncFederalQuarter(tx, deps.config, year, quarter, today, result);
     }
 
     const schedules = await loadStateSchedules(tx);
@@ -910,12 +1143,13 @@ export async function syncDeposits(deps: Deps, opts: { today?: string } = {}): P
 
 /**
  * PAY-193 L4 (L4.5 step 7): inside a late issue's transaction, under
- * SYNC_LOCK (taken here), sync the pay-date period for federal and for each
- * of `jurisdictions` (stateReturnJurisdictions of the run). Returns the
- * follow-up codes (no amounts):
+ * SYNC_LOCK (taken here), sync the pay-date quarter for federal (PAY-226)
+ * and for each of `jurisdictions` (stateReturnJurisdictions of the run).
+ * Returns the follow-up codes (no amounts; federal: the pay-date month only):
  * - `deposit_shortfall:<jurisdiction>:<periodStart>` — a seq > 0 row was inserted;
  * - `deposit_overdue:<jurisdiction>:<periodStart>` — a seq 0 row was inserted overdue,
- *   or (federal) an existing past-due pending row (any seq) was flipped overdue;
+ *   or (federal) an existing past-due open row (any seq) was flipped overdue
+ *   or, already overdue, raised (EF-8c);
  * - `deposit_sync_deferred:<state>` — the state unit failed in its savepoint;
  *   the issue still commits and the daily tick re-plans and reports it.
  * Federal errors propagate (the issue rolls back).
@@ -928,25 +1162,26 @@ export async function syncDepositsForPayDate(
   const { payDate, today, actorId } = input;
   await tx.execute(SYNC_LOCK);
   const monthStart = `${payDate.slice(0, 7)}-01`;
-  const federal = await syncFederalDeposit(
-    tx,
-    config,
-    monthStart,
-    today,
-    { ...EMPTY_RESULT },
-    {
-      actorId,
-      lateIssue: true,
-    },
-  );
-  const followUps: string[] = [];
-  const fedCode = federal.flagged && followUpCode("federal", monthStart, federal.flagged);
-  if (fedCode) followUps.push(fedCode);
-
   const unitKey = {
     year: Number(payDate.slice(0, 4)),
     quarter: quarterOfMonth(Number(payDate.slice(5, 7))),
   };
+  // PAY-226: the whole pay-date quarter is planned; follow-ups name the
+  // pay-date month only.
+  const federal = await syncFederalQuarter(
+    tx,
+    config,
+    unitKey.year,
+    unitKey.quarter,
+    today,
+    { ...EMPTY_RESULT },
+    { actorId, lateIssue: true },
+  );
+  const followUps: string[] = [];
+  const flagged = federal.get(monthStart);
+  const fedCode = flagged && followUpCode("federal", monthStart, flagged);
+  if (fedCode) followUps.push(fedCode);
+
   const schedules = await loadStateSchedules(tx);
   for (const state of input.jurisdictions) {
     try {

@@ -46,6 +46,11 @@ export const EVENT_TYPE = {
   taxDepositSyncFailed: "tax_deposit_sync_failed",
   /** PAY-193 — an additional (shortfall) deposit row was created for a paid period (admin, always on). */
   taxDepositShortfall: "tax_deposit_shortfall",
+  /**
+   * PAY-226 — an additional deposit that was mailed (taxDepositShortfall) is
+   * no longer needed: the quarter's deposits cover it (admin, always on).
+   */
+  taxDepositShortfallCancelled: "tax_deposit_shortfall_cancelled",
   /** PAY-10 — quarterly filing (Form 941) due-date reminder (admin). */
   taxFilingDue: "tax_filing_due",
   /**
@@ -562,6 +567,37 @@ export function taxDepositShortfall(
     body,
     `${sentences} ${depositsUrl}`,
   );
+}
+
+/**
+ * Admin (PAY-226): an additional deposit the owner was mailed about
+ * (taxDepositShortfall) was cancelled, because deposits made for other months
+ * of the same quarter already cover it (IRC 6656(e); Pub 15 §11). One mail
+ * per sync, naming every cancelled month. No amounts — the app shows them.
+ */
+export function taxDepositShortfallCancelled(
+  ctx: TemplateContext,
+  data: { jurisdictionLabel: string; periodLabels: readonly string[] },
+): RenderedEmail {
+  const periods = joinLabels(data.periodLabels);
+  const depositsUrl = `${ctx.appUrl}/admin/deposits`;
+  const sentence =
+    data.periodLabels.length > 1
+      ? `No payment needed — the earlier deposit notices for ${periods} were cancelled; your deposits for the quarter already cover them.`
+      : `No payment needed — the earlier deposit notice for ${periods} was cancelled; your deposits for the quarter already cover it.`;
+  const body = `<p>${escapeHtml(sentence)}</p><p><a href="${depositsUrl}">${escapeHtml(depositsUrl)}</a></p>`;
+  return email(
+    ctx,
+    `No additional ${data.jurisdictionLabel} tax deposit needed for ${periods}`,
+    body,
+    `${sentence} ${depositsUrl}`,
+  );
+}
+
+/** "A", "A and B", "A, B and C". */
+function joinLabels(labels: readonly string[]): string {
+  if (labels.length <= 1) return labels[0] ?? "";
+  return `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
 }
 
 // ---------------------------------------------------------------------------

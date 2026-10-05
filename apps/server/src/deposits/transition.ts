@@ -108,7 +108,12 @@ export interface Allocation {
  */
 export class PlanInputError extends Error {
   constructor(
-    public code: "invalid_amount" | "invalid_quarter" | "row_outside_unit",
+    public code:
+      | "invalid_amount"
+      | "invalid_quarter"
+      | "row_outside_unit"
+      | "invalid_period"
+      | "duplicate_period",
     message: string,
   ) {
     super(message);

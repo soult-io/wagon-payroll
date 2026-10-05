@@ -16,6 +16,8 @@ export const TARGETS = {
     testFiles: [
       "test/*deposit*.test.ts",
       "test/pay-91-*.test.ts",
+      // PAY-226: federal quarter netting (planner + sync).
+      "test/pay-226-*.test.ts",
       // Imports computeDepositAmount from src/deposits.
       "test/filings.test.ts",
     ],
