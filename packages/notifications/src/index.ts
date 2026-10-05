@@ -757,6 +757,9 @@ export function signInEmailChanged(ctx: TemplateContext): RenderedEmail {
  *   link, never "available"; the employer hands over a corrected paper W-2.
  * Never amounts, never the SSN.
  */
+/** PAY-217 round 2 (F1): the print step, as in the w2Available notice. */
+const PRINT_STEP = "Select Download PDF, then print or save it from your PDF reader.";
+
 export function w2Changed(
   ctx: TemplateContext,
   data: {
@@ -768,11 +771,16 @@ export function w2Changed(
      */
     accessThrough?: string;
     /**
-     * PAY-217 (SME R2): the employee's job has ended — the W-2 page is the
-     * only page after sign-in, and the company also gives a paper copy.
-     * Consented variant only.
+     * PAY-217: the employee's job has ended — the W-2 page is the only page
+     * after sign-in. Consented variant only.
      */
     former?: boolean;
+    /**
+     * PAY-217 (SME R2, round 2 N3): the employee left the electronic channel
+     * (withdrawal or termination) — the company also gives a paper copy.
+     * Consented variant only.
+     */
+    paperToo?: boolean;
   },
 ): RenderedEmail {
   const year = data.taxYear;
@@ -782,13 +790,13 @@ export function w2Changed(
       : "";
     const lead = (co: string) =>
       `${co} has corrected your ${year} Form W-2. The corrected W-2 is marked CORRECTED and replaces the earlier one. Use the corrected W-2 for your tax return.`;
-    const paper = (co: string) => (data.former ? ` ${co} will also give you a paper copy.` : "");
+    const paper = (co: string) => (data.paperToo ? ` ${co} will also give you a paper copy.` : "");
     const tail =
       "If you already filed your return using the earlier W-2, you may need to amend it.";
     const where = (signIn: string) =>
       data.former
-        ? `To view and print it, sign in at ${signIn}. Your W-2s open right after you sign in.`
-        : `To view and print it, sign in at ${signIn}, open ${PAYSLIPS_NAV_LABEL}, and find "${W2_CARD_HEADING}".`;
+        ? `To view and print it, sign in at ${signIn}. Your W-2s open right after you sign in. ${PRINT_STEP}`
+        : `To view and print it, sign in at ${signIn}, open ${PAYSLIPS_NAV_LABEL}, and find "${W2_CARD_HEADING}". ${PRINT_STEP}`;
     const appUrl = escapeHtml(ctx.appUrl);
     const co = escapeHtml(ctx.companyName);
     const body = `<p>${lead(co)}${paper(co)}</p><p>${where(`<a href="${appUrl}">${appUrl}</a>`)}</p><p>${tail}${through}</p>`;

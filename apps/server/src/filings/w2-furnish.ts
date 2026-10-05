@@ -650,8 +650,9 @@ function yearWentOnline(
 
 /**
  * Post the corrected W-2 online (a corrected portal_notice with `hash`) and
- * queue the IMPORTANT w2_changed mail; a former employee's mail also says a
- * paper copy is coming (SME R2). false when the latest portal_notice already
+ * queue the IMPORTANT w2_changed mail; when the employee left the channel
+ * (withdrawn or terminated) the mail also says a paper copy is coming (SME
+ * R2, round 2 N3). false when the latest portal_notice already
  * carries these figures (D2: never mail twice).
  */
 async function postCorrectionOnline(
@@ -661,6 +662,7 @@ async function postCorrectionOnline(
     employeeId: number;
     userId: string;
     former: boolean;
+    paperToo: boolean;
     taxYear: number;
     hash: string;
     today: string;
@@ -681,6 +683,7 @@ async function postCorrectionOnline(
     consented: true,
     accessThrough: electronicW2AccessThrough(c.taxYear, c.today),
     ...(c.former ? { former: true } : {}),
+    ...(c.paperToo ? { paperToo: true } : {}),
   });
   await tx.insert(emailOutbox).values({
     userId: c.userId,
@@ -733,6 +736,8 @@ export async function furnishCorrectionIfNeeded(
       employeeId,
       userId: employee.userId,
       former: employee.status === "terminated",
+      // Round 2 N3: off the channel (withdrawn or terminated) → paper too.
+      paperToo: !consented,
       taxYear,
       hash,
       today,
