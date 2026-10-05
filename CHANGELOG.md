@@ -25,6 +25,17 @@ All notable changes to this project will be documented here. Format follows
   active no longer clears a lockout or an unfinished sign-in setup; it only
   undoes the sign-in block that ending the job added.
 
+### Fixed
+
+- **Federal deposits count across the quarter (PAY-226)** — a federal
+  deposit that was more than its month's taxes now covers a short month in
+  the same quarter, the way the IRS applies deposits (most recent month
+  first). An extra "overdue" deposit is no longer shown when the quarter is
+  already paid in full. Extra deposits the quarter already covers are
+  cancelled (kept in the history), and admins who were emailed about one get
+  a short "no payment needed" email. Only recorded deposits count as paid;
+  an overdue amount is updated when payroll for its month changes.
+
 ## [1.28.0] - 2026-10-04
 
 ### Added

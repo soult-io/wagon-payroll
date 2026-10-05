@@ -494,7 +494,12 @@ describe("EF-8 no December federal row yet, issued after its due date", () => {
     });
   });
 
-  it("EF-8c (auditor): federal seq 0 already overdue (frozen) -> seq 1 overdue for the late run only; code is deposit_shortfall, not deposit_overdue", async () => {
+  // PAY-226 (SME ruling 2026-10-05): an overdue row is money owed, not paid,
+  // so the late run's liability goes onto the open seq 0 row (500.83 + 910.33
+  // = 1,411.16), which stays overdue. No seq 1 row. Reading taken (Product
+  // Lead to confirm): raising an already-overdue row reports
+  // deposit_overdue, like EF-8d's pending row that is raised and flipped.
+  it("EF-8c (PAY-226): federal seq 0 already overdue -> raised to 1,411.16, still overdue; no seq 1; code is deposit_overdue", async () => {
     const b = await makeEmployee(env.t, { grossCents: 250_000, state: null });
     await history(env.t, b, "2026-12", "2026-12-15", oracleRun2026(250_000, 0, "none"), null);
     await syncDeposits(deps(), { today: "2027-01-16" }); // seq 0 500.83 -> overdue
@@ -504,10 +509,9 @@ describe("EF-8 no December federal row yet, issued after its due date", () => {
     env.setNow("2027-01-20T10:00:00Z");
     const res = await issue(env, d.publicId, latePayment(NONE.netCents, []));
     expect(res.status, res.raw).toBe(200);
-    expect(followUps(res)).toEqual(["deposit_shortfall:federal:2026-12-01"]);
+    expect(followUps(res)).toEqual(["deposit_overdue:federal:2026-12-01"]);
     expect(await live("federal")).toEqual([
-      { seq: 0, c: 50_083, due: "2027-01-15", status: "overdue" },
-      { seq: 1, c: 91_033, due: "2027-01-15", status: "overdue" },
+      { seq: 0, c: 141_116, due: "2027-01-15", status: "overdue" },
     ]);
   });
 });
