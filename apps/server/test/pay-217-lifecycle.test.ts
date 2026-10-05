@@ -273,29 +273,42 @@ describe("PAY-217 lifecycle at 2027-02-01 (TY2026 furnished online on 2027-01-04
   });
 });
 
-describe("PAY-217 T-8 terminate the day after the window closed -> banned", () => {
+describe("PAY-217 T-8 terminate the day after the window closed -> banned (round 2 N1: w2_access_ended when a W-2 was online, employee_terminated when never online)", () => {
   let env: Env;
   let x: Emp;
+  let never: Emp;
   beforeAll(async () => {
     env = await boot217(JAN_4_2027);
     x = await consenter(env, "Lct8");
+    never = await makeEmp(env, { label: "Lct8never", login: true, years: [2026] }); // no consent: paper notice only
     await yearNotice(env);
   }, 240_000);
   afterAll(async () => env.close());
 
-  it("TY2026 online, terminated on 2027-10-16 (10:00 CDT) -> banned employee_terminated, formerW2Access null, sign-in refused", async () => {
+  it("terminated on 2027-10-16 (10:00 CDT): TY2026 was online -> banned w2_access_ended (so a later online correction can re-open sign-in, R4); never online -> employee_terminated; formerW2Access null, sign-in refused for both", async () => {
     await moveTo(env, "2027-10-16T15:00:00Z");
     const res = await terminate(env, x, "2027-10-16");
+    const resNever = await terminate(env, never, "2027-10-16");
     const s = await signIn(env, x.email!);
+    const sNever = await signIn(env, never.email!);
+    const access = (r: typeof res) =>
+      (r.json() as { employee: { formerW2Access?: FormerAccess } }).employee.formerW2Access;
     expect({
       ban: (await userRow(env, x.userId!)).banReason,
-      formerW2Access: (res.json() as { employee: { formerW2Access?: FormerAccess } }).employee
-        .formerW2Access,
-      signIn: [s.status, s.code],
+      banNever: (await userRow(env, never.userId!)).banReason,
+      formerW2Access: [access(res), access(resNever)],
+      signIn: [
+        [s.status, s.code],
+        [sNever.status, sNever.code],
+      ],
     }).toEqual({
-      ban: "employee_terminated",
-      formerW2Access: null,
-      signIn: [403, "BANNED_USER"],
+      ban: "w2_access_ended",
+      banNever: "employee_terminated",
+      formerW2Access: [null, null],
+      signIn: [
+        [403, "BANNED_USER"],
+        [403, "BANNED_USER"],
+      ],
     });
   });
 
