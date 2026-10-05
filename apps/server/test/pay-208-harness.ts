@@ -480,13 +480,15 @@ export function plain(html: string): string {
     prev = out;
     out = out.replace(/<[^>]+>/g, " ");
   } while (out !== prev);
+  // One pass with a lookup map, so "&amp;quot;" decodes to "&quot;" and is
+  // never unescaped twice (CodeQL js/double-escaping).
   return out
-    .replaceAll("&amp;", "&")
-    .replaceAll("&quot;", '"')
-    .replaceAll("&#39;", "'")
+    .replace(/&(?:amp|quot|#39);/g, (m) => HTML_ENTITIES[m] ?? m)
     .replace(/\s+/g, " ")
     .trim();
 }
+
+const HTML_ENTITIES: Record<string, string> = { "&amp;": "&", "&quot;": '"', "&#39;": "'" };
 
 /** Lazily loaded module under test (missing exports fail per test, not per file). */
 // biome-ignore lint/suspicious/noExplicitAny: contract-shaped dynamic import
