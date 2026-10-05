@@ -16,7 +16,7 @@ const LINES = [
   "Online W-2 test file",
   "",
   "You opened this PDF, so your device can open your W-2.",
-  "Go back to the payroll page and type this code:",
+  "Go back to the Payslips page and type this code:",
 ] as const;
 
 /** Render the test PDF showing `code`. Pure: no I/O beyond the returned bytes. */
@@ -24,8 +24,8 @@ export async function renderAccessCheckPdf(code: string): Promise<Buffer> {
   if (!/^[A-Z0-9]{4,12}$/.test(code)) throw new TypeError("renderAccessCheckPdf: bad code");
   const doc = await PDFDocument.create();
   doc.setTitle("Online W-2 test file");
-  doc.setProducer("payroll");
-  doc.setCreator("payroll");
+  doc.setProducer("Wagon Payroll");
+  doc.setCreator("Wagon Payroll");
   const page = doc.addPage([612, 396]);
   const regular = await doc.embedFont(StandardFonts.Helvetica);
   const bold = await doc.embedFont(StandardFonts.HelveticaBold);

@@ -927,7 +927,7 @@ onMounted(() => {
           </section>
           <!-- PAY-208 (S10/S11): 26 CFR 31.6051-1(j)(3)(v)(A) — the W-2 contact. -->
           <section class="card stack" style="margin-top: 1rem" data-testid="w2-contact">
-            <h3>W-2 contact</h3>
+            <h3 style="margin: 0">W-2 contact</h3>
             <p class="muted" style="margin: 0">
               Employees use this contact to ask for a paper W-2 or to stop getting W-2s online. It
               appears in the online-W-2 terms and in W-2 emails, so use details someone checks. The
@@ -970,7 +970,7 @@ onMounted(() => {
                   <small v-if="w2ContactErrors.email" class="error-text">{{ w2ContactErrors.email }}</small>
                 </div>
               </div>
-              <div class="row" style="gap: 0.5rem; align-items: center">
+              <div class="row" style="gap: 0.5rem; align-items: flex-start; flex-wrap: nowrap">
                 <Checkbox v-model="w2ContactForm.useCompanyAddress" input-id="w2cUseCompany" binary />
                 <label for="w2cUseCompany">Use the company address for mail</label>
               </div>

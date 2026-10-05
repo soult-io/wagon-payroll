@@ -28,7 +28,7 @@ import EmptyState from "../../components/EmptyState.vue";
 import StatusChip from "../../components/StatusChip.vue";
 import EmployeeResidenceCard from "../../components/EmployeeResidenceCard.vue";
 import Message from "primevue/message";
-import { localityName, WORK_LOCALITY_STATES } from "@payroll/shared";
+import { localityName, W2_CONSENT_GATE_FROM_TAX_YEAR, WORK_LOCALITY_STATES } from "@payroll/shared";
 import WorkLocalityQuestion from "../../components/WorkLocalityQuestion.vue";
 import { localityFromAnswer } from "../../composables/useWorkLocality";
 import {
@@ -494,7 +494,7 @@ const w2DeliveryText = computed(() => {
   if (!c || c.state === "none") return "Paper — hasn't agreed to online W-2s";
   if (c.state === "current") return `Online — agreed on ${longDate(c.consentedAt)}`;
   if (c.state === "outdated") {
-    return `Paper for 2026 and later — agreed to earlier terms on ${longDate(c.consentedAt)} and needs to agree to the updated terms`;
+    return `Paper for ${W2_CONSENT_GATE_FROM_TAX_YEAR} and later — agreed to earlier terms on ${longDate(c.consentedAt)} and needs to agree to the updated terms`;
   }
   return `Paper — withdrew on ${longDate(c.withdrawnAt)}`;
 });
@@ -566,28 +566,30 @@ function signInEmailChangedNotice(out: {
   pendingEnrollment: boolean;
   sessionsRevoked: boolean;
 }) {
-  if (out.changed && !out.sessionsRevoked) {
-    // R3-1: the email changed, but the employee may still be signed in somewhere.
-    notify.stickyInfo(
-      "Sign-in email changed",
-      "Couldn't sign the employee out everywhere — use Reset login: Settings → Users → Reset for this employee.",
-    );
+  if (!out.changed) {
+    notify.success("Sign-in email unchanged");
     return;
   }
-  if (out.changed && out.pendingEnrollment) {
+  if (out.pendingEnrollment) {
     // S-H1: their old setup link no longer works — nothing is re-sent automatically.
     notify.stickyInfo(
       "Sign-in email changed",
-      'This employee hasn\'t finished setting up their account, and the old setup link no longer works. Use "Resend invite" to send a new link to the new address.',
+      'This employee hasn\'t finished setting up their account, and the old setup link no longer works. Use "Resend invite" at the top of this page to send a new link to the new address.',
     );
-    return;
   }
-  notify.success(
-    out.changed ? "Sign-in email changed" : "Sign-in email unchanged",
-    out.changed
-      ? "A notice went to the old and the new address. They're signed out and sign in with the new address."
-      : undefined,
-  );
+  if (!out.sessionsRevoked) {
+    // R3-1: the email changed, but the employee may still be signed in somewhere.
+    notify.stickyInfo(
+      out.pendingEnrollment ? "Not signed out everywhere" : "Sign-in email changed",
+      "We couldn't sign this employee out of devices where they're already signed in. To do that, open Settings, go to the Users tab and select Reset next to their email. They'll then set a new password and two-factor sign-in.",
+    );
+  }
+  if (out.sessionsRevoked && !out.pendingEnrollment) {
+    notify.success(
+      "Sign-in email changed",
+      "A notice went to the old and the new address. They're signed out and sign in with the new address.",
+    );
+  }
 }
 
 async function changeSignInEmail() {

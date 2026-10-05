@@ -43,7 +43,7 @@ import {
   type PayslipSummary,
   type W2ConsentStatus,
 } from "../../lib/api";
-import { addressLine, W2_CARD_HEADING } from "@payroll/shared";
+import { addressLine, W2_CARD_HEADING, W2_CONSENT_GATE_FROM_TAX_YEAR } from "@payroll/shared";
 import { myW2NotReadyText } from "../../lib/w2-issues";
 import { disclosureParts, myMultiW2Text, twoUpHelpText } from "../../lib/w2-filing";
 import { useMoney } from "../../composables/useMoney";
@@ -56,9 +56,6 @@ const { money } = useMoney();
 const { date, longDate } = useDates();
 const notify = useNotify();
 const confirm = useConfirm();
-
-/** The first tax year an agreement must be on the current terms (server: W2_CONSENT_GATE_FROM_TAX_YEAR). */
-const GATE_YEAR = 2026;
 
 const loading = ref(true);
 const payslips = ref<PayslipSummary[]>([]);
@@ -394,7 +391,7 @@ onMounted(async () => {
             <strong class="block">Please agree to the updated terms</strong>
             {{ company }} has updated the terms for getting your W-2 online. Read them below and agree
             again to keep getting your W-2s here. Until you do, {{ company }} will give you your W-2s
-            for {{ GATE_YEAR }} and later on paper. W-2s you already have online stay available.
+            for {{ W2_CONSENT_GATE_FROM_TAX_YEAR }} and later on paper. W-2s you already have online stay available.
           </Message>
           <!-- S22 -->
           <p v-else style="margin: 0">

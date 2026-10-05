@@ -28,6 +28,13 @@ export function electronicW2AccessThrough(
   return plus90 > oct15 ? plus90 : oct15;
 }
 
+/**
+ * PAY-208 (re-consent rule): the first tax year a consent must be on a
+ * version of the 2026 set (server W2_CONSENT_VERSIONS_FROM_2026). Shared so
+ * the employee card and the admin employee page name the same year.
+ */
+export const W2_CONSENT_GATE_FROM_TAX_YEAR = 2026;
+
 /** PAY-208 ((j)(6)): days a corrected W-2 stays online after it is posted. */
 export const CORRECTED_W2_ACCESS_DAYS = 90;
 

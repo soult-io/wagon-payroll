@@ -1117,7 +1117,7 @@ onMounted(async () => {
                 <Tag
                   v-else
                   :value="data.consented ? 'electronic' : 'paper'"
-                  :severity="data.consented ? 'success' : 'warn'"
+                  :severity="data.consented ? 'success' : 'secondary'"
                 />
                 <span :class="{ muted: data.furnished === 'none' }" style="display: block; margin-top: 0.25rem">
                   {{ furnishedText(data) }}

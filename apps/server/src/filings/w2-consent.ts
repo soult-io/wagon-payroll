@@ -42,6 +42,7 @@ import {
 import {
   addressLine,
   electronicW2AccessThrough,
+  W2_CONSENT_GATE_FROM_TAX_YEAR as SHARED_GATE_YEAR,
   type PostalAddress,
   type W2Contact,
 } from "@payroll/shared";
@@ -57,8 +58,8 @@ type ReadDb = Pick<Db, "select">;
 /** Version of the current disclosure text — bumped when the wording changes. */
 export const W2_DISCLOSURE_VERSION = "2026-10";
 
-/** The first tax year a consent must be on a version of the 2026 set. */
-export const W2_CONSENT_GATE_FROM_TAX_YEAR = 2026;
+/** The first tax year a consent must be on a version of the 2026 set (@payroll/shared). */
+export const W2_CONSENT_GATE_FROM_TAX_YEAR = SHARED_GATE_YEAR;
 
 /**
  * Versions whose consent covers tax years from W2_CONSENT_GATE_FROM_TAX_YEAR.
