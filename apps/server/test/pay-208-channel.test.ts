@@ -391,7 +391,11 @@ describe("T14 furnishCorrectionIfNeeded uses the year-aware channel (w2Changed c
   }, 240_000);
   afterAll(async () => env.close());
 
-  it("2026: outdated and terminated -> w2_paper_correction_needed, no new portal_notice, no IMPORTANT mail; current -> w2_changed_notice_sent; 2025 outdated -> w2_changed_notice_sent", async () => {
+  // PAY-217 (federal SME ruling 2026-10-05, R1): a correction of a year
+  // furnished online is posted online whatever the employment status — the
+  // terminated consenter (2026 posted online) now gets the corrected
+  // portal_notice + IMPORTANT mail (and is also owed paper, R2).
+  it("2026: outdated -> w2_paper_correction_needed, no new portal_notice, no IMPORTANT mail; terminated (year posted online, PAY-217 R1) and current -> w2_changed_notice_sent; 2025 outdated -> w2_changed_notice_sent", async () => {
     const run = async (k: string, year: number) => {
       const before = (await furnishings(env, e[k]!.id, year)).length;
       const out = await correct(env, e[k]!.id, year, "2027-02-01");
@@ -410,7 +414,7 @@ describe("T14 furnishCorrectionIfNeeded uses the year-aware channel (w2Changed c
       old2025: await run("old2025", 2025),
     }).toEqual({
       outdated: { out: "w2_paper_correction_needed", newPortal: 0, important: false },
-      term: { out: "w2_paper_correction_needed", newPortal: 0, important: false },
+      term: { out: "w2_changed_notice_sent", newPortal: 1, important: true },
       current: { out: "w2_changed_notice_sent", newPortal: 1, important: true },
       old2025: { out: "w2_changed_notice_sent", newPortal: 1, important: true },
     });

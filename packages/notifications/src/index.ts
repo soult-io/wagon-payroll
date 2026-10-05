@@ -767,6 +767,12 @@ export function w2Changed(
      * (electronicW2AccessThrough(year, posted on)); consented variant only.
      */
     accessThrough?: string;
+    /**
+     * PAY-217 (SME R2): the employee's job has ended — the W-2 page is the
+     * only page after sign-in, and the company also gives a paper copy.
+     * Consented variant only.
+     */
+    former?: boolean;
   },
 ): RenderedEmail {
   const year = data.taxYear;
@@ -776,16 +782,20 @@ export function w2Changed(
       : "";
     const lead = (co: string) =>
       `${co} has corrected your ${year} Form W-2. The corrected W-2 is marked CORRECTED and replaces the earlier one. Use the corrected W-2 for your tax return.`;
+    const paper = (co: string) => (data.former ? ` ${co} will also give you a paper copy.` : "");
     const tail =
       "If you already filed your return using the earlier W-2, you may need to amend it.";
     const where = (signIn: string) =>
-      `To view and print it, sign in at ${signIn}, open ${PAYSLIPS_NAV_LABEL}, and find "${W2_CARD_HEADING}".`;
+      data.former
+        ? `To view and print it, sign in at ${signIn}. Your W-2s open right after you sign in.`
+        : `To view and print it, sign in at ${signIn}, open ${PAYSLIPS_NAV_LABEL}, and find "${W2_CARD_HEADING}".`;
     const appUrl = escapeHtml(ctx.appUrl);
-    const body = `<p>${lead(escapeHtml(ctx.companyName))}</p><p>${where(`<a href="${appUrl}">${appUrl}</a>`)}</p><p>${tail}${through}</p>`;
+    const co = escapeHtml(ctx.companyName);
+    const body = `<p>${lead(co)}${paper(co)}</p><p>${where(`<a href="${appUrl}">${appUrl}</a>`)}</p><p>${tail}${through}</p>`;
     return {
       subject: `IMPORTANT TAX RETURN DOCUMENT AVAILABLE: Your corrected ${year} W-2 from ${ctx.companyName}`,
       html: page(ctx, body),
-      text: `${lead(ctx.companyName)} ${where(ctx.appUrl)} ${tail}${through}\n\n${footer(ctx.companyName, ctx.brandName)}`,
+      text: `${lead(ctx.companyName)}${paper(ctx.companyName)} ${where(ctx.appUrl)} ${tail}${through}\n\n${footer(ctx.companyName, ctx.brandName)}`,
     };
   }
   const notice = (co: string) =>
