@@ -335,16 +335,34 @@ describe("PAY-217 T-16 (inverted per SME R1-R3): a correction after termination 
     });
   });
 
-  it("R1 a later withdrawal does not stop the online correction of a year already furnished online (former employee who withdrew while employed)", async () => {
-    const before = (await furnishings(env, e.c2!.id, 2026)).length;
-    const out = await correct(env, e.c2!.id, 2026, "2027-03-01");
-    const added = (await furnishings(env, e.c2!.id, 2026)).slice(before);
+  it("R1 a later withdrawal does not stop the online correction of a year already furnished online (former employee who withdrew while employed): the daily reconcile posts it once, with one IMPORTANT mail", async () => {
+    // Idempotent: the T-16 test may already have run this reconcile on the
+    // same day; R1 must hold whether or not it did.
+    await reconcileW2Furnishings(deps(env), { today: "2027-03-01" });
+    const portal = (await furnishings(env, e.c2!.id, 2026)).filter(
+      (r) => r.method === "portal_notice",
+    );
     const mails = await outbox(env, e.c2!.userId, "w2_changed");
+    const before = (await furnishings(env, e.c2!.id, 2026)).length;
+    const again = await correct(env, e.c2!.id, 2026, "2027-03-01");
+    const after = (await furnishings(env, e.c2!.id, 2026)).length;
     expect({
-      out: out !== null,
-      added: added.map((r) => [r.method, r.corrected]),
+      portal: portal.map((r) => r.corrected),
+      newFigures: portal.length === 2 && portal[1]!.boxes_hash !== portal[0]!.boxes_hash,
       important: mails.filter((m) => m.subject.startsWith(IMPORTANT)).length,
-    }).toEqual({ out: true, added: [["portal_notice", true]], important: 1 });
+      paperLine: mails
+        .filter((m) => m.subject.startsWith(IMPORTANT))
+        .every((m) => /paper copy/i.test(plain(m.bodyHtml))),
+      paperOwed: (await adminRow(env, e.c2!.id))?.correctionToFurnish,
+      againNothing: [again, after - before],
+    }).toEqual({
+      portal: [false, true],
+      newFigures: true,
+      important: 1,
+      paperLine: true,
+      paperOwed: true,
+      againNothing: [null, 0],
+    });
   });
 
   it("R5 an undeliverable IMPORTANT w2_changed mail to a former employee is listed in undeliveredNotices for 2026", async () => {

@@ -10,7 +10,7 @@
  *    for every terminated employee with a login, company-local today:
  *      access none, not banned      -> ban "w2_access_ended", delete sessions,
  *                                      auth_events user_disabled, audit
- *                                      employee.w2_access_ended (actor null,
+ *                                      employee.w2_access_ended (actor "scheduler",
  *                                      after { banReason: "w2_access_ended" })
  *      access none, banned          -> no change (any reason)
  *      access w2_only, banned "w2_access_ended" -> unban, user_enabled,
@@ -107,7 +107,7 @@ describe("PAY-217 T-21 window closed: the job bans w2_access_ended once", () => 
   }, 300_000);
   afterAll(async () => env.close());
 
-  it("T-21 on 2027-10-16: ban w2_access_ended, sessions deleted, one user_disabled event, one audit row (actor null, banReason only); a second run writes nothing; sign-in refused", async () => {
+  it("T-21 on 2027-10-16: ban w2_access_ended, sessions deleted, one user_disabled event, one audit row (actor scheduler, banReason only); a second run writes nothing; sign-in refused", async () => {
     await moveTo(env, "2027-10-15T15:00:00Z");
     await mustSignIn(env, e.Jb21!);
     await moveTo(env, "2027-10-16T15:00:00Z");
@@ -133,7 +133,8 @@ describe("PAY-217 T-21 window closed: the job bans w2_access_ended once", () => 
         ended: 1,
         restored: 0,
       },
-      audit: { actorId: null, after: { banReason: "w2_access_ended" } },
+      // audit_events.actor_id is NOT NULL; system writes use "scheduler" (decided 2026-10-05).
+      audit: { actorId: "scheduler", after: { banReason: "w2_access_ended" } },
       secondSame: true,
       signIn: [403, "BANNED_USER"],
     });
