@@ -88,6 +88,11 @@ export async function createTestApp(
     /** Fixed wall clock for the issue-time pay-date check (Spec 26 (PAY-173) D9). */
     clock?: () => Date;
     /**
+     * PAY-103 R18 (brief D3-a): constructor-only clock for the tax-table
+     * coverage endpoint; falls back to `clock`, then the process clock.
+     */
+    coverageClock?: () => Date;
+    /**
      * PAY-81: opt-in PGlite contrib extensions. Pass `{ btree_gist }` (from
      * `@electric-sql/pglite/contrib/btree_gist`) so migration 0001 applies in
      * full and the `compensation_no_overlap` exclusion constraint is live.
@@ -112,6 +117,7 @@ export async function createTestApp(
   const built = await buildApp({
     ...(extra.logStream ? { logStream: extra.logStream } : {}),
     ...(extra.clock ? { clock: extra.clock } : {}),
+    ...(extra.coverageClock ? { coverageClock: extra.coverageClock } : {}),
     config,
     database: {
       db,
