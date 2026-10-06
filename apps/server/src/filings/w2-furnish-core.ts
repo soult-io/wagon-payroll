@@ -453,8 +453,9 @@ async function box15Ciphertexts(
  * key (employee, year, hash version, hash). Idempotent: ON CONFLICT DO
  * NOTHING keeps the first row. v1 (tax years before 2026) freezes boxes 1-6
  * with formCount 1 and no lines, exactly what the v1 hash covers. Returns
- * true when a row was written. The caller holds the employee lock in `tx`
- * and computed `boxesHash` from the same figures.
+ * true when a row was written. The caller holds the employee lock in `tx`.
+ * Throws when `boxesHash` is not the hash of `figures`, so a frozen row
+ * always proves its key.
  */
 export async function freezeFigures(
   tx: Pick<Db, "select" | "insert">,
@@ -466,6 +467,9 @@ export async function freezeFigures(
     source: "furnishing" | "reconstructed";
   },
 ): Promise<boolean> {
+  if (w2FiguresHash(k.employeeId, k.taxYear, k.figures) !== k.boxesHash) {
+    throw new TypeError("frozen figures do not match their hash");
+  }
   const hashVersion = hashVersionFor(k.taxYear);
   const figures =
     hashVersion === 1
