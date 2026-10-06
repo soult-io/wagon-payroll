@@ -629,6 +629,9 @@ export function taxTablesMissing(
   },
 ): RenderedEmail {
   const { year, federal, when } = data;
+  if (!federal && data.stateLabels.length === 0) {
+    throw new TypeError("taxTablesMissing needs at least one jurisdiction");
+  }
   const prior = year - 1;
   const dashboardUrl = `${ctx.appUrl}/admin`;
   const jurisdictions = joinLabels([...(federal ? ["federal"] : []), ...data.stateLabels]);

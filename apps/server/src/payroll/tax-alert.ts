@@ -163,8 +163,9 @@ export async function reportCoverageGap(
 
 /**
  * Daily step: checks today's year, plus next year from Dec 1 (APP_TZ), and
- * reports each uncovered year. A report failure is logged by class and the
- * other year is still checked; a coverage-query failure (DB down) throws.
+ * reports each uncovered year with newly reported codes. A report failure is
+ * logged by class and the other year is still checked; a coverage-query
+ * failure (DB down) throws and skips the remaining years.
  */
 export async function checkTaxTableCoverage(
   deps: { db: Db; config: AppConfig },
@@ -178,7 +179,7 @@ export async function checkTaxTableCoverage(
     const coverage = await taxTableCoverage(db, year);
     if (isCovered(coverage)) continue;
     const codes = await reportCoverageGap(db, config, coverage, today);
-    if (codes) reported.push({ year, jurisdictions: codes });
+    if (codes && codes.length > 0) reported.push({ year, jurisdictions: codes });
   }
   return { checked, reported };
 }
