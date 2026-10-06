@@ -11,8 +11,9 @@
  *   (SMTP) or the dev log transport, with exponential backoff handled in
  *   notify/outbox.ts.
  *
- * This module only wires pg-boss; all business logic lives in runs.ts and is
- * integration-tested without pg-boss (which needs a real Postgres).
+ * This module wires pg-boss; business logic lives in runs.ts and tax-alert.ts,
+ * and the draft tick body is the pg-boss-free draftTick (PAY-103 R18), so all
+ * of it is integration-tested without pg-boss (which needs a real Postgres).
  */
 
 import { PgBoss } from "pg-boss";
@@ -23,6 +24,9 @@ import { syncFormerEmployeeLogins } from "../auth/former-employee.js";
 import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
 import { generateDraftsForPeriod, monthlyPeriod } from "./runs.js";
+import { localDate } from "./run-dates.js";
+import { isCovered, taxTableCoverage } from "./tax-coverage.js";
+import { checkTaxTableCoverage, reportCoverageGap } from "./tax-alert.js";
 import { drainOutbox, type MailTransport } from "../notify/outbox.js";
 import { checkContractorFormExpiry } from "../contractors/service.js";
 import { sendDepositReminders, syncDeposits } from "../deposits/service.js";
@@ -45,9 +49,65 @@ export interface Scheduler {
   stop: () => Promise<void>;
 }
 
-function currentPeriod(): { year: number; month: number } {
-  const now = new Date();
-  return { year: now.getFullYear(), month: now.getMonth() + 1 };
+export interface DraftTickResult {
+  /** null: no active company schedule, or auto-draft off. */
+  period: { year: number; month: number; periodStart: string } | null;
+  jobs: { employeeId: number; year: number; month: number; singletonKey: string }[];
+  /** The pay-date year's coverage gap, or null when covered. */
+  missing: { year: number; federal: boolean; missingStates: string[] } | null;
+}
+
+/**
+ * The draft tick without pg-boss (PAY-103 R18): the period from the APP_TZ
+ * date of `now`, one job per W-2 employee (singletonKey
+ * "<employeeId>:<periodStart>"). When the pay-date year's tax tables are
+ * incomplete, admins are alerted (once per year and jurisdiction); with no
+ * federal table nobody is drafted, with only state tables missing every
+ * employee is still enqueued and the run skips those whose state table is
+ * missing (D5). An alert failure is logged by class and never fails the tick.
+ */
+export async function draftTick(
+  deps: { db: Db; config: AppConfig },
+  opts: { now: Date },
+): Promise<DraftTickResult> {
+  const { db, config } = deps;
+  const schedules = await db.select().from(paySchedules).where(isNull(paySchedules.employeeId));
+  const schedule = schedules[0];
+  if (!schedule?.active || !schedule.autoDraft) return { period: null, jobs: [], missing: null };
+  const today = localDate(opts.now, config.appTz);
+  const year = Number(today.slice(0, 4));
+  const month = Number(today.slice(5, 7));
+  const period = monthlyPeriod(year, month, schedule.payDayOfMonth);
+
+  // Spec 10 §4: contractors never enter payroll_runs — W-2 employees only.
+  const w2 = await db
+    .select({ id: employees.id })
+    .from(employees)
+    .where(eq(employees.employmentType, "w2"));
+  let jobs = w2.map((e) => ({
+    employeeId: e.id,
+    year,
+    month,
+    singletonKey: `${e.id}:${period.periodStart}`,
+  }));
+
+  const coverage = await taxTableCoverage(db, Number(period.payDate.slice(0, 4)));
+  let missing: DraftTickResult["missing"] = null;
+  if (!isCovered(coverage)) {
+    missing = {
+      year: coverage.year,
+      federal: coverage.federal,
+      missingStates: coverage.missingStates,
+    };
+    await reportCoverageGap(db, config, coverage, today);
+    if (!coverage.federal) {
+      console.log(
+        `[payroll] draft tick: ${coverage.year} federal tax tables not installed; no drafts generated (${jobs.length} ${jobs.length === 1 ? "employee" : "employees"})`,
+      );
+      jobs = [];
+    }
+  }
+  return { period: { year, month, periodStart: period.periodStart }, jobs, missing };
 }
 
 /** Run one annual step; a failure is logged by class only and never stops the next step. */
@@ -128,22 +188,12 @@ export async function startScheduler(deps: {
 
   // Cron tick → enqueue per-employee generation jobs (singleton per period).
   await boss.work(TICK_QUEUE, async () => {
-    const schedules = await db.select().from(paySchedules).where(isNull(paySchedules.employeeId));
-    const schedule = schedules[0];
-    if (!schedule?.active || !schedule.autoDraft) return;
-    const { year, month } = currentPeriod();
-    const period = monthlyPeriod(year, month, schedule.payDayOfMonth);
-
-    // Spec 10 §4: contractors never enter payroll_runs — W-2 employees only.
-    const activeEmployees = await db
-      .select({ id: employees.id })
-      .from(employees)
-      .where(eq(employees.employmentType, "w2"));
-    for (const employee of activeEmployees) {
+    const tick = await draftTick({ db, config }, { now: new Date() });
+    for (const job of tick.jobs) {
       await boss.send(
         GENERATE_QUEUE,
-        { employeeId: employee.id, year, month },
-        { singletonKey: `${employee.id}:${period.periodStart}` },
+        { employeeId: job.employeeId, year: job.year, month: job.month },
+        { singletonKey: job.singletonKey },
       );
     }
   });
@@ -152,8 +202,10 @@ export async function startScheduler(deps: {
   await boss.work<{ employeeId: number; year: number; month: number }>(
     GENERATE_QUEUE,
     async (jobs) => {
+      // PAY-103 R18: skips are counted by reason code (no ids, no names).
+      const skipped: Record<string, number> = {};
       for (const job of jobs) {
-        await generateDraftsForPeriod(
+        const result = await generateDraftsForPeriod(
           { db, config },
           {
             year: job.data.year,
@@ -163,6 +215,10 @@ export async function startScheduler(deps: {
             createdBy: "scheduler",
           },
         );
+        for (const s of result.skipped) skipped[s.reason] = (skipped[s.reason] ?? 0) + 1;
+      }
+      if (Object.keys(skipped).length > 0) {
+        console.log(`[payroll] draft generation skipped: ${JSON.stringify(skipped)}`);
       }
     },
   );
@@ -218,6 +274,14 @@ export async function startScheduler(deps: {
   // daily tick. All four halves are idempotent — re-ticks never duplicate
   // rows or emails.
   await boss.work(DEPOSIT_TICK_QUEUE, async () => {
+    // PAY-103 R18 (D2-a): first and isolated, so a deposit failure cannot
+    // stop it and its failure cannot stop the deposit steps. It logs only
+    // when something is newly reported.
+    try {
+      await checkTaxTableCoverage({ db, config }, { now: new Date() });
+    } catch (err) {
+      console.error(`[tax-tables] coverage check failed (${errorClass(err)})`);
+    }
     const sync = await syncDeposits({ db, config });
     if (sync.created + sync.recomputed + sync.flippedOverdue + sync.superseded > 0) {
       console.log(`[deposits] sync: ${JSON.stringify(sync)}`);

@@ -51,6 +51,11 @@ export interface BuildAppDeps {
   logStream?: { write(msg: string): void };
   /** Test override: the wall clock for the issue-time pay-date check (Spec 26 (PAY-173) D9). */
   clock?: () => Date;
+  /**
+   * Test override (PAY-103 R18 D3-a): the clock of the tax-table coverage
+   * endpoint only; defaults to `clock`, then the process clock.
+   */
+  coverageClock?: () => Date;
 }
 
 export async function buildApp(deps: BuildAppDeps = {}) {
@@ -99,6 +104,7 @@ export async function buildApp(deps: BuildAppDeps = {}) {
     guards,
     ...(deps.onScheduleChange ? { onScheduleChange: deps.onScheduleChange } : {}),
     ...(deps.clock ? { clock: deps.clock } : {}),
+    ...(deps.coverageClock ? { coverageClock: deps.coverageClock } : {}),
   });
   registerPayslipRoutes(app, { db, guards });
   registerMyW2Routes(app, { db, config, guards, ...(deps.clock ? { clock: deps.clock } : {}) });

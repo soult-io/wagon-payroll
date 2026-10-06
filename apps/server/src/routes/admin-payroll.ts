@@ -33,6 +33,7 @@ import {
 import { localDate } from "../payroll/run-dates.js";
 import { getYearEndStatus } from "../payroll/year-end.js";
 import { latestCoveredYear, taxTableCoverage } from "../payroll/tax-coverage.js";
+import { coverageYears } from "../payroll/tax-alert.js";
 
 interface AdminPayrollDeps {
   db: Db;
@@ -45,6 +46,12 @@ interface AdminPayrollDeps {
    * the year-end warning (PAY-193 D9.8); default now.
    */
   clock?: () => Date;
+  /**
+   * PAY-103 R18 (D3-a): constructor-only clock for the tax-table coverage
+   * endpoint (the ephemeral e2e boot passes the process clock); falls back to
+   * `clock`, then the process clock. Never read from env or a request.
+   */
+  coverageClock?: () => Date;
 }
 
 /** Exhaustive: a new PayrollServiceError code must be given a status here. */
@@ -142,6 +149,7 @@ function transitionInput(
 export function registerAdminPayrollRoutes(app: FastifyInstance, deps: AdminPayrollDeps): void {
   const { db, config, guards } = deps;
   const now = deps.clock ?? (() => new Date());
+  const coverageNow = deps.coverageClock ?? now;
   const admin = guards.requireRole("admin");
 
   async function audit(
@@ -454,11 +462,10 @@ export function registerAdminPayrollRoutes(app: FastifyInstance, deps: AdminPayr
   // current year, plus next year from Dec 1 (company-local date). Each entry
   // comes from taxTableCoverage, the one coverage definition. No PII.
   app.get("/api/admin/tax-tables/coverage", { preHandler: admin }, async () => {
-    const today = localDate(now(), config.appTz);
+    const today = localDate(coverageNow(), config.appTz);
     const year = Number(today.slice(0, 4));
-    const years = today.slice(5) >= "12-01" ? [year, year + 1] : [year];
     const coverage = [];
-    for (const y of years) coverage.push(await taxTableCoverage(db, y));
+    for (const y of coverageYears(today)) coverage.push(await taxTableCoverage(db, y));
     return { today, latestCoveredYear: await latestCoveredYear(db, year), years: coverage };
   });
 
