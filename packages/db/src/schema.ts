@@ -1057,6 +1057,54 @@ export const w2Furnishings = pgTable(
   ],
 );
 
+/**
+ * PAY-223: the figures of every W-2 version that reached the employee,
+ * frozen when the furnishing is recorded, so an earlier version can be
+ * rendered again inside its (j)(6) window. `figures` is exactly the object
+ * the furnishing hash covers (integer cents, box 15 by source and
+ * ciphertext digest); it never holds an SSN, a name, an address, an EIN or
+ * a decrypted state ID. `box15_ciphertexts` maps each entered state line to
+ * the stored ciphertext ("enc:v1:…") as posted, v2 only. Keyed by the
+ * furnishing's natural key; append-only (trigger in 0029). `source`:
+ * furnishing = written with the furnishing row; reconstructed = the gap
+ * sweep proved the current figures re-hash to an earlier row. Never part
+ * of /api/export.
+ */
+export const w2FurnishedFigures = pgTable(
+  "w2_furnished_figures",
+  {
+    id: serial("id").primaryKey(),
+    employeeId: integer("employee_id")
+      .notNull()
+      .references(() => employees.id),
+    taxYear: integer("tax_year").notNull(),
+    hashVersion: smallint("hash_version").notNull(),
+    boxesHash: text("boxes_hash").notNull(),
+    figures: jsonb("figures").notNull(),
+    box15Ciphertexts: jsonb("box15_ciphertexts"),
+    /** furnishing | reconstructed */
+    source: text("source").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("w2_furnished_figures_key_uniq").on(
+      t.employeeId,
+      t.taxYear,
+      t.hashVersion,
+      t.boxesHash,
+    ),
+    check("w2_furnished_figures_tax_year_check", sql`${t.taxYear} BETWEEN 2020 AND 2100`),
+    check("w2_furnished_figures_boxes_hash_check", sql`${t.boxesHash} ~ '^[0-9a-f]{64}$'`),
+    check("w2_furnished_figures_hash_version_check", sql`${t.hashVersion} IN (1, 2)`),
+    check("w2_furnished_figures_figures_check", sql`jsonb_typeof(${t.figures}) = 'object'`),
+    check(
+      "w2_furnished_figures_box15_check",
+      sql`${t.box15Ciphertexts} IS NULL OR (${t.hashVersion} = 2 AND jsonb_typeof(${t.box15Ciphertexts}) = 'object')`,
+    ),
+    check("w2_furnished_figures_source_check", sql`${t.source} IN ('furnishing','reconstructed')`),
+  ],
+);
+
 // ---------------------------------------------------------------------------
 // 12. PAY-13 phase 1 — per-state income-tax withholding
 // ---------------------------------------------------------------------------

@@ -317,6 +317,24 @@ export async function stateIdFacts(
 }
 
 /**
+ * PAY-223: the stored ciphertext ("enc:v1:…", unchanged bytes) of each
+ * state whose box 15 is an entered ID for a W-2 of `taxYear`. States on the
+ * EIN default or without an ID are left out. Nothing is decrypted; the
+ * caller freezes the ciphertext next to the furnished figures.
+ */
+export async function storedEnteredStateIds(
+  db: Pick<Db, "select">,
+  taxYear: number,
+  states: readonly string[],
+): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  for (const [state, { source, stored }] of await storedBox15(db, taxYear, states)) {
+    if (source === "entered" && stored !== null) out[state] = stored;
+  }
+  return out;
+}
+
+/**
  * Spec 24 (PAY-116) PR-2: the box 15 ID source of each state for a W-2 of
  * `taxYear` — availability only, never decrypted (no value leaves here).
  */

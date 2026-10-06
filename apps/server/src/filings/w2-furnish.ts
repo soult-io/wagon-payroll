@@ -14,7 +14,7 @@
  * (R10). The figures hash never leaves the database.
  */
 
-import { and, desc, eq, gte, inArray, like, or } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, like, notExists, or, sql } from "drizzle-orm";
 import {
   appSettings,
   auditEvents,
@@ -23,6 +23,7 @@ import {
   employees,
   taxFilings,
   w2DeliveryConsents,
+  w2FurnishedFigures,
   w2Furnishings,
 } from "@payroll/db";
 import { hasTemplate, renderW2EmployeePacket } from "@payroll/documents";
@@ -54,11 +55,13 @@ import {
   type FurnishingRow,
   furnishingRows,
   furnishingRowsByEmployee,
+  freezeFigures,
   furnishingState,
   hashVersionFor,
   isCorrected,
   latestRow,
   recordFurnishing,
+  type W2HashFigures,
   w2FiguresHash,
 } from "./w2-furnish-core.js";
 import { errorClass, FilingServiceError } from "./shared.js";
@@ -76,6 +79,7 @@ export {
   type FurnishingState,
   type FurnishMethod,
   electronicW2AccessThrough,
+  FrozenFiguresRaceError,
   furnishCurrent,
   furnishingRows,
   furnishingState,
@@ -649,7 +653,8 @@ function yearWentOnline(
 }
 
 /**
- * Post the corrected W-2 online (a corrected portal_notice with `hash`) and
+ * Post the corrected W-2 online (a corrected portal_notice of `figures`,
+ * frozen in the same transaction — PAY-223) and
  * queue the IMPORTANT w2_changed mail; when the employee left the channel
  * (withdrawn or terminated) the mail also says a paper copy is coming (SME
  * R2, round 2 N3). false when the latest portal_notice already
@@ -664,14 +669,14 @@ async function postCorrectionOnline(
     former: boolean;
     paperToo: boolean;
     taxYear: number;
-    hash: string;
+    figures: W2HashFigures;
     today: string;
   },
 ): Promise<boolean> {
   const posted = await recordFurnishing(tx, {
     employeeId: c.employeeId,
     taxYear: c.taxYear,
-    boxesHash: c.hash,
+    figures: c.figures,
     corrected: true,
     method: "portal_notice",
     actorId: null,
@@ -717,8 +722,9 @@ export async function furnishCorrectionIfNeeded(
   if (!isW2Available(taxYear, today)) return null;
   const rows = await furnishingRows(tx, employeeId, taxYear);
   if (rows.length === 0 || (await w2w3Filed(tx, taxYear))) return null;
-  const hash = await currentHash(tx, employeeId, taxYear);
-  if (hash === null) return null;
+  const figures = await printableFigures(tx, employeeId, taxYear);
+  if (figures === null) return null;
+  const hash = w2FiguresHash(employeeId, taxYear, figures);
   const found = await tx.select().from(employees).where(eq(employees.id, employeeId)).limit(1);
   const employee = found[0];
   if (employee?.employmentType !== "w2") return null;
@@ -739,7 +745,7 @@ export async function furnishCorrectionIfNeeded(
       // Round 2 N3: off the channel (withdrawn or terminated) → paper too.
       paperToo: !consented,
       taxYear,
-      hash,
+      figures,
       today,
     });
     // The latest notice already carries these figures (D2): never mail twice.
@@ -811,7 +817,7 @@ async function backfillOneInTx(tx: Tx, employeeId: number, year: number): Promis
   return recordFurnishing(tx, {
     employeeId,
     taxYear: year,
-    boxesHash: w2FiguresHash(employeeId, year, figures),
+    figures,
     corrected: false,
     method: "backfill",
     actorId: null,
@@ -923,6 +929,131 @@ export async function backfillW2Furnishings(
       .onConflictDoNothing({ target: [appSettings.key] });
   }
   return { inserted, skipped: false, failed };
+}
+
+// ---------------------------------------------------------------------------
+// PAY-223: gap sweep — freeze furnished figures written without a freeze
+// ---------------------------------------------------------------------------
+
+/** No furnishing row exists before tax year 2025 (w2_furnishings started 2026-10-04). */
+const SWEEP_FROM_YEAR = 2025;
+
+interface GapKey {
+  hashVersion: number;
+  boxesHash: string;
+}
+
+/**
+ * One employee-year of the sweep, under the employee lock in `tx`: each gap
+ * key is frozen ('reconstructed') only when it is PROVEN equal to the
+ * current figures — same hash version as the year's, and the current
+ * figures re-hash to it (for v2 that covers the entered IDs' ciphertext
+ * digests, so the copied ciphertexts are proven too). Otherwise the posted
+ * figures are gone (the hash is one-way): unreconstructable, never frozen.
+ */
+async function sweepOneInTx(
+  tx: Tx,
+  employeeId: number,
+  year: number,
+  keys: readonly GapKey[],
+): Promise<{ frozen: number; unreconstructable: number }> {
+  const figures = await printableFigures(tx, employeeId, year);
+  const version = hashVersionFor(year);
+  const hash = figures === null ? null : w2FiguresHash(employeeId, year, figures);
+  let frozen = 0;
+  let unreconstructable = 0;
+  for (const key of keys) {
+    if (figures === null || key.hashVersion !== version || key.boxesHash !== hash) {
+      unreconstructable += 1;
+      continue;
+    }
+    const wrote = await freezeFigures(tx, {
+      employeeId,
+      taxYear: year,
+      figures,
+      boxesHash: key.boxesHash,
+      source: "reconstructed",
+    });
+    if (wrote) frozen += 1;
+  }
+  return { frozen, unreconstructable };
+}
+
+/**
+ * PAY-223 (brief §5.4): every furnishing key (employee, year, hash version,
+ * hash) of any method, tax years from 2025, that has no frozen figures —
+ * rows written by v1.29.0 or during a rollback window — is frozen when the
+ * current figures provably re-hash to it (sweepOneInTx). A set difference,
+ * cheap at this size: no one-shot flag; at boot and on the daily tick after
+ * the reconcile. D5: each employee-year runs in its own transaction under
+ * the employee lock; a failure is rolled back, logged by error class only
+ * and skipped. Returns counts only: `unreconstructable` counts gap keys
+ * whose figures cannot be rebuilt (including a hash version mismatch).
+ */
+export async function sweepW2FurnishedFigures(
+  deps: Deps,
+  opts: { today?: string } = {},
+): Promise<{ frozen: number; unreconstructable: number; failed: number }> {
+  const today = opts.today ?? localDate(new Date(), deps.config.appTz);
+  const gaps = await deps.db
+    .selectDistinct({
+      employeeId: w2Furnishings.employeeId,
+      taxYear: w2Furnishings.taxYear,
+      hashVersion: w2Furnishings.hashVersion,
+      boxesHash: w2Furnishings.boxesHash,
+    })
+    .from(w2Furnishings)
+    .where(
+      and(
+        gte(w2Furnishings.taxYear, SWEEP_FROM_YEAR),
+        notExists(
+          deps.db
+            .select({ one: sql`1` })
+            .from(w2FurnishedFigures)
+            .where(
+              and(
+                eq(w2FurnishedFigures.employeeId, w2Furnishings.employeeId),
+                eq(w2FurnishedFigures.taxYear, w2Furnishings.taxYear),
+                eq(w2FurnishedFigures.hashVersion, w2Furnishings.hashVersion),
+                eq(w2FurnishedFigures.boxesHash, w2Furnishings.boxesHash),
+              ),
+            ),
+        ),
+      ),
+    )
+    .orderBy(w2Furnishings.taxYear, w2Furnishings.employeeId);
+  const byEmployeeYear = new Map<string, { employeeId: number; taxYear: number; keys: GapKey[] }>();
+  for (const g of gaps) {
+    const id = `${g.employeeId}:${g.taxYear}`;
+    const entry = byEmployeeYear.get(id) ?? {
+      employeeId: g.employeeId,
+      taxYear: g.taxYear,
+      keys: [],
+    };
+    entry.keys.push({ hashVersion: g.hashVersion, boxesHash: g.boxesHash });
+    byEmployeeYear.set(id, entry);
+  }
+  let frozen = 0;
+  let unreconstructable = 0;
+  let failed = 0;
+  for (const { employeeId, taxYear, keys } of byEmployeeYear.values()) {
+    if (!isW2Available(taxYear, today)) continue;
+    try {
+      const out = await deps.db.transaction(async (tx) => {
+        await lockEmployee(tx, employeeId);
+        return sweepOneInTx(tx, employeeId, taxYear, keys);
+      });
+      frozen += out.frozen;
+      unreconstructable += out.unreconstructable;
+    } catch (err) {
+      failed += 1;
+      // Class only: no year, id, hash or amount.
+      console.error(
+        `[filings] W-2 frozen figures sweep: one employee-year failed (${errorClass(err)})`,
+      );
+    }
+  }
+  return { frozen, unreconstructable, failed };
 }
 
 // ---------------------------------------------------------------------------

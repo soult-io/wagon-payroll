@@ -19,8 +19,10 @@
  * SHA-256 of the stored ciphertext (PR-3 R3).
  */
 
+import { createHash } from "node:crypto";
 import { and, desc, eq, inArray } from "drizzle-orm";
-import { w2Furnishings } from "@payroll/db";
+import { w2FurnishedFigures, w2Furnishings } from "@payroll/db";
+import { storedEnteredStateIds } from "../company/state-ids.js";
 import type { Db } from "../db.js";
 import { worksheetHash } from "./shared.js";
 import type { W2BoxesCents } from "./w2-boxes.js";
@@ -316,24 +318,228 @@ export async function furnishingRowsByEmployee(
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// PAY-223: frozen figures (w2_furnished_figures)
+// ---------------------------------------------------------------------------
+
+/** One state line of the frozen figures: exactly the keys the v2 hash covers. */
+export interface FrozenStateLine {
+  state: string;
+  form: number;
+  row: number;
+  box16Cents: number | null;
+  box17Cents: number | null;
+  stateIdSource: string | null;
+  stateIdDigest: string | null;
+}
+
 /**
- * Insert one furnishing event. Review round D2: skipped only when the LATEST
- * row (highest id) of the same method already carries this hash — figures
- * that come back to an earlier hash are furnished again. Returns true when a
- * row was written. The caller holds the employee lock and read the figures
- * in the same transaction (R10), so the read-then-insert cannot race.
+ * The figures frozen for one furnished W-2 version: exactly the object the
+ * furnishing hash covers, in integer cents. Never an SSN, a name, an
+ * address, an EIN or a state ID value.
+ */
+export interface FrozenFigures {
+  box1Cents: number;
+  box2Cents: number;
+  box3Cents: number;
+  box4Cents: number;
+  box5Cents: number;
+  box6Cents: number;
+  formCount: number;
+  stateLines: FrozenStateLine[];
+  /** Spec 24 emits no local lines (PAY-171 extends the hash and this together). */
+  localLines: never[];
+}
+
+/** Fixed-message TypeError for frozenFigures: never echoes the offending value. */
+function notFrozenCents(): TypeError {
+  return new TypeError("frozenFigures: figures must be integer cents");
+}
+
+function frozenInt(v: unknown): number {
+  if (typeof v === "number" && Number.isSafeInteger(v)) return v;
+  throw notFrozenCents();
+}
+
+function frozenIntOrNull(v: unknown): number | null {
+  return v === null ? null : frozenInt(v);
+}
+
+function frozenStrOrNull(v: unknown): string | null {
+  if (v === null || typeof v === "string") return v;
+  throw notFrozenCents();
+}
+
+/**
+ * PAY-223 (brief D-1): an allowlist copy of the hash input — boxes 1-6,
+ * formCount, each state line's {state, form, row, box16Cents, box17Cents,
+ * stateIdSource, stateIdDigest}, and `localLines: []`. Never spreads its
+ * input (a W2Figures carries legalName and issues). Pure. A non-integer
+ * amount throws a fixed TypeError, as w2FiguresHash does.
+ */
+export function frozenFigures(f: W2HashFigures): FrozenFigures {
+  return {
+    box1Cents: frozenInt(f.box1Cents),
+    box2Cents: frozenInt(f.box2Cents),
+    box3Cents: frozenInt(f.box3Cents),
+    box4Cents: frozenInt(f.box4Cents),
+    box5Cents: frozenInt(f.box5Cents),
+    box6Cents: frozenInt(f.box6Cents),
+    formCount: frozenInt(f.formCount),
+    stateLines: f.stateLines.map((l) => {
+      if (typeof l.state !== "string") throw notFrozenCents();
+      return {
+        state: l.state,
+        form: frozenInt(l.form),
+        row: frozenInt(l.row),
+        box16Cents: frozenIntOrNull(l.box16Cents),
+        box17Cents: frozenIntOrNull(l.box17Cents),
+        stateIdSource: frozenStrOrNull(l.stateIdSource),
+        stateIdDigest: frozenStrOrNull(l.stateIdDigest),
+      };
+    }),
+    localLines: [],
+  };
+}
+
+/**
+ * PAY-223: an entered box 15 ID was re-entered between the figures read and
+ * the ciphertext read, so the stored ciphertext no longer matches the
+ * figures' digest. The furnishing transaction rolls back; the caller's
+ * retry applies (daily tick next run; a download answers 409 w2_not_ready).
+ * Fixed message: no value, id, year or hash.
+ */
+export class FrozenFiguresRaceError extends Error {
+  constructor() {
+    super("state ID changed while the form was being recorded");
+    this.name = "FrozenFiguresRaceError";
+  }
+}
+
+function sha256Hex(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+/**
+ * The stored ciphertext of every entered box 15 line, each proven equal to
+ * the line's digest (OD-3 A); null when no line is entered. Nothing is
+ * decrypted. FrozenFiguresRaceError on any mismatch or missing ciphertext.
+ */
+async function box15Ciphertexts(
+  tx: Pick<Db, "select">,
+  taxYear: number,
+  lines: readonly FrozenStateLine[],
+): Promise<Record<string, string> | null> {
+  const entered = lines.filter((l) => l.stateIdSource === "entered");
+  if (entered.length === 0) return null;
+  const stored = await storedEnteredStateIds(
+    tx,
+    taxYear,
+    entered.map((l) => l.state),
+  );
+  const out: Record<string, string> = {};
+  for (const l of entered) {
+    const ct = stored[l.state];
+    if (ct === undefined || l.stateIdDigest === null || sha256Hex(ct) !== l.stateIdDigest) {
+      throw new FrozenFiguresRaceError();
+    }
+    out[l.state] = ct;
+  }
+  return out;
+}
+
+/**
+ * PAY-223: freeze the figures of one furnished version under its natural
+ * key (employee, year, hash version, hash). Idempotent: ON CONFLICT DO
+ * NOTHING keeps the first row. v1 (tax years before 2026) freezes boxes 1-6
+ * with formCount 1 and no lines, exactly what the v1 hash covers. Returns
+ * true when a row was written. The caller holds the employee lock in `tx`
+ * and computed `boxesHash` from the same figures.
+ */
+export async function freezeFigures(
+  tx: Pick<Db, "select" | "insert">,
+  k: {
+    employeeId: number;
+    taxYear: number;
+    figures: W2HashFigures;
+    boxesHash: string;
+    source: "furnishing" | "reconstructed";
+  },
+): Promise<boolean> {
+  const hashVersion = hashVersionFor(k.taxYear);
+  const figures =
+    hashVersion === 1
+      ? frozenFigures({ ...boxesOf(k.figures), formCount: 1, stateLines: [] })
+      : frozenFigures(k.figures);
+  const box15 =
+    hashVersion === 1 ? null : await box15Ciphertexts(tx, k.taxYear, figures.stateLines);
+  const wrote = await tx
+    .insert(w2FurnishedFigures)
+    .values({
+      employeeId: k.employeeId,
+      taxYear: k.taxYear,
+      hashVersion,
+      boxesHash: k.boxesHash,
+      figures,
+      box15Ciphertexts: box15,
+      source: k.source,
+    })
+    .onConflictDoNothing({
+      target: [
+        w2FurnishedFigures.employeeId,
+        w2FurnishedFigures.taxYear,
+        w2FurnishedFigures.hashVersion,
+        w2FurnishedFigures.boxesHash,
+      ],
+    })
+    .returning({ id: w2FurnishedFigures.id });
+  return wrote.length > 0;
+}
+
+/** Boxes 1-6 only (the v1 hash input). */
+function boxesOf(f: W2BoxesCents): W2BoxesCents {
+  return {
+    box1Cents: f.box1Cents,
+    box2Cents: f.box2Cents,
+    box3Cents: f.box3Cents,
+    box4Cents: f.box4Cents,
+    box5Cents: f.box5Cents,
+    box6Cents: f.box6Cents,
+  };
+}
+
+/**
+ * Insert one furnishing event for `figures`. The hash is computed here, so
+ * the row's hash and the frozen figures cannot disagree. PAY-223: the
+ * figures are frozen first in the same transaction (freezeFigures), also
+ * when the furnishing row is then deduped — that heals a row written
+ * without a freeze. Review round D2: the furnishing row is skipped only
+ * when the LATEST row (highest id) of the same method already carries this
+ * hash — figures that come back to an earlier hash are furnished again.
+ * Returns true when a furnishing row was written. The caller holds the
+ * employee lock and read the figures in the same transaction (R10), so the
+ * read-then-insert cannot race. FrozenFiguresRaceError when an entered
+ * state ID changed since the figures were read.
  */
 export async function recordFurnishing(
   tx: Pick<Db, "select" | "insert">,
   row: {
     employeeId: number;
     taxYear: number;
-    boxesHash: string;
+    figures: W2HashFigures;
     corrected: boolean;
     method: FurnishMethod;
     actorId: string | null;
   },
 ): Promise<boolean> {
+  const boxesHash = w2FiguresHash(row.employeeId, row.taxYear, row.figures);
+  await freezeFigures(tx, {
+    employeeId: row.employeeId,
+    taxYear: row.taxYear,
+    figures: row.figures,
+    boxesHash,
+    source: "furnishing",
+  });
   const last = await tx
     .select({ boxesHash: w2Furnishings.boxesHash })
     .from(w2Furnishings)
@@ -346,8 +552,16 @@ export async function recordFurnishing(
     )
     .orderBy(desc(w2Furnishings.id))
     .limit(1);
-  if (last[0]?.boxesHash === row.boxesHash) return false;
-  await tx.insert(w2Furnishings).values({ ...row, hashVersion: hashVersionFor(row.taxYear) });
+  if (last[0]?.boxesHash === boxesHash) return false;
+  await tx.insert(w2Furnishings).values({
+    employeeId: row.employeeId,
+    taxYear: row.taxYear,
+    boxesHash,
+    hashVersion: hashVersionFor(row.taxYear),
+    corrected: row.corrected,
+    method: row.method,
+    actorId: row.actorId,
+  });
   return true;
 }
 
@@ -377,7 +591,7 @@ export async function furnishCurrent(
   const inserted = await recordFurnishing(tx, {
     employeeId: row.employeeId,
     taxYear: row.taxYear,
-    boxesHash: hash,
+    figures: row.figures,
     corrected,
     method: row.method,
     actorId: row.actorId,

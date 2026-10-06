@@ -59,6 +59,7 @@ import { errorClass, FilingServiceError } from "../filings/shared.js";
 import {
   currentFiguresWentOnline,
   electronicAccessAlreadyFurnished,
+  FrozenFiguresRaceError,
   furnishAndRender,
   isMyW2Corrected,
   W2NotAvailableError,
@@ -121,8 +122,10 @@ async function sendW2Pdf(
     // PAY-162: every refusal is the same bare body — no year, no codes, no
     // ids — whether the W-2 is held, unreadable, unconfigured, has no
     // official form, or does not exist for this employee and year.
+    // PAY-223: a state ID re-entered mid-download rolled the record back;
+    // the employee retries.
     const block = annualBlockBody(err);
-    if (block || err instanceof FilingServiceError) {
+    if (block || err instanceof FilingServiceError || err instanceof FrozenFiguresRaceError) {
       return reply.code(409).send({ error: "w2_not_ready" });
     }
     throw err;
