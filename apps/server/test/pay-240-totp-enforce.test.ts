@@ -7,12 +7,13 @@
  * - requireAuth refuses a session whose user has twoFactorEnabled !== true
  *   with 403 mfa_required, on every guard class (requireAuth, requireRole,
  *   requireEmployeeSelf, PAY-217 formerEmployeeW2 opt-in routes).
- * - The /api/auth mount gives such a session only the PAY-217 allowlist
- *   (sign-in, TOTP / backup-code verify, get-session, sign-out); any other
- *   Better Auth path answers 403 mfa_required and changes nothing.
- * - Round 2: a session without 2FA cannot use the TOTP / backup-code verify
- *   paths either (only sign-in, get-session, sign-out), still meets the 12h
- *   idle revocation, and BA's email-OTP paths (send-otp, verify-otp) are off.
+ * - The /api/auth mount gives such a session only sign-in, get-session and
+ *   sign-out (not the TOTP / backup-code verify paths of the PAY-217
+ *   former-employee allowlist); any other Better Auth path answers 403
+ *   mfa_required and changes nothing.
+ * - Such a session still meets the 12h idle revocation (401 session_expired
+ *   before the MFA refusal), and BA's email-OTP paths (send-otp, verify-otp)
+ *   are disabled.
  * - Regression: onboarding enrollment, admin reset + re-enrollment, and a
  *   fully enrolled user's session keep working.
  *
