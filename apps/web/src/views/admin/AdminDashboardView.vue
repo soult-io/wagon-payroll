@@ -10,6 +10,7 @@ import Message from "primevue/message";
 import PageHeader from "../../components/PageHeader.vue";
 import EmptyState from "../../components/EmptyState.vue";
 import StatusChip from "../../components/StatusChip.vue";
+import MissingTaxTablesBanner from "../../components/MissingTaxTablesBanner.vue";
 import {
   adminEmployeesApi,
   adminPayrollApi,
@@ -109,6 +110,8 @@ function employeeName(id: number): string {
 <template>
   <div class="page stack">
     <PageHeader title="Admin dashboard" subtitle="Everything waiting on your decision." />
+
+    <MissingTaxTablesBanner />
 
     <Message
       v-if="yearEnd && yearEndText"

@@ -54,6 +54,10 @@ const EVENT_LABELS: Record<string, { label: string; blurb: string }> = {
     label: "Tax filing due",
     blurb: "Reminder before a quarterly filing due date, e.g. Form 941 (admins)",
   },
+  tax_tables_missing: {
+    label: "Tax tables not installed",
+    blurb: "When the tax tables for a payroll year aren't installed yet (admins)",
+  },
 };
 const settings = ref<(NotificationSetting & { saving?: boolean })[]>([]);
 const settingsLoading = ref(true);

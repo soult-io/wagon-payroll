@@ -163,6 +163,20 @@ WebSockets are not required.
   `docker compose up -d` — the migrate one-shot handles the schema. Pin to a
   `vX.Y.Z` release tag in production rather than tracking `latest`.
 
+## Missing tax tables notice
+
+Tax tables are the yearly rates and limits used to work out the taxes on each
+paycheck: one set per year for federal, and one for each state your employees
+work in. When a payroll year's tables aren't installed, admins see a notice at
+the top of the Dashboard and Payroll pages and get an email, from December 1
+for the coming year and at any time for the current year; each missing table is
+emailed about once per year. Until the tables are installed, payroll with a pay
+date in that year can't be prepared, so no new drafts appear (when only some
+states are missing, only employees who work in those states are held). Payrolls
+already issued aren't affected. The notice always shows while tables are
+missing; each admin can turn the email off under My payroll → Settings
+("Tax tables not installed").
+
 ## Release process (for maintainers of this repo)
 
 Prod moves only through tagged releases — two explicit approvals (spec 13,

@@ -11,6 +11,7 @@ import Select from "primevue/select";
 import PageHeader from "../../components/PageHeader.vue";
 import EmptyState from "../../components/EmptyState.vue";
 import StatusChip from "../../components/StatusChip.vue";
+import MissingTaxTablesBanner from "../../components/MissingTaxTablesBanner.vue";
 import {
   adminEmployeesApi,
   adminPayrollApi,
@@ -144,6 +145,8 @@ onMounted(async () => {
       <Select v-model="yearFilter" :options="yearOptions" option-label="label" option-value="value" size="small" />
       <Select v-model="statusSelect" :options="statusOptions" option-label="label" option-value="value" size="small" />
     </PageHeader>
+
+    <MissingTaxTablesBanner />
 
     <div class="card table-scroll">
       <DataTable
