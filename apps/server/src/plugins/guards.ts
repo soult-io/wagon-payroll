@@ -131,12 +131,6 @@ export function createGuards(deps: {
       await reply.code(403).send({ error: "account_disabled" });
       return;
     }
-    // PAY-240: every session must belong to a user with TOTP on (spec 3:
-    // password then TOTP). A password-only session reaches nothing.
-    if (user.twoFactorEnabled !== true) {
-      await reply.code(403).send({ error: "mfa_required" });
-      return;
-    }
     // Idle enforcement: session.updatedAt is our last-activity marker (BA
     // session refresh is disabled, so nothing else moves it).
     const lastActivity = new Date(session.updatedAt).getTime();
@@ -148,6 +142,13 @@ export function createGuards(deps: {
       }
       await writeAuthEvent(db, AUTH_EVENT.sessionRevoked, user.id, requestContext(toHeaders(req)));
       await reply.code(401).send({ error: "session_expired" });
+      return;
+    }
+    // PAY-240: every session must belong to a user with TOTP on (spec 3:
+    // password then TOTP). Checked after idle so a stale session is still
+    // revoked, and before the touch so a refused session never stays alive.
+    if (user.twoFactorEnabled !== true) {
+      await reply.code(403).send({ error: "mfa_required" });
       return;
     }
     if (now - lastActivity > TOUCH_THROTTLE_MS) {

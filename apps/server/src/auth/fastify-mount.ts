@@ -9,8 +9,9 @@
  * /admin/*, any future plugin path — answers 403 w2_access_only. A request
  * without a session passes unchanged (sign-in must keep working).
  *
- * PAY-240: a session whose user has no TOTP gets the same allowlist; every
- * other path answers 403 mfa_required.
+ * PAY-240: a session whose user has no TOTP reaches only sign-in,
+ * get-session and sign-out (not the TOTP / backup-code steps, which could
+ * enroll TOTP outside onboarding); every other path answers 403 mfa_required.
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -21,16 +22,18 @@ import { formerEmployeeAccess } from "./former-employee.js";
 import { type SessionUser, toHeaders } from "../plugins/guards.js";
 import { localDate } from "../payroll/run-dates.js";
 
-/**
- * PAY-217 / PAY-240: the Better Auth calls a restricted session (former
- * employee, or no TOTP) may make (method + exact path).
- */
-const RESTRICTED_SESSION_AUTH_PATHS: ReadonlySet<string> = new Set([
+/** PAY-240: the Better Auth calls a session without TOTP may make (method + exact path). */
+const NO_MFA_SESSION_AUTH_PATHS: ReadonlySet<string> = new Set([
   "POST /sign-in/email",
-  "POST /two-factor/verify-totp",
-  "POST /backup-code/verify",
   "GET /get-session",
   "POST /sign-out",
+]);
+
+/** PAY-217: the Better Auth calls a former employee's session may make (method + exact path). */
+const FORMER_EMPLOYEE_AUTH_PATHS: ReadonlySet<string> = new Set([
+  ...NO_MFA_SESSION_AUTH_PATHS,
+  "POST /two-factor/verify-totp",
+  "POST /backup-code/verify",
 ]);
 
 /** "METHOD /path" of a request under /api/auth, without the query string. */
@@ -74,14 +77,18 @@ export function mountBetterAuth(
   const { auth, db, config } = deps;
   const clock = deps.clock ?? (() => new Date());
 
-  /** Why the request's session may reach only the allowlist; null = unrestricted or no session. */
-  async function sessionRestriction(
+  /** The refusal for this request's session on `pathKey`; null = allowed or no session. */
+  async function sessionRefusal(
     req: FastifyRequest,
+    pathKey: string,
   ): Promise<"mfa_required" | "w2_access_only" | null> {
     const session = await auth.api.getSession({ headers: toHeaders(req) });
     if (!session) return null;
     // Auth's static type omits plugin fields; guards.ts reads the same shape.
-    if ((session.user as SessionUser).twoFactorEnabled !== true) return "mfa_required";
+    if ((session.user as SessionUser).twoFactorEnabled !== true) {
+      return NO_MFA_SESSION_AUTH_PATHS.has(pathKey) ? null : "mfa_required";
+    }
+    if (FORMER_EMPLOYEE_AUTH_PATHS.has(pathKey)) return null;
     const today = localDate(clock(), config.appTz);
     const access = await formerEmployeeAccess(db, session.user.id, today, config.appTz);
     return access.kind === "full" ? null : "w2_access_only";
@@ -108,9 +115,11 @@ export function mountBetterAuth(
       },
     },
     handler: async (req, reply) => {
-      if (!RESTRICTED_SESSION_AUTH_PATHS.has(authPathKey(req))) {
-        const restriction = await sessionRestriction(req);
-        if (restriction) return reply.code(403).send({ error: restriction });
+      const pathKey = authPathKey(req);
+      // Sign-in carries no session worth checking; skip the lookup (rate-limited path).
+      if (!NO_MFA_SESSION_AUTH_PATHS.has(pathKey)) {
+        const refused = await sessionRefusal(req, pathKey);
+        if (refused) return reply.code(403).send({ error: refused });
       }
       const response = await auth.handler(toFetchRequest(req, config));
       await sendFetchResponse(reply, response);

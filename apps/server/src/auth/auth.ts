@@ -41,6 +41,9 @@ const DISABLED_PATHS = [
   "/two-factor/enable",
   "/two-factor/disable",
   "/two-factor/get-totp-uri",
+  // No email/SMS OTP is configured; keep a weaker second factor from appearing.
+  "/two-factor/send-otp",
+  "/two-factor/verify-otp",
 ];
 
 export interface AuthDeps {
