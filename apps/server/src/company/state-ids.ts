@@ -335,6 +335,29 @@ export async function storedEnteredStateIds(
 }
 
 /**
+ * PAY-223 (OD-3 A): decrypt the entered box 15 ID frozen next to a furnished
+ * version's figures — render time only, never stored, returned or logged.
+ * StateIdUnreadableError (no value, no cause) on a decrypt failure.
+ */
+export function decryptFrozenStateId(stored: string, key: string): string {
+  return decryptBox15(stored, "entered", key);
+}
+
+/**
+ * PAY-223 (D-2): the IL/NY EIN default box 15 prints on an earlier version —
+ * the CURRENT EIN digits (as box b), or null when the company has no EIN.
+ * EinUnreadableError on a decrypt failure.
+ */
+export async function currentEinDefaultId(
+  db: Pick<Db, "select">,
+  key: string,
+): Promise<string | null> {
+  const [owner] = await db.select({ ein: company.ein }).from(company).limit(1);
+  const ein = storedEin(owner?.ein);
+  return ein === null ? null : decryptBox15(ein, "ein_default", key);
+}
+
+/**
  * Spec 24 (PAY-116) PR-2: the box 15 ID source of each state for a W-2 of
  * `taxYear` — availability only, never decrypted (no value leaves here).
  */

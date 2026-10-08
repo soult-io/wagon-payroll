@@ -77,6 +77,7 @@ import {
   Y,
   oracleAccessThrough,
 } from "./annual-w2-corrected-harness.js";
+import { expMyVersions } from "./pay-223-versions-oracle.js";
 
 let env: L4Env;
 
@@ -268,6 +269,8 @@ describe("T10 the L4 miss: downloaded before the year notice", () => {
             // PAY-208 N1 ((j)(6)): later of Oct 15, 2026 and 90 days after the
             // corrected posting (independent oracle, harness).
             accessThrough: await oracleAccessThrough(env.t, e.id, Y, env.t.config.appTz),
+            // PAY-223 PR-2 (D-4): the downloaded original and the corrected posting.
+            versions: await expMyVersions(env.t, e.id, Y, { current: h2, downloadable: true }),
           },
         ],
         // PAY-208 (2.2b): no issued year waiting for January.
@@ -414,6 +417,8 @@ describe("T12 paper correction: printed, changed, marked given on paper", () => 
             formCount: 1,
             // PAY-208 N1 ((j)(6)): Oct 15, 2026 (Thursday); no corrected portal_notice.
             accessThrough: "2026-10-15",
+            // PAY-223 PR-2 (D-4): printed and paper only, nothing posted online.
+            versions: [],
           },
         ],
         // PAY-208 (2.2b): no issued year waiting for January.

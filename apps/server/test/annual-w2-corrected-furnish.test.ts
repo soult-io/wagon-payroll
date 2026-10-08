@@ -70,6 +70,7 @@ import {
   type W2Emp,
   Y,
 } from "./annual-w2-corrected-harness.js";
+import { expMyVersions } from "./pay-223-versions-oracle.js";
 
 let env: L4Env;
 
@@ -317,6 +318,8 @@ describe("R7/R8 list fields", () => {
           formCount: 1,
           // PAY-208 N1 ((j)(6)): Oct 15, 2026 (Thursday); unchanged W-2, no correction.
           accessThrough: "2026-10-15",
+          // PAY-223 PR-2 (D-4): the one downloaded version, current.
+          versions: await expMyVersions(env.t, a.id, Y, { current: "last", downloadable: true }),
         },
       ],
       // PAY-208 (2.2b): no issued year waiting for January.

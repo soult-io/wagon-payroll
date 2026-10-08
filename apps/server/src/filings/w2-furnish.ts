@@ -523,7 +523,7 @@ export async function w2AccessThrough(
 }
 
 /** The current figures hash, or null (no W-2, blocked, or unreadable). */
-async function currentHash(
+export async function currentHash(
   db: Pick<Db, "select">,
   employeeId: number,
   year: number,
