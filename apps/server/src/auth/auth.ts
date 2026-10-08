@@ -26,13 +26,21 @@ import { createAuditHook, lockoutUser } from "./hooks.js";
 import type { AppConfig } from "../config.js";
 import type { Db } from "../db.js";
 
-/** Paths we hard-disable (spec: invite-only; impersonation OFF; BA backup-code paths replaced by ours). */
+/**
+ * Paths we hard-disable (spec: invite-only; impersonation OFF; BA backup-code
+ * paths replaced by ours). PAY-240: TOTP is enrolled only through onboarding
+ * (routes/onboarding.ts, via the adapter) and removed only by an admin reset,
+ * so BA's own enable / disable / get-totp-uri paths are off.
+ */
 const DISABLED_PATHS = [
   "/sign-up/email",
   "/admin/impersonate-user",
   "/admin/stop-impersonating",
   "/two-factor/verify-backup-code",
   "/two-factor/generate-backup-codes",
+  "/two-factor/enable",
+  "/two-factor/disable",
+  "/two-factor/get-totp-uri",
 ];
 
 export interface AuthDeps {
