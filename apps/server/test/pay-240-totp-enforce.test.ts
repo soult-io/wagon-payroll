@@ -10,6 +10,9 @@
  * - The /api/auth mount gives such a session only the PAY-217 allowlist
  *   (sign-in, TOTP / backup-code verify, get-session, sign-out); any other
  *   Better Auth path answers 403 mfa_required and changes nothing.
+ * - Round 2: a session without 2FA cannot use the TOTP / backup-code verify
+ *   paths either (only sign-in, get-session, sign-out), still meets the 12h
+ *   idle revocation, and BA's email-OTP paths (send-otp, verify-otp) are off.
  * - Regression: onboarding enrollment, admin reset + re-enrollment, and a
  *   fully enrolled user's session keep working.
  *
@@ -17,16 +20,19 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import {
   authAccount,
+  authEvents,
+  authSession,
   authTwoFactor,
   authUser,
   company,
   employees,
   w2Furnishings,
 } from "@payroll/db";
-import { symmetricDecrypt } from "better-auth/crypto";
+import { generateRandomString, symmetricDecrypt, symmetricEncrypt } from "better-auth/crypto";
+import { createOTP } from "@better-auth/utils/otp";
 import { createTestApp, cookieValue, ORIGIN, type TestContext } from "./helpers.js";
 import { currentTotp, login, sessionHeader, TEST_PASSWORD, tokenFromLink } from "./flow-helpers.js";
 import { inviteUser } from "../src/auth/users.js";
@@ -430,5 +436,115 @@ describe("PAY-240 a fully enrolled session is not refused", () => {
     expect(me.statusCode).toBe(200);
     expect(me.json().access).toBe("w2_only");
     expect((await get("/api/my/w2", cookie)).statusCode).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 2 A. A session without 2FA cannot use the TOTP / backup-code verify paths
+// ---------------------------------------------------------------------------
+
+describe("PAY-240 round 2: verify paths are closed to a session without 2FA", () => {
+  it("POST /two-factor/verify-totp with a valid code for an unverified row → 403 mfa_required, 2FA stays off", async () => {
+    const { userId, cookie } = await passwordOnlySession("pay240-r2-vtotp@example.com");
+    // An unverified twoFactor row whose secret the test knows (same shape as
+    // onboarding's totp-enable writes).
+    const ctx = await t.auth.$context;
+    const secret = generateRandomString(32);
+    await ctx.adapter.create({
+      model: "twoFactor",
+      data: {
+        userId,
+        secret: await symmetricEncrypt({ key: ctx.secretConfig, data: secret }),
+        backupCodes: "[]",
+        verified: false,
+      },
+    });
+    const code = await createOTP(secret, { digits: 6, period: 30 }).totp();
+
+    const res = await authPost("/two-factor/verify-totp", cookie, { code });
+
+    expect((await userRow(userId)).twoFactorEnabled).not.toBe(true);
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toEqual({ error: "mfa_required" });
+  });
+
+  it("POST /backup-code/verify → 403 mfa_required, backup codes unchanged", async () => {
+    const email = "pay240-r2-bcode@example.com";
+    const userId = await onboard(email);
+    // 2FA flag off but the enrolled row (with its backup codes) kept.
+    await t.db.update(authUser).set({ twoFactorEnabled: false }).where(eq(authUser.id, userId));
+    const signIn = await passwordOnlySignIn(email);
+    const cookie = cookieValue(signIn.headers["set-cookie"], "payroll.session_token");
+    if (!cookie) throw new Error(`no session cookie: ${signIn.body}`);
+    const [before] = await twoFactorRows(userId);
+
+    const res = await authPost("/backup-code/verify", cookie, { code: "AAAAA-BBBBB" });
+
+    const [after] = await twoFactorRows(userId);
+    expect(after!.backupCodes).toBe(before!.backupCodes);
+    expect(cookieValue(res.headers["set-cookie"], "payroll.session_token")).toBeNull();
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toEqual({ error: "mfa_required" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 2 B. Idle revocation applies before the MFA refusal
+// ---------------------------------------------------------------------------
+
+describe("PAY-240 round 2: idle revocation for a session without 2FA", () => {
+  it("a no-2FA session idle for more than 12h → 401 session_expired, row deleted, session_revoked event", async () => {
+    const { userId, cookie } = await passwordOnlySession("pay240-r2-idle@example.com");
+    const thirteenHoursAgo = new Date(Date.now() - 13 * 60 * 60 * 1000);
+    await t.db
+      .update(authSession)
+      .set({ updatedAt: thirteenHoursAgo })
+      .where(eq(authSession.userId, userId));
+
+    const res = await get("/api/me", cookie);
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "session_expired" });
+    const sessions = await t.db.select().from(authSession).where(eq(authSession.userId, userId));
+    expect(sessions).toHaveLength(0);
+    const revoked = await t.db
+      .select()
+      .from(authEvents)
+      .where(and(eq(authEvents.userId, userId), eq(authEvents.event, "session_revoked")));
+    expect(revoked.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 2 C. Better Auth's email-OTP two-factor paths are disabled
+// ---------------------------------------------------------------------------
+
+describe("PAY-240 round 2: two-factor OTP paths are disabled", () => {
+  it("POST /two-factor/send-otp with a full session → disabled, 2FA unchanged", async () => {
+    const email = "pay240-r2-sendotp@example.com";
+    const userId = await onboard(email);
+    const cookie = await fullLogin(email);
+    const [before] = await twoFactorRows(userId);
+
+    const res = await authPost("/two-factor/send-otp", cookie, {});
+
+    expect((await userRow(userId)).twoFactorEnabled).toBe(true);
+    const [after] = await twoFactorRows(userId);
+    expect(after!.secret).toBe(before!.secret);
+    // Repo convention for a Better Auth disabled path (it answers 404).
+    expect([403, 404]).toContain(res.statusCode);
+  });
+
+  it("POST /two-factor/verify-otp with a full session → disabled, 2FA unchanged", async () => {
+    const email = "pay240-r2-verifyotp@example.com";
+    const userId = await onboard(email);
+    const cookie = await fullLogin(email);
+    const [before] = await twoFactorRows(userId);
+
+    const res = await authPost("/two-factor/verify-otp", cookie, { code: "123456" });
+
+    expect((await userRow(userId)).twoFactorEnabled).toBe(true);
+    const [after] = await twoFactorRows(userId);
+    expect(after!.secret).toBe(before!.secret);
+    expect([403, 404]).toContain(res.statusCode);
   });
 });
