@@ -66,6 +66,7 @@ import { PDF_RATE_LIMIT, refuseCrossSite } from "../plugins/fetch-site.js";
 import { FilingServiceError } from "../filings/shared.js";
 import { localDate } from "../payroll/run-dates.js";
 import {
+  FrozenFiguresRaceError,
   type FurnishingView,
   furnishAndRender,
   furnishingViews,
@@ -157,6 +158,8 @@ function serviceError(
   // PAY-162: W-2/W-3 refusals — fixed bodies, codes and year only.
   const block = annualBlockBody(err);
   if (block) return reply.code(409).send(block);
+  // PAY-223: a state ID re-entered mid-record rolled the furnishing back; retry.
+  if (err instanceof FrozenFiguresRaceError) return reply.code(409).send({ error: "w2_not_ready" });
   if (err instanceof FilingServiceError) {
     const status = err.code === "not_found" ? 404 : err.code === "invalid_input" ? 400 : 409;
     return reply.code(status).send({ error: err.code, message: err.message });

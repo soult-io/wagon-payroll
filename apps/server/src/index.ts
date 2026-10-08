@@ -16,7 +16,7 @@ import { buildApp } from "./app.js";
 import { databaseUrl } from "./config.js";
 import { startScheduler } from "./payroll/scheduler.js";
 import { startRecurringInvoiceScheduler } from "./contractors/scheduler.js";
-import { backfillW2Furnishings } from "./filings/w2-furnish.js";
+import { backfillW2Furnishings, sweepW2FurnishedFigures } from "./filings/w2-furnish.js";
 import { errorClass } from "./filings/shared.js";
 
 // Scheduler is wired here (not in buildApp) so integration tests boot the app
@@ -54,6 +54,17 @@ const start = async () => {
       if (!backfill.skipped) app.log.info(`W-2 furnishing backfill: ${JSON.stringify(backfill)}`);
     } catch (err) {
       app.log.error(`W-2 furnishing backfill failed (${errorClass(err)})`);
+    }
+    // PAY-223: freeze the figures of furnishing rows written without a
+    // freeze (previous release, rollback window). Counts only; a failure
+    // never stops the boot and the daily tick retries.
+    try {
+      const sweep = await sweepW2FurnishedFigures({ db, config });
+      if (sweep.frozen + sweep.unreconstructable + sweep.failed > 0) {
+        app.log.info(`W-2 frozen figures sweep: ${JSON.stringify(sweep)}`);
+      }
+    } catch (err) {
+      app.log.error(`W-2 frozen figures sweep failed (${errorClass(err)})`);
     }
     if (schedulerEnabled) {
       const scheduler = await startScheduler({ db, config, databaseUrl: databaseUrl(config) });

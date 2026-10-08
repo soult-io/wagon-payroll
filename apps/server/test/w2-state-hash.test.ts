@@ -265,10 +265,21 @@ describe("H2 recordFurnishing writes hashVersionFor(taxYear)", () => {
 
   it("2025 row -> hash_version 1; 2026 row -> hash_version 2", async () => {
     for (const taxYear of [2025, 2026]) {
+      // PAY-223 PR-1: recordFurnishing takes the figures (it hashes and
+      // freezes them itself) instead of a precomputed boxesHash.
       await recordFurnishing(env.t.db, {
         employeeId,
         taxYear,
-        boxesHash: "a".repeat(64),
+        figures: {
+          box1Cents: 100_000,
+          box2Cents: 10_000,
+          box3Cents: 100_000,
+          box4Cents: 6_200,
+          box5Cents: 100_000,
+          box6Cents: 1_450,
+          formCount: 1,
+          stateLines: [],
+        },
         corrected: false,
         method: "backfill",
         actorId: null,

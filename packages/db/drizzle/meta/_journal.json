@@ -204,6 +204,13 @@
       "when": 1791153488187,
       "tag": "0028_w2_contact",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1791283311749,
+      "tag": "0029_w2_furnished_figures",
+      "breakpoints": true
     }
   ]
 }

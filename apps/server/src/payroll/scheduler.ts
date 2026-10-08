@@ -32,7 +32,11 @@ import { checkContractorFormExpiry } from "../contractors/service.js";
 import { sendDepositReminders, syncDeposits } from "../deposits/service.js";
 import { sendFilingReminders, syncFilings } from "../filings/service.js";
 import { sendW2AvailableNotices, syncAnnualFilings } from "../filings/annual.js";
-import { backfillW2Furnishings, reconcileW2Furnishings } from "../filings/w2-furnish.js";
+import {
+  backfillW2Furnishings,
+  reconcileW2Furnishings,
+  sweepW2FurnishedFigures,
+} from "../filings/w2-furnish.js";
 import { sendW2TermsUpdateNotices } from "../filings/w2-consent.js";
 import { errorClass } from "../filings/shared.js";
 
@@ -144,6 +148,14 @@ export async function annualTick(deps: { db: Db; config: AppConfig }): Promise<v
   const reconcile = await annualStep("W-2 reconcile", () => reconcileW2Furnishings({ db, config }));
   if (reconcile && reconcile.followUps + reconcile.failed > 0) {
     console.log(`[filings] W-2 corrections: ${JSON.stringify(reconcile)}`);
+  }
+  // PAY-223: after the reconcile (its corrections freeze on write), freeze
+  // any furnishing row still without frozen figures. Counts only.
+  const sweep = await annualStep("W-2 frozen figures sweep", () =>
+    sweepW2FurnishedFigures({ db, config }),
+  );
+  if (sweep && sweep.frozen + sweep.unreconstructable + sweep.failed > 0) {
+    console.log(`[filings] W-2 frozen figures sweep: ${JSON.stringify(sweep)}`);
   }
   // PAY-217: after the reconcile, so a correction posted online today
   // re-opens a former employee's sign-in the same day (SME R4); a closed

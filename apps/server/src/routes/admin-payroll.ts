@@ -31,6 +31,7 @@ import {
   type TransitionInput,
 } from "../payroll/runs.js";
 import { localDate } from "../payroll/run-dates.js";
+import { FrozenFiguresRaceError } from "../filings/w2-furnish-core.js";
 import { getYearEndStatus } from "../payroll/year-end.js";
 import { latestCoveredYear, taxTableCoverage } from "../payroll/tax-coverage.js";
 import { coverageYears } from "../payroll/tax-alert.js";
@@ -94,6 +95,9 @@ const serviceError = (
       .code(payrollErrorStatus(err))
       .send({ ...err.details, error: err.code, message: err.message });
   }
+  // PAY-223: a state ID re-entered while a late run posts its W-2
+  // correction rolls the issue back; the admin retries.
+  if (err instanceof FrozenFiguresRaceError) return reply.code(409).send({ error: "w2_not_ready" });
   throw err;
 };
 
