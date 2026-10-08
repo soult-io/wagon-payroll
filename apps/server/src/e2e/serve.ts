@@ -153,6 +153,10 @@ const { app, auth } = await buildApp({
   // D9), so this boot issues "as of" the last day of 2025; later pay dates
   // (the live-clock QA draft) are future dates and stay issuable.
   clock: () => new Date("2025-12-31T12:00:00Z"),
+  // PAY-103 R18 (D3-a): the tax-table coverage endpoint (and so the
+  // missing-tables banner) answers for the process date, which the
+  // clock-shift preload moves in the clock-shift job.
+  coverageClock: () => new Date(),
   database: {
     db,
     dialect: new PGliteDialect({ pglite }),

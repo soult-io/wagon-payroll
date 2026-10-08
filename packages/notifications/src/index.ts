@@ -54,6 +54,11 @@ export const EVENT_TYPE = {
   /** PAY-10 — quarterly filing (Form 941) due-date reminder (admin). */
   taxFilingDue: "tax_filing_due",
   /**
+   * PAY-103 R18 — the tax tables for a payroll year are not installed
+   * (admin; toggleable, default on). Once per (year, jurisdiction).
+   */
+  taxTablesMissing: "tax_tables_missing",
+  /**
    * PAY-11 — the year notice of an employee's W-2. PAY-208 (OD6, 26 CFR
    * 31.6051-1(j)(5)(i)): always on — for a consenter it is the legal notice
    * of the online W-2, so it is not in WORKFLOW_EVENTS.
@@ -94,6 +99,7 @@ export const WORKFLOW_EVENTS: readonly EventType[] = [
   EVENT_TYPE.contractorInvoicePaid,
   EVENT_TYPE.taxDepositDue,
   EVENT_TYPE.taxFilingDue,
+  EVENT_TYPE.taxTablesMissing,
 ];
 
 /**
@@ -110,6 +116,7 @@ export const EVENT_AUDIENCE: Partial<Record<EventType, EventAudience>> = {
   [EVENT_TYPE.changeRequestSubmitted]: "admin",
   [EVENT_TYPE.taxDepositDue]: "admin",
   [EVENT_TYPE.taxFilingDue]: "admin",
+  [EVENT_TYPE.taxTablesMissing]: "admin",
   [EVENT_TYPE.payslipIssued]: "w2",
   [EVENT_TYPE.contractorInvoiceReviewed]: "contractor",
   [EVENT_TYPE.contractorInvoicePaid]: "contractor",
@@ -598,6 +605,80 @@ export function taxDepositShortfallCancelled(
 function joinLabels(labels: readonly string[]): string {
   if (labels.length <= 1) return labels[0] ?? "";
   return `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
+}
+
+// ---------------------------------------------------------------------------
+// PAY-103 R18 — tax tables for a payroll year not installed (admin)
+// ---------------------------------------------------------------------------
+
+/**
+ * Admin: the tax tables for `year` are not installed. Fact and consequence
+ * only (Product Lead 2026-10-06): no instruction to install or enter tables,
+ * the only link is the admin dashboard. `federal` = federal `year` is missing
+ * right now (all payroll held); `stateLabels` = state names already sorted by
+ * the caller. `upcoming` = the year has not started; `current` = pay dates in
+ * it are held now. No amounts, names or ids.
+ */
+export function taxTablesMissing(
+  ctx: TemplateContext,
+  data: {
+    year: number;
+    federal: boolean;
+    stateLabels: readonly string[];
+    when: "upcoming" | "current";
+  },
+): RenderedEmail {
+  const { year, federal, when } = data;
+  if (!federal && data.stateLabels.length === 0) {
+    throw new TypeError("taxTablesMissing needs at least one jurisdiction");
+  }
+  const prior = year - 1;
+  const dashboardUrl = `${ctx.appUrl}/admin`;
+  const jurisdictions = joinLabels([...(federal ? ["federal"] : []), ...data.stateLabels]);
+  const states = joinLabels(data.stateLabels);
+  const tables = `The ${year} ${jurisdictions} tax tables`;
+  const definition =
+    "Tax tables are the yearly rates and limits used to work out the taxes on each paycheck.";
+
+  // Each paragraph as [plain text, html] so both bodies say the same thing.
+  let lead: [string, string];
+  let consequence: [string, string];
+  let subject: string;
+  if (when === "upcoming") {
+    lead = [
+      `${tables} aren't installed yet. ${definition}`,
+      `The <strong>${escapeHtml(`${year} ${jurisdictions} tax tables`)}</strong> aren't installed yet. ${definition}`,
+    ];
+    const text = federal
+      ? `Payroll with a pay date in ${year} can't be prepared until they're installed. Nothing changes for your ${prior} payrolls.`
+      : `Payroll with a pay date in ${year} can't be prepared for employees who work in ${states} until they're installed. Everyone else's payroll isn't affected, and nothing changes for your ${prior} payrolls.`;
+    consequence = [text, escapeHtml(text)];
+    subject = `${year} tax tables aren't installed yet`;
+  } else {
+    lead = [
+      `${tables} aren't installed. ${definition}`,
+      `The <strong>${escapeHtml(`${year} ${jurisdictions} tax tables`)}</strong> aren't installed. ${definition}`,
+    ];
+    if (federal) {
+      const held = `payroll with a pay date in ${year} can't be prepared`;
+      consequence = [
+        `Until they're installed, ${held}, so no new payroll drafts will appear for you to review. Payrolls you've already issued aren't affected.`,
+        `Until they're installed, <strong>${held}</strong>, so no new payroll drafts will appear for you to review. Payrolls you've already issued aren't affected.`,
+      ];
+      subject = `${year} payroll is on hold: tax tables not installed`;
+    } else {
+      const held = `payroll with a pay date in ${year} can't be prepared for employees who work in ${states}`;
+      consequence = [
+        `Until they're installed, ${held}, so no new payroll drafts will appear for them. Everyone else's payroll goes ahead as usual, and payrolls you've already issued aren't affected.`,
+        `Until they're installed, <strong>${escapeHtml(held)}</strong>, so no new payroll drafts will appear for them. Everyone else's payroll goes ahead as usual, and payrolls you've already issued aren't affected.`,
+      ];
+      subject = `${year} payroll is on hold for employees in ${states}`;
+    }
+  }
+
+  const notice = "Until then, you'll see a notice about this on your dashboard";
+  const body = `<p>${lead[1]}</p><p>${consequence[1]}</p><p>${notice}.</p><p><a href="${dashboardUrl}">Open your dashboard</a></p>`;
+  return email(ctx, subject, body, `${lead[0]}\n\n${consequence[0]}\n\n${notice}: ${dashboardUrl}`);
 }
 
 // ---------------------------------------------------------------------------

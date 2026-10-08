@@ -20,6 +20,8 @@ export const TARGETS = {
       "test/pay-226-*.test.ts",
       // Imports computeDepositAmount from src/deposits.
       "test/filings.test.ts",
+      // PAY-103: mocks syncDeposits around the deposit tick.
+      "test/tax-tables-alert-scheduler.test.ts",
     ],
     thresholds: { high: 85, low: 70, break: 72 },
   },
