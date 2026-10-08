@@ -6,6 +6,37 @@ All notable changes to this project will be documented here. Format follows
 
 ## [Unreleased]
 
+## [1.30.0] - 2026-10-08
+
+### Added
+
+- **Missing tax tables notice (PAY-103)** — payroll needs a set of tax tables
+  for each year (the yearly rates used to work out paycheck taxes): one for
+  federal and one for each state your employees work in. If a year's tables
+  aren't installed, admins now see a notice at the top of the Dashboard and
+  Payroll pages and get an email: from December 1 for the coming year, and
+  right away for the current year. You get one email per missing table per
+  year. Until the federal tables are installed, no payroll drafts are made
+  for pay dates in that year. If only some states are missing, only employees
+  who work in those states are held, and everyone else is paid as usual.
+  Payrolls already issued aren't affected. The notice stays up until the
+  tables are installed. Each admin can turn the email off under
+  My payroll → Settings ("Tax tables not installed").
+- **A record of every W-2 you give out (PAY-223)** — each time a W-2 is
+  posted online, printed or handed over on paper, the app now keeps a
+  permanent copy of its figures that can't be changed or deleted. This
+  includes W-2s you gave out before this update, as long as their figures
+  haven't changed since. If a W-2 is corrected, the original is kept, and
+  each version an employee was given online stays available to them until
+  their access ends. Picking a version on the Payslips and W-2/W-3 pages
+  comes in a later update.
+
+### Changed
+
+- **Payroll drafts use your company's time zone (PAY-103)** — the monthly
+  draft now follows the date in your company's time zone, not the server's
+  clock, so drafts at the turn of a month or year land in the right period.
+
 ## [1.29.0] - 2026-10-05
 
 ### Added
