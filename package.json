@@ -1,7 +1,7 @@
 {
   "name": "payroll",
   "private": true,
-  "version": "1.29.0",
+  "version": "1.30.0",
   "description": "Wagon Payroll webapp \u2014 stable, deterministic payroll for small business.",
   "engines": {
     "node": ">=22.5"
