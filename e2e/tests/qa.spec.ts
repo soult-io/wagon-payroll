@@ -193,9 +193,7 @@ test("scheduler draft: seeded current-period run shows in admin approvals (read-
       await expect(page.locator("tr", { hasText: "Awaiting approval" })).toHaveCount(0);
     });
 
-    // PAY-103 R18: the missing-tax-tables banner replaces the draft. It ships
-    // in PR-5; remove this skip there.
-    test.skip(!expectation.covered, "PAY-103 banner pending");
+    // PAY-103 R18: the missing-tax-tables banner replaces the draft.
     await step(page, "Missing-tax-tables banner names the year", async () => {
       // Ephemeral: the boot's app clock is pinned to 2025-12-31, so the
       // coverage endpoint would answer for 2025. The seed date is the

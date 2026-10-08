@@ -218,6 +218,23 @@ export interface YearEndStatus {
   openRuns: { publicId: string; payDate: string; status: RunStatus }[];
 }
 
+/** PAY-225 / PAY-103 R18: installed tax-table coverage; years and USPS codes only. */
+export interface TaxTableCoverage {
+  year: number;
+  /** A federal table exists for the year. */
+  federal: boolean;
+  /** Sorted USPS codes of work states whose table is missing for the year. */
+  missingStates: string[];
+}
+
+export interface TaxTableCoverageResponse {
+  /** Company-local date (YYYY-MM-DD), from the server. */
+  today: string;
+  latestCoveredYear: number | null;
+  /** The current year, plus next year from December 1. */
+  years: TaxTableCoverage[];
+}
+
 export interface PayrollRunRow {
   publicId: string;
   employeeId: number;
@@ -708,6 +725,7 @@ export const adminPayrollApi = {
     get<{ runs: PayrollRunRow[] }>(`/api/admin/payroll-runs${qs(filter)}`),
   run: (publicId: string) => get<RunDetailResponse>(`/api/admin/payroll-runs/${publicId}`),
   yearEnd: () => get<YearEndStatus>("/api/admin/payroll-runs/year-end"),
+  taxTableCoverage: () => get<TaxTableCoverageResponse>("/api/admin/tax-tables/coverage"),
   generate: (input: { year: number; month: number; employeeId?: number }) =>
     post<{ generated: PayrollRunRow[]; skipped: { employeeId: number; reason: string }[] }>(
       "/api/admin/payroll-runs/generate",
