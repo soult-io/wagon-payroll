@@ -166,16 +166,22 @@ WebSockets are not required.
 ## Missing tax tables notice
 
 Tax tables are the yearly rates and limits used to work out the taxes on each
-paycheck: one set per year for federal, and one for each state your employees
-work in. When a payroll year's tables aren't installed, admins see a notice at
-the top of the Dashboard and Payroll pages and get an email, from December 1
-for the coming year and at any time for the current year; each missing table is
-emailed about once per year. Until the tables are installed, payroll with a pay
-date in that year can't be prepared, so no new drafts appear (when only some
-states are missing, only employees who work in those states are held). Payrolls
-already issued aren't affected. The notice always shows while tables are
-missing; each admin can turn the email off under My payroll → Settings
-("Tax tables not installed").
+paycheck: one set per year for federal, plus one for each state your employees
+work in.
+
+When a payroll year's tables aren't installed, admins see a notice at the top
+of the Dashboard and Payroll pages and get an email: from December 1 for the
+coming year, and as soon as it's spotted for the current year. You're emailed
+only once about each missing table for a given year.
+
+Until the tables are installed, payroll with a pay date in that year can't be
+prepared, so no new drafts appear. When only some states are missing, only
+employees who work in those states are held; everyone else's payroll goes
+ahead. Payrolls already issued aren't affected.
+
+The notice shows for as long as tables are missing. Each admin can turn the
+email off under My payroll → Settings ("Tax tables not installed"); that
+doesn't hide the notice.
 
 ## Release process (for maintainers of this repo)
 
