@@ -65,6 +65,13 @@ import {
   W2NotAvailableError,
   w2AccessThrough,
 } from "../filings/w2-furnish.js";
+import {
+  myW2Versions,
+  parseVersionParam,
+  renderMyW2Version,
+  VersionNotAvailableError,
+  VersionUnreadableError,
+} from "../filings/w2-versions.js";
 import { companyName } from "../notify/outbox.js";
 import { electronicW2AccessThrough } from "@payroll/shared";
 import { localDate } from "../payroll/run-dates.js";
@@ -133,6 +140,41 @@ async function sendW2Pdf(
 }
 
 /**
+ * PAY-223 (brief §6): one posted version of the employee's W-2 — the frozen
+ * figures as posted, CORRECTED per its first posting. Records nothing
+ * (D-6). Every refusal is the one body 409 w2_not_available (no
+ * enumeration): unknown n, never posted, not frozen, outside the window,
+ * failed integrity check, or a render hold.
+ */
+async function sendW2VersionPdf(
+  deps: { db: Db; config: AppConfig },
+  employeeId: number,
+  year: number,
+  n: number,
+  today: string,
+  reply: FastifyReply,
+) {
+  try {
+    const pdf = await renderMyW2Version(deps, employeeId, year, n, today);
+    return reply
+      .header("content-type", "application/pdf")
+      .header("content-disposition", `inline; filename="w2-${year}-v${n}.pdf"`)
+      .header("cache-control", "no-store")
+      .send(pdf);
+  } catch (err) {
+    if (
+      err instanceof VersionNotAvailableError ||
+      err instanceof VersionUnreadableError ||
+      err instanceof FilingServiceError ||
+      annualBlockBody(err) !== null
+    ) {
+      return reply.code(409).send({ error: "w2_not_available" });
+    }
+    throw err;
+  }
+}
+
+/**
  * PAY-217: the former employee's W-2 list — only the years furnished online
  * whose window is open today, each downloadable when its current figures
  * went online; the W-2 contact for questions and paper copies.
@@ -153,6 +195,8 @@ async function formerW2List(deps: { db: Db; config: AppConfig }, userId: string,
       downloadable: ready && (await currentFiguresWentOnline(db, employee!.id, year)),
       formCount,
       accessThrough,
+      // PAY-223 (D-4): every version posted online (no amount, hash or id).
+      versions: await myW2Versions(deps, employee!.id, year, today),
     });
   }
   return {
@@ -180,6 +224,18 @@ export function registerMyW2Routes(app: FastifyInstance, deps: Deps): void {
     return electronicAccessAlreadyFurnished(db, employeeId, year, today(), config.appTz);
   }
 
+  /** A list item's online facts: the (j)(6) last day and the posted versions. */
+  async function onlineFacts(employeeId: number | null, year: number) {
+    if (employeeId === null)
+      return { accessThrough: electronicW2AccessThrough(year), versions: [] };
+    return {
+      // PAY-208 (N1, (j)(6)): the last day this W-2 stays online.
+      accessThrough: await w2AccessThrough(db, employeeId, year, config.appTz),
+      // PAY-223 (D-4): every version posted online (no amount, hash or id).
+      versions: await myW2Versions({ db, config }, employeeId, year, today()),
+    };
+  }
+
   /** The employee's W-2 list (PAY-11 … PAY-208). */
   async function activeW2List(userId: string) {
     // PAY-208: the January gate reads the company-local date (config.appTz).
@@ -204,10 +260,7 @@ export function registerMyW2Routes(app: FastifyInstance, deps: Deps): void {
         corrected,
         downloadable,
         formCount,
-        // PAY-208 (N1, (j)(6)): the last day this W-2 stays online.
-        accessThrough: employee
-          ? await w2AccessThrough(db, employee.id, year, config.appTz)
-          : electronicW2AccessThrough(year),
+        ...(await onlineFacts(employee?.id ?? null, year)),
       });
     }
     return { w2s, upcomingYear };
@@ -316,8 +369,17 @@ export function registerMyW2Routes(app: FastifyInstance, deps: Deps): void {
       if (!Number.isInteger(year) || year < 2020 || year > 2100) {
         return reply.code(400).send({ error: "invalid_year" });
       }
+      // PAY-223: ?version=n — a per-employee ordinal, never a hash or row id.
+      const version = parseVersionParam(req.query);
+      if (version === "invalid") return reply.code(400).send({ error: "invalid_version" });
       const employee = await myEmployee(db, req.authUser!.id);
       if (!employee) return reply.code(404).send({ error: "not_found" });
+      // PAY-223 (D-5): a posted version — the same gate for active and former
+      // employees (posted online, year inside its window); consent is not
+      // re-checked, the version was already furnished electronically.
+      if (version !== null) {
+        return sendW2VersionPdf({ db, config }, employee.id, year, version, today(), reply);
+      }
       // PAY-217: a former employee — window + posted figures, under the lock.
       if (req.access?.kind === "w2_only") {
         return sendW2Pdf({ db, config }, employee.id, year, req.authUser!.id, reply, {

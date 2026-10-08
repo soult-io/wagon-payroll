@@ -1327,20 +1327,33 @@ export async function employerBlock(
   };
 }
 
-/** The W-2's state and local lines as the PDF prints them (IDs decrypted). */
+/** What a W-2 PDF prints from: boxes 1-6 in cents, the state and local lines, the form count. */
+export interface W2PrintFigures extends W2BoxesCents {
+  formCount: number;
+  stateLines: readonly {
+    state: string;
+    box16Cents: number | null;
+    box17Cents: number | null;
+    form: number;
+    row: number;
+  }[];
+  localLines: readonly W2LocalLine[];
+}
+
+/**
+ * The box 15 ID of each state (decrypted, render time only; null = blank).
+ * StateIdUnreadableError / EinUnreadableError when a value does not decrypt.
+ */
+export type Box15Resolver = (states: readonly string[]) => Promise<Map<string, string | null>>;
+
+/** The W-2's state and local lines as the PDF prints them (IDs decrypted by `box15`). */
 async function pdfLines(
-  deps: { db: Pick<Db, "select">; config: AppConfig },
-  year: number,
-  figures: W2StateFields,
+  figures: W2PrintFigures,
+  box15: Box15Resolver,
 ): Promise<{ stateLines: W2StateLineInput[]; localLines: W2LocalLineInput[] }> {
   // Render time only. A value that does not decrypt throws
   // StateIdUnreadableError / EinUnreadableError (409, never a 500).
-  const ids = await resolveStateIds(
-    deps.db,
-    deps.config.encryptionKey,
-    year,
-    figures.stateLines.map((l) => l.state),
-  );
+  const ids = await box15(figures.stateLines.map((l) => l.state));
   return {
     stateLines: figures.stateLines.map((l) => ({
       state: l.state,
@@ -1348,7 +1361,9 @@ async function pdfLines(
       box16: l.box16Cents === null ? null : formatCents(l.box16Cents),
       box17: l.box17Cents === null ? null : formatCents(l.box17Cents),
       form: l.form,
-      row: l.row,
+      // A frozen version's row is a stored integer; the renderer refuses
+      // anything but 1 or 2 (W2FormLinesError, 409).
+      row: l.row as 1 | 2,
     })),
     localLines: figures.localLines.map((l) => ({
       locality: l.locality,
@@ -1397,6 +1412,27 @@ export async function w2InputWithBoxes(
   );
   if (opts.requireBundledForm && !hasTemplate(year, "fw2")) throw new FormNotAvailableError(year);
   const boxes = readableBoxes((await withRenderChecks(db, year, [figures]))[0] as W2Figures);
+  const input = await w2InputFromFigures(deps, employeeId, year, boxes, (states) =>
+    resolveStateIds(db, config.encryptionKey, year, states),
+  );
+  return { input, boxes };
+}
+
+/**
+ * PAY-223 (brief §5.3): the W-2 PDF input for `figures` — the current
+ * figures (w2InputWithBoxes) or a frozen version's. Identity fields (box a
+ * SSN, box e name, box f address, boxes b/c employer) come from current
+ * data and are decrypted here, at render time only (D-1); box 15 comes from
+ * `box15`. not_found when the employee row is gone.
+ */
+export async function w2InputFromFigures(
+  deps: { db: Pick<Db, "select">; config: AppConfig },
+  employeeId: number,
+  year: number,
+  figures: W2PrintFigures,
+  box15: Box15Resolver,
+): Promise<W2Input> {
+  const { db, config } = deps;
   const rows = await db.select().from(employees).where(eq(employees.id, employeeId)).limit(1);
   const employee = rows[0];
   if (!employee) throw new FilingServiceError("not_found", `employee ${employeeId} not found`);
@@ -1408,7 +1444,7 @@ export async function w2InputWithBoxes(
   // is a typed hold — AddressUnreadableError / SsnUnreadableError, 409.
   const boxFAddress = await w2EmployeeAddressAt(db, employeeId, year, config.encryptionKey);
 
-  const input: W2Input = {
+  return {
     taxYear: year,
     employer: await employerBlock(db, config),
     employee: {
@@ -1418,11 +1454,10 @@ export async function w2InputWithBoxes(
     },
     // Box d control number = the employee ID (D5).
     controlNumber: String(employee.id),
-    ...w2BoxStrings(boxes),
-    ...(await pdfLines(deps, year, boxes)),
-    formCount: boxes.formCount,
+    ...w2BoxStrings(figures),
+    ...(await pdfLines(figures, box15)),
+    formCount: figures.formCount,
   };
-  return { input, boxes };
 }
 
 /** w2InputWithBoxes, the PDF input only. */

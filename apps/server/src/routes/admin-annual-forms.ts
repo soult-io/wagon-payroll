@@ -38,7 +38,7 @@
  * `reconsentNeeded`, `contactReady` and `undeliveredNotices` (names only).
  */
 
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 import { hasTemplate, renderW2AdminCopyD, renderW3Pdf } from "@payroll/documents";
 import type { Db } from "../db.js";
@@ -72,6 +72,14 @@ import {
   furnishingViews,
   markFurnishedOnPaper,
 } from "../filings/w2-furnish.js";
+import {
+  type AdminW2VersionView,
+  adminW2Versions,
+  parseVersionParam,
+  renderW2VersionCopyD,
+  VersionNotAvailableError,
+  VersionUnreadableError,
+} from "../filings/w2-versions.js";
 
 interface Deps {
   db: Db;
@@ -108,6 +116,7 @@ function listRow(
   consented: boolean,
   consentOutdated: boolean,
   furnishing: FurnishingView | undefined,
+  versions: AdminW2VersionView[] | undefined,
 ) {
   const { employeeId, legalName, issues } = f;
   const boxes = f.box1Cents === null ? NULL_BOXES : w2BoxStrings(f);
@@ -130,6 +139,8 @@ function listRow(
     consented,
     consentOutdated,
     ...(furnishing ?? NOT_FURNISHED),
+    // PAY-223 (D-8): every furnished version, any method (no amount or hash).
+    versions: versions ?? [],
   };
 }
 
@@ -167,6 +178,40 @@ function serviceError(
   throw err;
 }
 
+/**
+ * PAY-223 (D-8): Copy D of furnished version `n` — the frozen figures, never
+ * marked, no window gate, nothing recorded. 404 not_found for an unknown,
+ * unfrozen or never-furnished version; 409 w2_version_unreadable when the
+ * frozen figures fail the integrity check.
+ */
+async function sendVersionCopyD(
+  deps: { db: Db; config: AppConfig },
+  employeeId: number,
+  year: number,
+  n: number,
+  reply: FastifyReply,
+) {
+  try {
+    const pdf = await renderW2VersionCopyD(deps, employeeId, year, n);
+    return reply
+      .header("content-type", "application/pdf")
+      .header(
+        "content-disposition",
+        `inline; filename="w2-${year}-employee-${employeeId}-copy-d-v${n}.pdf"`,
+      )
+      .header("cache-control", "no-store")
+      .send(pdf);
+  } catch (err) {
+    if (err instanceof VersionNotAvailableError) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+    if (err instanceof VersionUnreadableError) {
+      return reply.code(409).send({ error: "w2_version_unreadable" });
+    }
+    return serviceError(err, reply);
+  }
+}
+
 export function registerAdminAnnualFormRoutes(app: FastifyInstance, deps: Deps): void {
   const { db, config, guards } = deps;
   const admin = guards.requireRole("admin");
@@ -190,6 +235,7 @@ export function registerAdminAnnualFormRoutes(app: FastifyInstance, deps: Deps):
     const electronic = await electronicW2Channel(db, ids, q.data.year);
     const outdated = await reconsentNeededFor(db, ids, q.data.year);
     const furnishing = await furnishingViews({ db, config }, q.data.year, figures);
+    const versions = await adminW2Versions({ db, config }, q.data.year, figures);
     return {
       year: q.data.year,
       available: isW2Available(q.data.year, localDate(new Date(), config.appTz)),
@@ -202,6 +248,7 @@ export function registerAdminAnnualFormRoutes(app: FastifyInstance, deps: Deps):
           electronic.has(f.employeeId),
           outdated.has(f.employeeId),
           furnishing.get(f.employeeId),
+          versions.get(f.employeeId),
         ),
       ),
       yearIssues,
@@ -238,6 +285,12 @@ export function registerAdminAnnualFormRoutes(app: FastifyInstance, deps: Deps):
       const q = yearQuery.safeParse(req.query);
       if (!q.success)
         return reply.code(400).send({ error: "invalid_year", details: q.error.issues });
+      // PAY-223 (D-8): ?version=n — Copy D of a frozen version.
+      const version = parseVersionParam(req.query);
+      if (version === "invalid") return reply.code(400).send({ error: "invalid_version" });
+      if (version !== null) {
+        return sendVersionCopyD({ db, config }, employeeId, q.data.year, version, reply);
+      }
       try {
         const input = await w2InputFor({ db, config }, employeeId, q.data.year, {
           requireBundledForm: true,
