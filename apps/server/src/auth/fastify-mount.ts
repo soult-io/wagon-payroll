@@ -77,7 +77,10 @@ export function mountBetterAuth(
   const { auth, db, config } = deps;
   const clock = deps.clock ?? (() => new Date());
 
-  /** The refusal for this request's session on `pathKey`; null = allowed or no session. */
+  /**
+   * The refusal for this request's session on `pathKey` (never one of
+   * NO_MFA_SESSION_AUTH_PATHS); null = allowed or no session.
+   */
   async function sessionRefusal(
     req: FastifyRequest,
     pathKey: string,
@@ -85,9 +88,8 @@ export function mountBetterAuth(
     const session = await auth.api.getSession({ headers: toHeaders(req) });
     if (!session) return null;
     // Auth's static type omits plugin fields; guards.ts reads the same shape.
-    if ((session.user as SessionUser).twoFactorEnabled !== true) {
-      return NO_MFA_SESSION_AUTH_PATHS.has(pathKey) ? null : "mfa_required";
-    }
+    if ((session.user as SessionUser).twoFactorEnabled !== true) return "mfa_required";
+    // verify-totp and backup-code/verify (the rest of the set is skipped by the caller).
     if (FORMER_EMPLOYEE_AUTH_PATHS.has(pathKey)) return null;
     const today = localDate(clock(), config.appTz);
     const access = await formerEmployeeAccess(db, session.user.id, today, config.appTz);
@@ -116,7 +118,7 @@ export function mountBetterAuth(
     },
     handler: async (req, reply) => {
       const pathKey = authPathKey(req);
-      // Sign-in carries no session worth checking; skip the lookup (rate-limited path).
+      // Paths open to every session (no TOTP and former employees alike) skip the lookup.
       if (!NO_MFA_SESSION_AUTH_PATHS.has(pathKey)) {
         const refused = await sessionRefusal(req, pathKey);
         if (refused) return reply.code(403).send({ error: refused });
