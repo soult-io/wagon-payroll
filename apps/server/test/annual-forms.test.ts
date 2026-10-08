@@ -89,6 +89,7 @@ import {
   SME_SENTENCE,
 } from "./pay-208-harness.js";
 import { accessCodeFor } from "./w2-consent-fixture.js";
+import { expMyVersions } from "./pay-223-versions-oracle.js";
 
 const EXPORT_TOKEN = "test-export-token-0123456789abcdef";
 
@@ -1040,6 +1041,11 @@ describe("my W-2 routes", () => {
           formCount: 1,
           // PAY-208 N1 ((j)(6)): Oct 15, 2026 is a Thursday; no corrected posting.
           accessThrough: "2026-10-15",
+          // PAY-223 PR-2 (D-4): every version posted online.
+          versions: await expMyVersions(t, acctA.employeeId, 2025, {
+            current: "last",
+            downloadable: true,
+          }),
         },
       ],
       // PAY-208 (2.2b, OD5): no issued year still waiting for January.

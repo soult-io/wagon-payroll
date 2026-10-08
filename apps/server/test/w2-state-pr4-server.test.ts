@@ -253,7 +253,7 @@ describe("C-d1 /api/my/w2 formCount (Dee W05: IL, MD, NC; consented; IDs set)", 
     return row;
   };
 
-  it("ready: formCount 2; key set exactly {year, availableOn, ready, corrected, downloadable, formCount, accessThrough (PAY-208 N1)}", async () => {
+  it("ready: formCount 2; key set exactly {year, availableOn, ready, corrected, downloadable, formCount, accessThrough (PAY-208 N1), versions (PAY-223)}", async () => {
     const row = await my2026();
     expect({
       keys: Object.keys(row).sort(),
@@ -268,6 +268,8 @@ describe("C-d1 /api/my/w2 formCount (Dee W05: IL, MD, NC; consented; IDs set)", 
         "downloadable",
         "formCount",
         "ready",
+        // PAY-223 PR-2 (D-4): the posted versions (no amount, hash or id).
+        "versions",
         "year",
       ],
       ready: true,
@@ -293,6 +295,8 @@ describe("C-d1 /api/my/w2 formCount (Dee W05: IL, MD, NC; consented; IDs set)", 
         "downloadable",
         "formCount",
         "ready",
+        // PAY-223 PR-2 (D-4): the posted versions (no amount, hash or id).
+        "versions",
         "year",
       ],
       ready: false,

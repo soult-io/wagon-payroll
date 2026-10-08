@@ -96,6 +96,7 @@ import {
   Y,
   oracleAccessThrough,
 } from "./annual-w2-corrected-harness.js";
+import { expMyVersions } from "./pay-223-versions-oracle.js";
 
 let env: L4Env;
 
@@ -377,6 +378,8 @@ describe("D2 figures that come back to an earlier hash are furnished again", () 
               // PAY-208 N1 ((j)(6)): later of Oct 15, 2026 and 90 days after the
               // latest corrected posting (independent oracle, harness).
               accessThrough: await oracleAccessThrough(env.t, k.id, Y, env.t.config.appTz),
+              // PAY-223 PR-2 (D-4, T10 shape): H1 original (current again), H2 corrected.
+              versions: await expMyVersions(env.t, k.id, Y, { current: h1, downloadable: true }),
             },
           ],
           // PAY-208 (2.2b): no issued year waiting for January.
@@ -835,7 +838,7 @@ describe("D9 after consent is withdrawn", () => {
     await withdrawConsent(env, dl);
     await withdrawConsent(env, bf);
     env.setNow("2026-10-15T12:00:00Z");
-    const row = (downloadable: boolean) => ({
+    const row = (downloadable: boolean, versions: unknown[] = []) => ({
       year: Y,
       availableOn: "2026-01-01",
       ready: true,
@@ -844,6 +847,8 @@ describe("D9 after consent is withdrawn", () => {
       formCount: 1,
       // PAY-208 N1 ((j)(6)): Oct 15, 2026 (Thursday); no corrected posting.
       accessThrough: "2026-10-15",
+      // PAY-223 PR-2 (D-4): online versions only (a backfill row is none).
+      versions,
     });
     const listed = {
       consented: (await myList(env, c)).json(),
@@ -873,7 +878,15 @@ describe("D9 after consent is withdrawn", () => {
       listed: {
         // PAY-208 (2.2b): no issued year waiting for January -> upcomingYear null.
         consented: { w2s: [row(true)], upcomingYear: null },
-        withdrawnDownloaded: { w2s: [row(true)], upcomingYear: null },
+        withdrawnDownloaded: {
+          w2s: [
+            row(
+              true,
+              await expMyVersions(env.t, dl.id, Y, { current: "last", downloadable: true }),
+            ),
+          ],
+          upcomingYear: null,
+        },
         withdrawnBackfillOnly: { w2s: [row(false)], upcomingYear: null },
       },
       pdfs: { consented: 200, withdrawnDownloaded: 200, withdrawnBackfillOnly: 409 },

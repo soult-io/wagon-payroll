@@ -50,11 +50,25 @@
  */
 
 import { createHash } from "node:crypto";
-import { companyStateIds, employees } from "@payroll/db";
-import { eq } from "drizzle-orm";
+import { vi } from "vitest";
+import { companyStateIds, employees, payrollEntries, payrollRuns } from "@payroll/db";
+import { and, eq } from "drizzle-orm";
 import { encryptAddress } from "../src/crypto/address-encryption.js";
-import { type Any, type Emp, type Env, makeEmp, NEW_VERSION } from "./pay-217-harness.js";
-import { insertRuns } from "./w2-state-harness.js";
+import { snapshotHash } from "../src/payroll/snapshot.js";
+import { markedPages, pageXObjectStrings, pdfLib } from "./annual-w2-corrected-harness.js";
+import {
+  type Any,
+  boot,
+  type Emp,
+  type Env,
+  makeEmp,
+  NEW_VERSION,
+  relogin,
+  reloginAdmin,
+  seedContact,
+  TZ,
+} from "./pay-217-harness.js";
+import { insertRuns, snapshotOf } from "./w2-state-harness.js";
 import {
   canonicalSha,
   type ExpLine,
@@ -63,8 +77,10 @@ import {
   expLines,
   type FxRun,
   hashV1,
+  money,
   monthly,
   months,
+  signedMoney,
   st,
 } from "./w2-state-oracle.js";
 
@@ -417,3 +433,408 @@ export async function furnishModule(): Promise<Record<string, Any>> {
 export async function stateIdsModule(): Promise<Record<string, Any>> {
   return (await import("../src/company/state-ids.js")) as Record<string, Any>;
 }
+
+// ================================================================== PR-2 (versions read model, version render, routes)
+//
+// PAY-223 PR-2 — payroll-calc-auditor additions, fail-first against
+// origin/main 9cb9534 (PR-1 merged). The coder may not edit this file.
+//
+// API contract assumed (build brief §5.2, §5.3, §6, Product Lead decisions
+// 2026-10-06, security PR-1 carry-forward):
+//  - GET /api/my/w2: each w2s[] item carries `versions` = exactly
+//    [{ version, kind: "original" | "corrected", postedOn, current,
+//    downloadable }], ordered by version. A version = a distinct
+//    (hash_version, boxes_hash) among the employee-year's portal_notice /
+//    employee_download rows, numbered 1..k by its first online row (id);
+//    kind/postedOn/CORRECTED mark from that first online row (postedOn =
+//    company-local date of furnished_at). [] when the year has no online row.
+//  - GET /api/my/w2/:year/pdf?version=n: n integer 1..50, else 400
+//    { error: "invalid_version" }. Unknown n, a version never online, outside
+//    onlineW2Windows, or without a frozen row -> 409 exactly
+//    { error: "w2_not_available" }. 200: the employee packet of the frozen
+//    figures, CORRECTED on Copies B/C/2 iff the first online row was
+//    corrected; content-disposition filename "w2-<year>-v<n>.pdf";
+//    cache-control no-store; no w2_furnishings row is written.
+//  - GET /api/admin/annual-forms/w2?year=: each row carries `versions` =
+//    exactly [{ version, kind, postedOn, via: "online" | "printed" | "paper"
+//    | "unknown", current, frozen }] over every method (numbered by the first
+//    row of any method; via/kind/postedOn from that row).
+//  - GET /api/admin/annual-forms/w2/:employeeId/pdf?year=&version=n: Copy D
+//    of the frozen version (never marked), no row written, no window gate;
+//    unknown or unfrozen -> 404 { error: "not_found" }; malformed -> 400
+//    { error: "invalid_version" }; integrity failure -> 409
+//    { error: "w2_version_unreadable" }.
+//  - Integrity failure log: the fixed message "[filings] W-2 version: frozen
+//    figures failed the integrity check", optionally followed by the error
+//    class in parentheses; no figure, hash, ciphertext or id.
+
+export { markedPages };
+
+/**
+ * boot217 with a captured log stream (pino lines) and optional extra config
+ * (e.g. exportToken). Same faked-clock pin on w2_furnishings.furnished_at.
+ */
+export async function boot223(
+  now: string,
+  o: { config?: Record<string, unknown>; logs?: string[] } = {},
+): Promise<Env> {
+  const logs = o.logs;
+  const env = await boot({
+    now,
+    config: { appTz: TZ, ...(o.config ?? {}) },
+    ...(logs ? { logStream: { write: (m: string) => void logs.push(m) } } : {}),
+  });
+  await env.t.pglite.exec(`
+    CREATE TABLE pay217_clock (now timestamptz NOT NULL);
+    CREATE FUNCTION pay217_furnished_at() RETURNS trigger AS $$
+    BEGIN
+      IF NEW.furnished_at = now() THEN
+        NEW.furnished_at := (SELECT c.now FROM pay217_clock c LIMIT 1);
+      END IF;
+      RETURN NEW;
+    END $$ LANGUAGE plpgsql;
+    CREATE TRIGGER pay217_furnished_at BEFORE INSERT ON w2_furnishings
+      FOR EACH ROW EXECUTE FUNCTION pay217_furnished_at();
+  `);
+  await env.t.pglite.query("INSERT INTO pay217_clock (now) VALUES ($1)", [now]);
+  const st = await seedContact(env);
+  if (st !== 200) throw new Error(`seed contact ${st}`);
+  return env;
+}
+
+/** Capture console.error/warn/log/info lines (the [filings] logs use console). */
+export function captureConsole(): { lines: string[]; restore(): void } {
+  const lines: string[] = [];
+  const spies = (["error", "warn", "log", "info"] as const).map((k) =>
+    vi.spyOn(console, k).mockImplementation((...args: unknown[]) => {
+      lines.push(args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" "));
+    }),
+  );
+  return {
+    lines,
+    restore() {
+      for (const s of spies) s.mockRestore();
+    },
+  };
+}
+
+/** The id of an employee's issued run paid on `payDate`. */
+export async function runIdOf(env: Env, employeeId: number, payDate: string): Promise<number> {
+  const rows = await env.t.db
+    .select({ id: payrollRuns.id })
+    .from(payrollRuns)
+    .where(and(eq(payrollRuns.employeeId, employeeId), eq(payrollRuns.payDate, payDate)));
+  if (rows.length !== 1) throw new Error(`expected one run on ${payDate}, got ${rows.length}`);
+  return rows[0]!.id;
+}
+
+/**
+ * Direct-insert one issued run with explicit entry amounts (cents) — for
+ * fixtures whose FICA is not a flat 6.2% of each run (a wage-base crossing).
+ */
+export async function insertRunWithEntries(
+  env: Env,
+  employeeId: number,
+  r: FxRun,
+  entries: Record<string, number>,
+): Promise<void> {
+  const snapshot = snapshotOf(r);
+  const inserted = await env.t.db
+    .insert(payrollRuns)
+    .values({
+      employeeId,
+      periodStart: r.periodStart,
+      periodEnd: r.periodEnd,
+      payDate: r.payDate,
+      status: "issued",
+      runSnapshot: snapshot,
+      snapshotHash: snapshotHash(snapshot as never),
+      createdBy: "test",
+    })
+    .returning();
+  const run = inserted[0]!;
+  await env.t.db.insert(payrollEntries).values(
+    Object.entries(entries).map(([category, cents]) => ({
+      runId: run.id,
+      category,
+      amount: signedMoney(cents),
+    })),
+  );
+}
+
+/** A frozen row inserted directly (tamper / unreadable-version fixtures). */
+export async function insertFrozen(
+  env: Env,
+  o: {
+    employeeId: number;
+    taxYear: number;
+    version: number;
+    hash: string;
+    figures: unknown;
+    box15: Record<string, string> | null;
+  },
+): Promise<void> {
+  await env.t.pglite.query(
+    `INSERT INTO w2_furnished_figures (employee_id, tax_year, hash_version, boxes_hash, figures, box15_ciphertexts, source)
+     VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, 'furnishing')`,
+    [
+      o.employeeId,
+      o.taxYear,
+      o.version,
+      o.hash,
+      JSON.stringify(o.figures),
+      o.box15 === null ? null : JSON.stringify(o.box15),
+    ],
+  );
+}
+
+// ------------------------------------------------------------------ PR-2 HTTP helpers
+
+let ip223 = 0;
+function ip(): string {
+  ip223 += 1;
+  return `10.223.${Math.floor(ip223 / 250) % 250}.${(ip223 % 250) + 1}`;
+}
+
+export interface EmpVersion {
+  version: number;
+  kind: "original" | "corrected";
+  postedOn: string;
+  current: boolean;
+  downloadable: boolean;
+}
+export interface AdminVersion {
+  version: number;
+  kind: "original" | "corrected";
+  postedOn: string;
+  via: "online" | "printed" | "paper" | "unknown";
+  current: boolean;
+  frozen: boolean;
+}
+
+/** The employee's GET /api/my/w2 body (re-signs in first: sessions expire after 7 faked days). */
+export async function myW2Body(
+  env: Env,
+  e: Emp,
+  o: { former?: boolean } = {},
+): Promise<{ status: number; body: string; json: Record<string, unknown> }> {
+  if (!o.former) await relogin(env, e);
+  const res = await env.t.app.inject({ method: "GET", url: "/api/my/w2", headers: e.session! });
+  let json: Record<string, unknown> = {};
+  try {
+    json = res.json() as Record<string, unknown>;
+  } catch {
+    json = {};
+  }
+  return { status: res.statusCode, body: res.body, json };
+}
+
+/** The list item of `year` (or undefined). */
+export async function myYear(
+  env: Env,
+  e: Emp,
+  year = 2026,
+  o: { former?: boolean } = {},
+): Promise<Record<string, unknown> | undefined> {
+  const b = await myW2Body(env, e, o);
+  const w2s = (b.json.w2s ?? []) as Record<string, unknown>[];
+  return w2s.find((w) => w.year === year);
+}
+
+/** `versions` of the year's list item (undefined when absent: the old code). */
+export async function myVersions(
+  env: Env,
+  e: Emp,
+  year = 2026,
+  o: { former?: boolean } = {},
+): Promise<unknown> {
+  return (await myYear(env, e, year, o))?.versions;
+}
+
+/** GET /api/my/w2/:year/pdf?version=n from a new client address (or `o.ip`). */
+export async function versionPdf(
+  env: Env,
+  e: Emp,
+  year: number,
+  n: string | number | null,
+  o: { ip?: string; headers?: Record<string, string>; query?: string } = {},
+) {
+  const addr = o.ip ?? ip();
+  const q = o.query ?? (n === null ? "" : `?version=${encodeURIComponent(String(n))}`);
+  return env.t.app.inject({
+    method: "GET",
+    url: `/api/my/w2/${year}/pdf${q}`,
+    headers: { ...e.session!, "x-forwarded-for": addr, ...(o.headers ?? {}) },
+    remoteAddress: addr,
+  });
+}
+
+/** The admin W-2 list row of one employee (re-signs the admin in after a clock jump). */
+export async function adminRow223(
+  env: Env,
+  employeeId: number,
+  year = 2026,
+): Promise<Record<string, unknown>> {
+  let res = await env.t.app.inject({
+    method: "GET",
+    url: `/api/admin/annual-forms/w2?year=${year}`,
+    headers: env.admin,
+  });
+  if (res.statusCode === 401) {
+    await reloginAdmin(env);
+    res = await env.t.app.inject({
+      method: "GET",
+      url: `/api/admin/annual-forms/w2?year=${year}`,
+      headers: env.admin,
+    });
+  }
+  if (res.statusCode !== 200) throw new Error(`admin list ${res.statusCode}`);
+  const row = (res.json() as { w2s: Record<string, unknown>[] }).w2s.find(
+    (r) => r.employeeId === employeeId,
+  );
+  if (!row) throw new Error(`no admin row for employee ${employeeId}`);
+  return row;
+}
+
+/** The admin list body (raw text) of a year. */
+export async function adminListBody(env: Env, year = 2026): Promise<string> {
+  await reloginAdmin(env);
+  const res = await env.t.app.inject({
+    method: "GET",
+    url: `/api/admin/annual-forms/w2?year=${year}`,
+    headers: env.admin,
+  });
+  return res.body;
+}
+
+/** GET Copy D, with `?version=n` when n is given. */
+export async function copyDOf(
+  env: Env,
+  employeeId: number,
+  year: number,
+  n: string | number | null,
+  headers?: Record<string, string>,
+) {
+  const q = n === null ? "" : `&version=${encodeURIComponent(String(n))}`;
+  const url = `/api/admin/annual-forms/w2/${employeeId}/pdf?year=${year}${q}`;
+  const addr = ip();
+  const send = () =>
+    env.t.app.inject({
+      method: "GET",
+      url,
+      headers: { ...(headers ?? env.admin), "x-forwarded-for": addr },
+      remoteAddress: addr,
+    });
+  let res = await send();
+  if (res.statusCode === 401 && headers === undefined) {
+    await reloginAdmin(env);
+    res = await send();
+  }
+  return res;
+}
+
+export function bodyError(res: { body: string }): unknown {
+  try {
+    return JSON.parse(res.body);
+  } catch {
+    return res.body.slice(0, 80);
+  }
+}
+
+// ------------------------------------------------------------------ PR-2 PDF oracle
+
+/**
+ * Every page of a rendered (flattened) PDF as the non-empty strings its form
+ * XObjects show, in field order. Parsed with the auditor's own content-stream
+ * reader (annual-w2-corrected-harness.ts), never the code under test.
+ */
+export async function pageStrings(bytes: Uint8Array): Promise<string[][]> {
+  const doc = await pdfLib.PDFDocument.load(bytes);
+  const out: string[][] = [];
+  for (let i = 0; i < doc.getPageCount(); i += 1) {
+    out.push(pageXObjectStrings(doc, i).filter((s: string) => s !== ""));
+  }
+  return out;
+}
+
+/** The identity strings boxes a–f print (D-1: current data at render time). */
+export interface Identity {
+  ssn: string;
+  ein: string;
+  employer: string;
+  control: string;
+  first: string;
+  last: string;
+  address: string[];
+}
+
+/** A pay-223 fixture employee's identity: SSN 900-00-0017, EIN 00-0000001, Example Corp, box f ADDRESS. */
+export function identityOf(employeeId: number, label: string): Identity {
+  return {
+    ssn: "900-00-0017",
+    ein: "00-0000001",
+    employer: "Example Corp",
+    control: String(employeeId),
+    first: label,
+    last: "Synthetic",
+    address: [ADDRESS.line1, `${ADDRESS.city}, ${ADDRESS.state} ${ADDRESS.zip}`],
+  };
+}
+
+/** Box 15 ID text per state as printed (entered plaintext; IL/NY EIN default = the 9 EIN digits). */
+export type IdText = Record<string, string | null>;
+
+/**
+ * The strings form `k` of a W-2 shows, in the template's field order (2025
+ * and 2026 fw2, measured on the current render at 9cb9534): a, b, c, d,
+ * e (first, last), f (lines); boxes 1-6 on form 1 only; then row 1 state,
+ * row 1 ID, row 2 state, row 2 ID, box 16 row 1, row 2, box 17 row 1, row 2.
+ * Amounts from the frozen cents through the auditor's own money().
+ */
+export function formStrings(who: Identity, f: Frozen, ids: IdText, k: number): string[] {
+  const out = [who.ssn, who.ein, who.employer, who.control, who.first, who.last, ...who.address];
+  if (k === 1) {
+    out.push(
+      money(f.box1Cents),
+      money(f.box2Cents),
+      money(f.box3Cents),
+      money(f.box4Cents),
+      money(f.box5Cents),
+      money(f.box6Cents),
+    );
+  }
+  const row = (r: number) => f.stateLines.find((l) => l.form === k && l.row === r);
+  const r1 = row(1);
+  const r2 = row(2);
+  for (const l of [r1, r2]) {
+    if (!l) continue;
+    out.push(l.state);
+    const id = ids[l.state];
+    if (id) out.push(id);
+  }
+  for (const v of [r1?.box16Cents, r2?.box16Cents, r1?.box17Cents, r2?.box17Cents]) {
+    if (v !== undefined && v !== null) out.push(money(v));
+  }
+  return out;
+}
+
+/** Expected employee packet pages: B×N, Notice, C×N, Instructions, 2×N, Instructions. */
+export function expPacket(who: Identity, f: Frozen, ids: IdText): string[][] {
+  const forms = Array.from({ length: f.formCount }, (_, i) => formStrings(who, f, ids, i + 1));
+  return [...forms, [], ...forms, [], ...forms, []];
+}
+
+/** Expected Copy D pages: one per form. */
+export function expCopyD(who: Identity, f: Frozen, ids: IdText): string[][] {
+  return Array.from({ length: f.formCount }, (_, i) => formStrings(who, f, ids, i + 1));
+}
+
+/** 0-based pages that carry CORRECTED in a marked packet of N forms (Copies B, C, 2). */
+export function markedOf(formCount: number): number[] {
+  const n = formCount;
+  const range = (a: number) => Array.from({ length: n }, (_, i) => a + i);
+  return [...range(0), ...range(n + 1), ...range(2 * n + 2)];
+}
+
+/** A 64-hex run anywhere (a hash must never leave the database). */
+export const HEX64 = /[0-9a-f]{64}/i;
