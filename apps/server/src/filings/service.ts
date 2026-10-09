@@ -5,13 +5,15 @@
  * (Letterstream) or e-file and marks the filing here.
  *
  * Determinism: every figure on the worksheet derives from frozen issued-run
- * entry snapshots (pay dates in the quarter) and deposited tax_deposits rows
- * — never live config. The worksheet JSON + SHA-256 hash make the figures
+ * entry snapshots (pay dates in the quarter), deposited tax_deposits rows,
+ * and the pay year's federal tax_config row (the SS wage base for line 5a;
+ * the same row the runs were computed with). A missing row means the
+ * worksheet is not refreshed. The worksheet JSON + SHA-256 hash make the figures
  * provably frozen; recomputation with the same inputs reproduces the same
  * hash. Once a filing is marked filed, the worksheet is never rewritten.
  *
  * Line 7 (fractions of cents, D4): per-paycheck rounding means the form's
- * wage-derived tax lines (5a/5c) can differ from the exact entry sums by a
+ * tax lines 5a/5c (column 1 wages × combined rate) can differ from the exact entry sums by a
  * cent or two. The default line 7 is that computed delta so line 12 equals
  * the true liability to the cent; the value is admin-editable while unfiled.
  *
@@ -25,6 +27,7 @@ import {
   auditEvents,
   authUser,
   emailOutbox,
+  payrollEntries,
   payrollRuns,
   taxAdjustments,
   taxConfig,
@@ -40,12 +43,14 @@ import {
   assertFederalTaxConfig,
   compute940Worksheet,
   computeW3Worksheet,
+  federalConfigRow,
   MissingTaxConfigError,
   refreshAnnualWorksheet,
   W2BlockedError,
   yearW2BlockCodes,
 } from "./annual.js";
 import { closingFilings } from "./closing-filings.js";
+import { AnnualFiguresDefectError, sumCents } from "./w2-boxes.js";
 import {
   addDays,
   DATE_RE,
@@ -79,8 +84,10 @@ export const FILING_REMINDER_OFFSETS_SETTING_KEY = "tax_filing_reminder_offsets"
 export const FILING_REMINDER_OFFSET_MAX = 30;
 export const FILING_REMINDER_OFFSET_MAX_ENTRIES = 10;
 
-const SS_COMBINED_RATE = 0.124; // Form 941 line 5a column 2 rate
-const MEDICARE_COMBINED_RATE = 0.029; // line 5c column 2 rate
+// Form 941 line 5a / 5c column 2 rates (12.4% / 2.9%) as per-mille integers,
+// so column 2 is computed in integer cents.
+const SS_COMBINED_PER_MILLE = 124;
+const MEDICARE_COMBINED_PER_MILLE = 29;
 /** Line 12 under this → the line-16 de minimis box (no monthly breakdown owed). */
 const DE_MINIMIS_THRESHOLD = 2500;
 
@@ -154,6 +161,73 @@ export interface Worksheet941 {
   line16: { month1: string; month2: string; month3: string; deMinimis: boolean };
 }
 
+/** Gross pay per employee (integer cents) over issued runs paid in [from, to). */
+async function grossCentsByEmployee(
+  db: Db,
+  fromInclusive: string,
+  toExclusive: string,
+): Promise<Map<number, number>> {
+  const rows = await db
+    .select({
+      employeeId: payrollRuns.employeeId,
+      total: sql<string>`coalesce(sum(${payrollEntries.amount}), 0)::numeric(14,2)::text`,
+    })
+    .from(payrollEntries)
+    .innerJoin(payrollRuns, eq(payrollEntries.runId, payrollRuns.id))
+    .where(
+      and(
+        eq(payrollRuns.status, "issued"),
+        eq(payrollEntries.category, "gross_pay"),
+        sql`${payrollRuns.payDate} >= ${fromInclusive}`,
+        sql`${payrollRuns.payDate} < ${toExclusive}`,
+      ),
+    )
+    .groupBy(payrollRuns.employeeId);
+  return new Map(rows.map((r) => [r.employeeId, sumCents(r.total)]));
+}
+
+/**
+ * Lines 5a/5c column 1 in integer cents. Medicare wages = quarter gross.
+ * SS wages = per employee, quarter gross limited to what remains of the
+ * year's wage base after issued runs paid earlier in the calendar year.
+ */
+async function quarterFicaWagesCents(
+  db: Db,
+  year: number,
+  firstDay: string,
+  lastDay: string,
+): Promise<{ ssWagesCents: number; medWagesCents: number }> {
+  const quarterGross = await grossCentsByEmployee(db, firstDay, addDays(lastDay, 1));
+  if (quarterGross.size === 0) return { ssWagesCents: 0, medWagesCents: 0 };
+  const capCents = sumCents((await federalConfigRow(db, year)).socialSecurityWageCap);
+  const priorGross = await grossCentsByEmployee(db, `${year}-01-01`, firstDay);
+  let ssWagesCents = 0;
+  let medWagesCents = 0;
+  for (const [emp, gross] of quarterGross) {
+    medWagesCents += gross;
+    const remaining = Math.max(0, capCents - (priorGross.get(emp) ?? 0));
+    ssWagesCents += Math.min(gross, remaining);
+  }
+  return { ssWagesCents, medWagesCents };
+}
+
+/**
+ * Refresh an unfiled 941's worksheet; false (and a fixed-message warning)
+ * when the year's figures cannot be computed, so sync never stops on one
+ * bad year (same rule as the W-3 path).
+ */
+async function refreshWorksheetOrSkip(db: Db, row: TaxFilingRow): Promise<boolean> {
+  try {
+    return await refreshWorksheet(db, row);
+  } catch (err) {
+    if (err instanceof MissingTaxConfigError || err instanceof AnnualFiguresDefectError) {
+      console.warn(`[filings] 941 worksheet not refreshed: ${err.message}`);
+      return false;
+    }
+    throw err;
+  }
+}
+
 /**
  * Compute the quarterly 941 worksheet from issued-run entry snapshots with
  * pay dates in the quarter. fractionsOfCents defaults to the computed delta
@@ -200,15 +274,19 @@ export async function computeWorksheet(
     sumCategory(db, runIds, "employer_medicare"),
   ]);
 
-  // Lines 5a/5c — derive taxable wages from the exact tax sums, then tax at
-  // the combined statutory rate. Any cent-level difference vs the exact
-  // entry sums lands in line 7 (fractions of cents).
+  // Lines 5a/5c — column 1 is the taxable wages actually paid (2026 Form 941
+  // instructions, lines 5a/5c): Medicare wages = gross, uncapped; SS wages =
+  // gross capped per employee at the year's wage base by year-to-date pay.
+  // Column 2 = column 1 × the combined rate. Per-paycheck rounding of the tax
+  // withheld vs that product lands in line 7 (fractions of cents), never in
+  // the wages.
   const ssTotal = round2(ssEE + ssER);
   const medTotal = round2(medEE + medER);
-  const ssWages = round2(ssTotal / SS_COMBINED_RATE);
-  const medWages = round2(medTotal / MEDICARE_COMBINED_RATE);
-  const line5aTax = round2(ssWages * SS_COMBINED_RATE);
-  const line5cTax = round2(medWages * MEDICARE_COMBINED_RATE);
+  const { ssWagesCents, medWagesCents } = await quarterFicaWagesCents(db, year, firstDay, lastDay);
+  const ssWages = ssWagesCents / 100;
+  const medWages = medWagesCents / 100;
+  const line5aTax = Math.round((ssWagesCents * SS_COMBINED_PER_MILLE) / 1000) / 100;
+  const line5cTax = Math.round((medWagesCents * MEDICARE_COMBINED_PER_MILLE) / 1000) / 100;
   const line5d = 0; // Additional Medicare — zero at current salaries
   const line5e = round2(line5aTax + line5cTax + line5d);
   const line6 = round2(fed + line5e);
@@ -508,9 +586,7 @@ export async function syncFilings(
       row = inserted[0]!;
       result.created += 1;
     }
-    if (row.status !== "filed") {
-      if (await refreshWorksheet(db, row)) result.refreshed += 1;
-    }
+    if (row.status !== "filed" && (await refreshWorksheetOrSkip(db, row))) result.refreshed += 1;
   }
 
   return result;
