@@ -246,7 +246,7 @@ export function annualBlockBody(err: unknown): AnnualBlockBody | null {
 }
 
 /** The federal tax_config row for `year`, or MissingTaxConfigError. */
-async function federalConfigRow(db: Pick<Db, "select">, year: number) {
+export async function federalConfigRow(db: Pick<Db, "select">, year: number) {
   const rows = await db
     .select()
     .from(taxConfig)
