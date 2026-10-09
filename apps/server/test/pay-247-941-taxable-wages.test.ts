@@ -33,7 +33,10 @@ import {
   seedDatabase,
   type SeedDb,
 } from "@payroll/db";
-import { computeWorksheet, worksheetHash } from "../src/filings/service.js";
+import { eq } from "drizzle-orm";
+import { taxConfig, taxFilings } from "@payroll/db";
+import { MissingTaxConfigError } from "../src/filings/annual.js";
+import { computeWorksheet, syncFilings, worksheetHash } from "../src/filings/service.js";
 import { createTestApp, type TestContext } from "./helpers.js";
 
 // ---------------------------------------------------------------------------
@@ -601,5 +604,45 @@ describe("PAY-247 scenario 8 — quarter/year boundaries by pay date", () => {
       line7: "0.01",
       line12: "494.26",
     });
+  });
+});
+
+describe("missing federal tax_config for a year (review finding)", () => {
+  const db = useFreshDb();
+
+  it("computeWorksheet fails closed; syncFilings skips that quarter and keeps going", async () => {
+    const t = db.ctx();
+    const emp = await createEmployee(t);
+    // Q4 2025 run, then delete the 2025 federal config row; Q1 2026 run is clean.
+    await insertRun(t, {
+      employeeId: emp,
+      periodStart: "2025-10-01",
+      periodEnd: "2025-10-31",
+      payDate: "2025-10-31",
+      gross: "1000.00",
+      fed: "0.00",
+      ss: "62.00",
+      med: "14.50",
+    });
+    await insertRun(t, {
+      employeeId: emp,
+      periodStart: "2026-01-01",
+      periodEnd: "2026-01-31",
+      payDate: "2026-01-30",
+      gross: "1000.00",
+      fed: "0.00",
+      ss: "62.00",
+      med: "14.50",
+    });
+    await t.db.delete(taxConfig).where(eq(taxConfig.taxYear, 2025));
+
+    await expect(computeWorksheet(t.db, 2025, 4)).rejects.toBeInstanceOf(MissingTaxConfigError);
+
+    await syncFilings({ db: t.db, config: t.config }, { today: "2026-04-15" });
+    const rows = await t.db.select().from(taxFilings).where(eq(taxFilings.formType, "941"));
+    const q1 = rows.find((r) => r.year === 2026 && r.quarter === 1);
+    // 1000.00 × 0.029 = 29.00; 1000.00 × 0.124 = 124.00.
+    expect((q1?.worksheet as { line5cTax?: string } | null)?.line5cTax).toBe("29.00");
+    expect((q1?.worksheet as { line5aTax?: string } | null)?.line5aTax).toBe("124.00");
   });
 });

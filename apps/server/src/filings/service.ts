@@ -33,7 +33,7 @@ import {
   taxFilings,
 } from "@payroll/db";
 import { round2 } from "@payroll/engine/money";
-import { sumCents } from "./w2-boxes.js";
+import { AnnualFiguresDefectError, sumCents } from "./w2-boxes.js";
 import { EVENT_TYPE, taxFilingDue as tplTaxFilingDue } from "@payroll/notifications";
 import type { Db } from "../db.js";
 import { templateContext } from "../notify/outbox.js";
@@ -587,7 +587,17 @@ export async function syncFilings(
       result.created += 1;
     }
     if (row.status !== "filed") {
-      if (await refreshWorksheet(db, row)) result.refreshed += 1;
+      try {
+        if (await refreshWorksheet(db, row)) result.refreshed += 1;
+      } catch (err) {
+        if (err instanceof MissingTaxConfigError || err instanceof AnnualFiguresDefectError) {
+          // PAY-247: lines 5a/5c need the year's wage base. Fixed messages
+          // only (year, or no detail) — sync never stops on one bad year.
+          console.warn(`[filings] 941 worksheet not refreshed: ${err.message}`);
+          continue;
+        }
+        throw err;
+      }
     }
   }
 
