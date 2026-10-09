@@ -22,7 +22,7 @@
     "emit": "tsx src/cli.ts"
   },
   "dependencies": {
-    "zod": "~4.4.3"
+    "zod": "~4.6.5"
   },
   "devDependencies": {
     "@types/node": "~26.6.1",
