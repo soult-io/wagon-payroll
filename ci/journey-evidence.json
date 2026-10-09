@@ -1,0 +1,857 @@
+{
+  "schema": "journey-evidence/1",
+  "mode": "gating",
+  "commitSha": "9044b2ca05dfad9b4922b9f46473e3b53607935b",
+  "runId": "37956078950",
+  "source": "ci",
+  "generatedAt": "2026-10-09T16:04:59.251Z",
+  "journeys": [
+    {
+      "testId": "aa09586c1d16412a1f00-47ba5ebcf37999d1dbba",
+      "fullName": "journeys.spec.ts journey 1: invite onboarding wizard → backup codes → fresh login with TOTP",
+      "title": "journey 1: invite onboarding wizard → backup codes → fresh login with TOTP",
+      "file": "journeys.spec.ts",
+      "status": "passed",
+      "attempt": 1,
+      "steps": [
+        {
+          "title": "Set a password from the invite link",
+          "status": "passed",
+          "durationMs": 245,
+          "screenshot": {
+            "path": "journeys-journey-1-invite--e1e09-des-→-fresh-login-with-TOTP-chromium/attachments/step-still-acca399f871b82238b3d233e5d241d0e6e0e8439.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 768,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Enrol an authenticator app (TOTP)",
+          "status": "passed",
+          "durationMs": 85,
+          "screenshot": {
+            "path": "journeys-journey-1-invite--e1e09-des-→-fresh-login-with-TOTP-chromium/attachments/step-still-989074e6972a54fae9df9af8aec5e6419d4fc7c4.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 902,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Backup codes are shown once",
+          "status": "passed",
+          "durationMs": 48,
+          "screenshot": {
+            "path": "journeys-journey-1-invite--e1e09-des-→-fresh-login-with-TOTP-chromium/attachments/step-still-d35ac060f4a346a17b04e71ad7b234b7c188a822.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 768,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Sign in with password + TOTP",
+          "status": "passed",
+          "durationMs": 335,
+          "screenshot": {
+            "path": "journeys-journey-1-invite--e1e09-des-→-fresh-login-with-TOTP-chromium/attachments/step-still-d946166350e3d9bcd7127fe772739bd4748c0bd0.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 720,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Sign out and sign in again",
+          "status": "passed",
+          "durationMs": 317,
+          "screenshot": {
+            "path": "journeys-journey-1-invite--e1e09-des-→-fresh-login-with-TOTP-chromium/attachments/step-still-f0ecbaee0e1117d222acaabd99566f7ad1c4dca0.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 720,
+            "truncated": false
+          }
+        }
+      ]
+    },
+    {
+      "testId": "aa09586c1d16412a1f00-6189257fea17d5b7fc77",
+      "fullName": "journeys.spec.ts journey 2: admin approves + issues payroll run; employee sees payslip + PDF",
+      "title": "journey 2: admin approves + issues payroll run; employee sees payslip + PDF",
+      "file": "journeys.spec.ts",
+      "status": "passed",
+      "attempt": 1,
+      "steps": [
+        {
+          "title": "Admin signs in",
+          "status": "passed",
+          "durationMs": 328,
+          "screenshot": {
+            "path": "journeys-journey-2-admin-a-1c6f4-n-employee-sees-payslip-PDF-chromium/attachments/step-still-aa096c382cf6240bdd627bf06f8b3d63961e840a.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 720,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Open the run awaiting approval",
+          "status": "passed",
+          "durationMs": 1480,
+          "screenshot": {
+            "path": "journeys-journey-2-admin-a-1c6f4-n-employee-sees-payslip-PDF-chromium/attachments/step-still-78b45fccbf9d254c49f8d0bcef93bfe86d6dcc44.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 1023,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Approve the run",
+          "status": "passed",
+          "durationMs": 503,
+          "screenshot": {
+            "path": "journeys-journey-2-admin-a-1c6f4-n-employee-sees-payslip-PDF-chromium/attachments/step-still-2c3b974e96a1629c8f2a4467d42dd9dd5c3d6dd4.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 1103,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Issue the payslip (type-to-confirm)",
+          "status": "passed",
+          "durationMs": 533,
+          "screenshot": {
+            "path": "journeys-journey-2-admin-a-1c6f4-n-employee-sees-payslip-PDF-chromium/attachments/step-still-2a877e163c5bd19c0dcaf2e264a1c1d2f228b546.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 1061,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Employee opens the issued payslip",
+          "status": "passed",
+          "durationMs": 1176,
+          "screenshot": {
+            "path": "journeys-journey-2-admin-a-1c6f4-n-employee-sees-payslip-PDF-chromium/attachments/step-still-fc2dfffbb662d7127b3684d8dc4d765cce60e633.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 720,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Payslip PDF downloads (%PDF, non-trivial size)",
+          "status": "passed",
+          "durationMs": 127,
+          "screenshot": {
+            "path": "journeys-journey-2-admin-a-1c6f4-n-employee-sees-payslip-PDF-chromium/attachments/step-still-c40afb12ff410e1ccf0a07c75188a68efeb43823.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 727,
+            "truncated": false
+          }
+        }
+      ]
+    },
+    {
+      "testId": "aa09586c1d16412a1f00-137a5f3160bd293c8661",
+      "fullName": "journeys.spec.ts journey 3: address change request round-trip (employee → admin approve → applied)",
+      "title": "journey 3: address change request round-trip (employee → admin approve → applied)",
+      "file": "journeys.spec.ts",
+      "status": "passed",
+      "attempt": 1,
+      "steps": [
+        {
+          "title": "Employee fills in a new address",
+          "status": "passed",
+          "durationMs": 350,
+          "screenshot": {
+            "path": "journeys-journey-3-address-1bb44--→-admin-approve-→-applied--chromium/attachments/step-still-55149dd3eeb5a0bbd76b06bb70b1b29267d279f3.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 757,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Employee submits the request (Pending)",
+          "status": "passed",
+          "durationMs": 149,
+          "screenshot": {
+            "path": "journeys-journey-3-address-1bb44--→-admin-approve-→-applied--chromium/attachments/step-still-65ebf8970d13c127db906612d31a65e6820769ca.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 825,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Admin reviews the proposed vs current address",
+          "status": "passed",
+          "durationMs": 675,
+          "screenshot": {
+            "path": "journeys-journey-3-address-1bb44--→-admin-approve-→-applied--chromium/attachments/step-still-640c5ef863e1bd7c5cc92abb71dc569e574de459.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 1069,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Admin approves and applies",
+          "status": "passed",
+          "durationMs": 133,
+          "screenshot": {
+            "path": "journeys-journey-3-address-1bb44--→-admin-approve-→-applied--chromium/attachments/step-still-7241ac656c07fa0fafca71cce27ff814e605e508.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 852,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Employee sees Approved and the new address on the profile",
+          "status": "passed",
+          "durationMs": 274,
+          "screenshot": {
+            "path": "journeys-journey-3-address-1bb44--→-admin-approve-→-applied--chromium/attachments/step-still-2d0ef64a4a70b40fe83c331dc827ff98e1d32b58.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 1189,
+            "truncated": false
+          }
+        }
+      ]
+    },
+    {
+      "testId": "aa09586c1d16412a1f00-42ac77ac21a50e79065f",
+      "fullName": "journeys.spec.ts journey 4: session expiry mid-session redirects to login (PAY-6)",
+      "title": "journey 4: session expiry mid-session redirects to login (PAY-6)",
+      "file": "journeys.spec.ts",
+      "status": "passed",
+      "attempt": 1,
+      "steps": [
+        {
+          "title": "Employee is on the dashboard",
+          "status": "passed",
+          "durationMs": 275,
+          "screenshot": {
+            "path": "journeys-journey-4-session-d3d94-n-redirects-to-login-PAY-6--chromium/attachments/step-still-c44091b8449be60c5a00056586decf2f27907b9d.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 720,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Session expires; next navigation lands on login",
+          "status": "passed",
+          "durationMs": 162,
+          "screenshot": {
+            "path": "journeys-journey-4-session-d3d94-n-redirects-to-login-PAY-6--chromium/attachments/step-still-4e25e6f4bc8e4c2d8c3b5b920c050b58471d3aa5.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 768,
+            "truncated": false
+          }
+        }
+      ]
+    },
+    {
+      "testId": "aa09586c1d16412a1f00-e861b92636ecabd82f10",
+      "fullName": "journeys.spec.ts journey 5: back navigation preserves the list filter state (PAY-17)",
+      "title": "journey 5: back navigation preserves the list filter state (PAY-17)",
+      "file": "journeys.spec.ts",
+      "status": "passed",
+      "attempt": 1,
+      "steps": [
+        {
+          "title": "Filter the runs list to 2025 (the URL carries it)",
+          "status": "passed",
+          "durationMs": 1000,
+          "screenshot": {
+            "path": "journeys-journey-5-back-na-9a7eb-e-list-filter-state-PAY-17--chromium/attachments/step-still-0388d6b6c485200234f23896a115aa4a15df2a38.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 2412,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Open the run; the filter rides along",
+          "status": "passed",
+          "durationMs": 116,
+          "screenshot": {
+            "path": "journeys-journey-5-back-na-9a7eb-e-list-filter-state-PAY-17--chromium/attachments/step-still-83652d597a9c706e98ade61da2434c97c4f55a7c.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 720,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Back to runs keeps the 2025 filter",
+          "status": "passed",
+          "durationMs": 252,
+          "screenshot": {
+            "path": "journeys-journey-5-back-na-9a7eb-e-list-filter-state-PAY-17--chromium/attachments/step-still-1a57e798cf2c1bee8c5a7afcc29d216b35724891.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 2412,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Browser back keeps the 2025 filter too",
+          "status": "passed",
+          "durationMs": 288,
+          "screenshot": {
+            "path": "journeys-journey-5-back-na-9a7eb-e-list-filter-state-PAY-17--chromium/attachments/step-still-744affb2ebbea2463a1a141bf597488cf811d9aa.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 2412,
+            "truncated": false
+          }
+        }
+      ]
+    },
+    {
+      "testId": "aa09586c1d16412a1f00-6ba65d89e70a6b665f98",
+      "fullName": "journeys.spec.ts journey 6: admin user visiting /my/dashboard is redirected to /admin/dashboard",
+      "title": "journey 6: admin user visiting /my/dashboard is redirected to /admin/dashboard",
+      "file": "journeys.spec.ts",
+      "status": "passed",
+      "attempt": 1,
+      "steps": [
+        {
+          "title": "Admin visiting /my/dashboard lands on /admin/dashboard",
+          "status": "passed",
+          "durationMs": 245,
+          "screenshot": {
+            "path": "journeys-journey-6-admin-u-8e647-directed-to-admin-dashboard-chromium/attachments/step-still-4321eace554b87410bf044872b82044c73e05834.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 720,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Admin visiting / lands on /admin/dashboard",
+          "status": "passed",
+          "durationMs": 153,
+          "screenshot": {
+            "path": "journeys-journey-6-admin-u-8e647-directed-to-admin-dashboard-chromium/attachments/step-still-6dae572b83a1ef11a4feb44fcfcc1b9cfffaa7e6.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 720,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Header shows the product name; Payroll nav opens the payroll list",
+          "status": "passed",
+          "durationMs": 241,
+          "screenshot": {
+            "path": "journeys-journey-6-admin-u-8e647-directed-to-admin-dashboard-chromium/attachments/step-still-cbb8f91e8b1e63d5a45ef3c28ed00f57e68828a4.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 720,
+            "truncated": false
+          }
+        }
+      ]
+    },
+    {
+      "testId": "aa09586c1d16412a1f00-5849f6cee217c87a25bc",
+      "fullName": "journeys.spec.ts journey 7: deposit detail view (PAY-36/PAY-37/PAY-38)",
+      "title": "journey 7: deposit detail view (PAY-36/PAY-37/PAY-38)",
+      "file": "journeys.spec.ts",
+      "status": "passed",
+      "attempt": 1,
+      "steps": [
+        {
+          "title": "Deposits list for 2025: readable, sortable, no EFTPS noise",
+          "status": "passed",
+          "durationMs": 532,
+          "screenshot": {
+            "path": "journeys-journey-7-deposit-detail-view-PAY-36-PAY-37-PAY-38--chromium/attachments/step-still-060fffc345be16637d2d004c16941b01d2c22a0b.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 3138,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Open the October federal deposit detail",
+          "status": "passed",
+          "durationMs": 197,
+          "screenshot": {
+            "path": "journeys-journey-7-deposit-detail-view-PAY-36-PAY-37-PAY-38--chromium/attachments/step-still-82bd6f5a6aa2f9e1346fc1d0e5f3d92e2867805a.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 1517,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Back to the deposits list",
+          "status": "passed",
+          "durationMs": 175,
+          "screenshot": {
+            "path": "journeys-journey-7-deposit-detail-view-PAY-36-PAY-37-PAY-38--chromium/attachments/step-still-8abc902cd3b4373833550e491d46248ddb27717d.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 720,
+            "truncated": false
+          }
+        }
+      ]
+    },
+    {
+      "testId": "aa09586c1d16412a1f00-75d4708d3cc41ff20b19",
+      "fullName": "journeys.spec.ts journey 8: a state that moved to quarterly shows payments already made (PAY-91)",
+      "title": "journey 8: a state that moved to quarterly shows payments already made (PAY-91)",
+      "file": "journeys.spec.ts",
+      "status": "passed",
+      "attempt": 1,
+      "steps": [
+        {
+          "title": "IL 2023 list: one quarter row, the replaced month is gone",
+          "status": "passed",
+          "durationMs": 321,
+          "screenshot": {
+            "path": "journeys-journey-8-a-state-f41e3-yments-already-made-PAY-91--chromium/attachments/step-still-c1eafeab76412748d9c14c04d51e7306e6b03f3b.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 788,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Quarter detail lists the July payment and the overpayment",
+          "status": "passed",
+          "durationMs": 156,
+          "screenshot": {
+            "path": "journeys-journey-8-a-state-f41e3-yments-already-made-PAY-91--chromium/attachments/step-still-cc0899d6ed8aad0a728345c7adb03d42ebc4d0d7.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 1499,
+            "truncated": false
+          }
+        }
+      ]
+    },
+    {
+      "testId": "3dc73adc681a7f066ffc-1cdd33f81ae67f31e314",
+      "fullName": "qa.spec.ts login: password + TOTP (fixed seeded credentials in live QA)",
+      "title": "login: password + TOTP (fixed seeded credentials in live QA)",
+      "file": "qa.spec.ts",
+      "status": "passed",
+      "attempt": 1,
+      "steps": [
+        {
+          "title": "Sign in with password + TOTP",
+          "status": "passed",
+          "durationMs": 420,
+          "screenshot": {
+            "path": "qa-login-password-TOTP-fixed-seeded-credentials-in-live-QA--chromium/attachments/step-still-8835d74c4b84f35ff1b1624a282e96d1ea53cb46.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 720,
+            "truncated": false
+          }
+        }
+      ]
+    },
+    {
+      "testId": "3dc73adc681a7f066ffc-6451b4d5d39170dc8249",
+      "fullName": "qa.spec.ts payslip PDF download round-trip (%PDF magic, non-trivial bytes)",
+      "title": "payslip PDF download round-trip (%PDF magic, non-trivial bytes)",
+      "file": "qa.spec.ts",
+      "status": "passed",
+      "attempt": 1,
+      "steps": [
+        {
+          "title": "Payslip PDF downloads (%PDF, non-trivial size)",
+          "status": "passed",
+          "durationMs": 268,
+          "screenshot": {
+            "path": "qa-payslip-PDF-download-ro-d1e7b-DF-magic-non-trivial-bytes--chromium/attachments/step-still-0644eb052fe44f7caeec80f8ad650b6fd1a5d087.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 720,
+            "truncated": false
+          }
+        }
+      ]
+    },
+    {
+      "testId": "3dc73adc681a7f066ffc-fe9989d63b57603f7c5e",
+      "fullName": "qa.spec.ts scheduler draft: seeded current-period run shows in admin approvals (read-only)",
+      "title": "scheduler draft: seeded current-period run shows in admin approvals (read-only)",
+      "file": "qa.spec.ts",
+      "status": "passed",
+      "attempt": 1,
+      "steps": [
+        {
+          "title": "Read whether today's year has tax tables",
+          "status": "passed",
+          "durationMs": 48,
+          "screenshot": {
+            "path": "qa-scheduler-draft-seeded--020d8--admin-approvals-read-only--chromium/attachments/step-still-b7ab97c8d39f29110cb908f86dc9844e96e47f91.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 720,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Find the current-period draft's pay-date year",
+          "status": "passed",
+          "durationMs": 51,
+          "screenshot": {
+            "path": "qa-scheduler-draft-seeded--020d8--admin-approvals-read-only--chromium/attachments/step-still-2c49b554da25bdd0827a08677224eb1f94a34cc3.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 720,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Current-period draft awaits approval in the runs list",
+          "status": "passed",
+          "durationMs": 453,
+          "screenshot": {
+            "path": "qa-scheduler-draft-seeded--020d8--admin-approvals-read-only--chromium/attachments/step-still-f3260d53f5abbc99aae7732dadb9c7b5fe3e512e.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 1829,
+            "truncated": false
+          }
+        }
+      ]
+    },
+    {
+      "testId": "3dc73adc681a7f066ffc-8603cf75b0bb61067e21",
+      "fullName": "qa.spec.ts contractor My Invoices: Dave sees approved+paid invoices, PDF round-trips (PAY-7)",
+      "title": "contractor My Invoices: Dave sees approved+paid invoices, PDF round-trips (PAY-7)",
+      "file": "qa.spec.ts",
+      "status": "passed",
+      "attempt": 1,
+      "steps": [
+        {
+          "title": "Contractor sees invoices with status chips",
+          "status": "passed",
+          "durationMs": 317,
+          "screenshot": {
+            "path": "qa-contractor-My-Invoices--eebd6-ices-PDF-round-trips-PAY-7--chromium/attachments/step-still-98712979b4a7caee106bd652d0151d9be82bb885.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 1131,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Only approved/paid invoices leave the server",
+          "status": "passed",
+          "durationMs": 64,
+          "screenshot": {
+            "path": "qa-contractor-My-Invoices--eebd6-ices-PDF-round-trips-PAY-7--chromium/attachments/step-still-f7141da2caa4cd9724a9d8c88265c06a88c99898.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 1131,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Invoice PDF downloads (%PDF, non-trivial size)",
+          "status": "passed",
+          "durationMs": 82,
+          "screenshot": {
+            "path": "qa-contractor-My-Invoices--eebd6-ices-PDF-round-trips-PAY-7--chromium/attachments/step-still-2e2535a93148a88238d41b4fbc1137d4a2845bbe.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 1131,
+            "truncated": false
+          }
+        }
+      ]
+    },
+    {
+      "testId": "3dc73adc681a7f066ffc-f96dcb7aaad6bbccf562",
+      "fullName": "qa.spec.ts PAY-8 scoped UI: contractor sees Invoices, not Payslips; /my/payslips redirects",
+      "title": "PAY-8 scoped UI: contractor sees Invoices, not Payslips; /my/payslips redirects",
+      "file": "qa.spec.ts",
+      "status": "passed",
+      "attempt": 1,
+      "steps": [
+        {
+          "title": "Contractor nav shows Invoices, not Payslips",
+          "status": "passed",
+          "durationMs": 187,
+          "screenshot": {
+            "path": "qa-PAY-8-scoped-UI-contrac-780c9-slips-my-payslips-redirects-chromium/attachments/step-still-5a90de1619bed2d11a3adb3e7ee8658061cf11ea.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 720,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Direct /my/payslips redirects to the dashboard",
+          "status": "passed",
+          "durationMs": 116,
+          "screenshot": {
+            "path": "qa-PAY-8-scoped-UI-contrac-780c9-slips-my-payslips-redirects-chromium/attachments/step-still-178fec980be959df60052edcf25a1f6e6356f2fc.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 720,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Admin-only notification events are not offered",
+          "status": "passed",
+          "durationMs": 29,
+          "screenshot": {
+            "path": "qa-PAY-8-scoped-UI-contrac-780c9-slips-my-payslips-redirects-chromium/attachments/step-still-60276a253da082cf2539e02bb6af97e810b37e96.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 720,
+            "truncated": false
+          }
+        }
+      ]
+    },
+    {
+      "testId": "3dc73adc681a7f066ffc-a4e6592733de12857105",
+      "fullName": "qa.spec.ts tax deposits: admin sees the computed schedule incl. last month (PAY-9)",
+      "title": "tax deposits: admin sees the computed schedule incl. last month (PAY-9)",
+      "file": "qa.spec.ts",
+      "status": "passed",
+      "attempt": 1,
+      "steps": [
+        {
+          "title": "Deposit schedule lists the last month of history",
+          "status": "passed",
+          "durationMs": 415,
+          "screenshot": {
+            "path": "qa-tax-deposits-admin-sees-dfc17-dule-incl-last-month-PAY-9--chromium/attachments/step-still-6a6b0b51240f40f96c9753860324c552383ab7d1.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 2508,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Deposits API: federal + IL, newest first",
+          "status": "passed",
+          "durationMs": 81,
+          "screenshot": {
+            "path": "qa-tax-deposits-admin-sees-dfc17-dule-incl-last-month-PAY-9--chromium/attachments/step-still-034f779626a8d8de64892304e7d20cada4c3016b.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 2508,
+            "truncated": false
+          }
+        }
+      ]
+    },
+    {
+      "testId": "3dc73adc681a7f066ffc-0fccb52e6948aa155b14",
+      "fullName": "qa.spec.ts W-2/W-3 filing detail: full headers, Documents column, W-3 action placement (PAY-23)",
+      "title": "W-2/W-3 filing detail: full headers, Documents column, W-3 action placement (PAY-23)",
+      "file": "qa.spec.ts",
+      "status": "passed",
+      "attempt": 1,
+      "steps": [
+        {
+          "title": "Open last year's W-2/W-3 filing",
+          "status": "passed",
+          "durationMs": 519,
+          "screenshot": {
+            "path": "qa-W-2-W-3-filing-detail-f-78a2c--3-action-placement-PAY-23--chromium/attachments/step-still-a60aff25fc7a47d1282d05e158f32f3993652595.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 1931,
+            "truncated": false
+          }
+        },
+        {
+          "title": "W-3 action in the W-3 card; full W-2 column titles",
+          "status": "passed",
+          "durationMs": 98,
+          "screenshot": {
+            "path": "qa-W-2-W-3-filing-detail-f-78a2c--3-action-placement-PAY-23--chromium/attachments/step-still-ab0d07f54fd933d5d9afb09eb7e708909e5b7f70.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 1931,
+            "truncated": false
+          }
+        }
+      ]
+    },
+    {
+      "testId": "3dc73adc681a7f066ffc-e44f63fa0d52b5341f21",
+      "fullName": "qa.spec.ts email capture: admin test email lands in Mailpit (via /api/qa/mailbox)",
+      "title": "email capture: admin test email lands in Mailpit (via /api/qa/mailbox)",
+      "file": "qa.spec.ts",
+      "status": "skipped",
+      "attempt": 1,
+      "steps": []
+    },
+    {
+      "testId": "2d6887e324933beb1cf7-c4506eccf01684da792e",
+      "fullName": "state-taxes.spec.ts config page: State taxes tab renders",
+      "title": "config page: State taxes tab renders",
+      "file": "state-taxes.spec.ts",
+      "status": "passed",
+      "attempt": 1,
+      "steps": [
+        {
+          "title": "Config page: State taxes tab lists jurisdictions",
+          "status": "passed",
+          "durationMs": 371,
+          "screenshot": {
+            "path": "state-taxes-config-page-State-taxes-tab-renders-chromium/attachments/step-still-4f225ab749deebb075bd3321ae32713ecbd5c199.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 1051,
+            "truncated": false
+          }
+        }
+      ]
+    },
+    {
+      "testId": "2d6887e324933beb1cf7-fb7c3981305f7411c213",
+      "fullName": "state-taxes.spec.ts employee detail: State tax tab renders work-state and election tables",
+      "title": "employee detail: State tax tab renders work-state and election tables",
+      "file": "state-taxes.spec.ts",
+      "status": "passed",
+      "attempt": 1,
+      "steps": [
+        {
+          "title": "Employee State tax tab shows work state + elections",
+          "status": "passed",
+          "durationMs": 799,
+          "screenshot": {
+            "path": "state-taxes-employee-detai-207e9-k-state-and-election-tables-chromium/attachments/step-still-e812c4e245f30a3988cc910b5322f080a2b65bc3.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 1371,
+            "truncated": false
+          }
+        }
+      ]
+    },
+    {
+      "testId": "2d6887e324933beb1cf7-1327487e6ed99d21d0a4",
+      "fullName": "state-taxes.spec.ts ephemeral only: assign a work state and see it in the history",
+      "title": "ephemeral only: assign a work state and see it in the history",
+      "file": "state-taxes.spec.ts",
+      "status": "passed",
+      "attempt": 1,
+      "steps": [
+        {
+          "title": "Open the employee's State tax tab",
+          "status": "passed",
+          "durationMs": 792,
+          "screenshot": {
+            "path": "state-taxes-ephemeral-only-c111f-e-and-see-it-in-the-history-chromium/attachments/step-still-4d4adcc2fd1c0ededbd269b73169740a6f1a2e7d.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 1371,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Assign work state IL",
+          "status": "passed",
+          "durationMs": 533,
+          "screenshot": {
+            "path": "state-taxes-ephemeral-only-c111f-e-and-see-it-in-the-history-chromium/attachments/step-still-ae81ea4ffd387d52d1dfbe7a0aea728f2fab95cf.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 1252,
+            "truncated": false
+          }
+        }
+      ]
+    },
+    {
+      "testId": "2d6887e324933beb1cf7-a32c9322b5494787ecaf",
+      "fullName": "state-taxes.spec.ts ephemeral only: employee state election flows request → approval → payslip",
+      "title": "ephemeral only: employee state election flows request → approval → payslip",
+      "file": "state-taxes.spec.ts",
+      "status": "passed",
+      "attempt": 1,
+      "steps": [
+        {
+          "title": "Employee fills in an IL withholding election",
+          "status": "passed",
+          "durationMs": 368,
+          "screenshot": {
+            "path": "state-taxes-ephemeral-only-483d2-equest-→-approval-→-payslip-chromium/attachments/step-still-12116aa8a4bd3ef97ab4965f64119e9329cda23b.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 812,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Employee submits the request (Pending)",
+          "status": "passed",
+          "durationMs": 150,
+          "screenshot": {
+            "path": "state-taxes-ephemeral-only-483d2-equest-→-approval-→-payslip-chromium/attachments/step-still-a6d5c3c37e44a0f76af7d294a204639a721bcbc0.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 878,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Admin approves the election request",
+          "status": "passed",
+          "durationMs": 774,
+          "screenshot": {
+            "path": "state-taxes-ephemeral-only-483d2-equest-→-approval-→-payslip-chromium/attachments/step-still-3d20009fe047882ecbb1009895172d3b11f9dd6c.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 907,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Election and IL work state on the State tax tab",
+          "status": "passed",
+          "durationMs": 736,
+          "screenshot": {
+            "path": "state-taxes-ephemeral-only-483d2-equest-→-approval-→-payslip-chromium/attachments/step-still-90c46883e8c95fe342d4a015bae7e1caf2cfd4f4.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 1048,
+            "truncated": false
+          }
+        },
+        {
+          "title": "Issued payslip shows IL state withholding −$195.93",
+          "status": "passed",
+          "durationMs": 277,
+          "screenshot": {
+            "path": "state-taxes-ephemeral-only-483d2-equest-→-approval-→-payslip-chromium/attachments/step-still-e2ae5ecf43e9654f42e8aa8ac14c4f1117972f6e.jpg",
+            "contentType": "image/jpeg",
+            "width": 1280,
+            "height": 755,
+            "truncated": false
+          }
+        }
+      ]
+    }
+  ]
+}
