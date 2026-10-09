@@ -48,13 +48,13 @@
     "@electric-sql/pglite": "~0.5.8",
     "@stryker-mutator/core": "~10.0.0",
     "@stryker-mutator/vitest-runner": "~10.0.0",
-    "@types/node": "~26.6.1",
+    "@types/node": "~26.6.4",
     "@types/nodemailer": "^8.0.1",
     "@types/pg": "^8.21.0",
     "@types/zxcvbn": "^4.4.5",
-    "@vitest/coverage-v8": "~5.0.1",
-    "tsx": "~4.23.13",
+    "@vitest/coverage-v8": "~5.0.3",
+    "tsx": "~4.23.15",
     "typescript": "~5.9.3",
-    "vitest": "~5.0.1"
+    "vitest": "~5.0.3"
   }
 }

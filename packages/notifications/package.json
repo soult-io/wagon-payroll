@@ -20,7 +20,7 @@
     "@payroll/shared": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "~26.6.1",
+    "@types/node": "~26.6.4",
     "typescript": "~5.9.3"
   }
 }
