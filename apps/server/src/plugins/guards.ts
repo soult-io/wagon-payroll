@@ -1,7 +1,8 @@
 /**
  * RBAC guards (spec 3 "RBAC") — Fastify preHandlers.
  *
- * - requireAuth: valid BA session + not banned + absolute/idle enforcement.
+ * - requireAuth: valid BA session + not banned + TOTP enrolled (PAY-240:
+ *   403 mfa_required otherwise) + absolute/idle enforcement.
  *   Absolute 7d is fixed in the session row (BA refresh disabled); idle 12h is
  *   enforced here by touching session.updatedAt (throttled) and revoking when
  *   it is more than IDLE_MS behind.
@@ -141,6 +142,13 @@ export function createGuards(deps: {
       }
       await writeAuthEvent(db, AUTH_EVENT.sessionRevoked, user.id, requestContext(toHeaders(req)));
       await reply.code(401).send({ error: "session_expired" });
+      return;
+    }
+    // PAY-240: every session must belong to a user with TOTP on (spec 3:
+    // password then TOTP). Checked after idle so a stale session is still
+    // revoked, and before the touch so a refused session never stays alive.
+    if (user.twoFactorEnabled !== true) {
+      await reply.code(403).send({ error: "mfa_required" });
       return;
     }
     if (now - lastActivity > TOUCH_THROTTLE_MS) {
