@@ -6,6 +6,22 @@ All notable changes to this project will be documented here. Format follows
 
 ## [Unreleased]
 
+## [1.30.1] - 2026-10-09
+
+### Security
+
+- **Two-step sign-in is always required (PAY-240)** — every account now
+  needs its authenticator-app code to use Wagon Payroll, and it can no longer
+  be switched off from inside the app. If an account ever ends up without
+  its code set up, it can't open anything until an admin resets it, and the
+  person sets it up again.
+
+### Changed
+
+- **README (PAY-244)** — the repo's front page now says plainly that Wagon
+  Payroll isn't ready yet for other companies to run, and lists its current
+  limits.
+
 ## [1.30.0] - 2026-10-08
 
 ### Added
