@@ -6,6 +6,23 @@ All notable changes to this project will be documented here. Format follows
 
 ## [Unreleased]
 
+## [1.30.2] - 2026-10-15
+
+### Fixed
+
+- **Form 941 Social Security and Medicare wages (PAY-247)** — lines 5a and
+  5c now show the wages you actually paid, and the tax on them is figured at
+  the form's rates. The cent or two that comes from rounding each paycheck now
+  shows on line 7 (fractions of cents), where the IRS expects it. Before, the
+  rounding was hidden by nudging the wages up, so line 5c could show a dollar
+  or so more in wages than you paid.
+- **Correcting a filed return's record (PAY-248)** — "Recompute worksheet" on
+  a filed form now saves exactly the figures you checked in the preview. If
+  anything changed in between, nothing is saved and the preview shows the new
+  figures. The dialog also reminds you that this changes the app's record
+  only: a return you filed with a mistake is corrected with the IRS (for
+  Form 941, that is Form 941-X).
+
 ## [1.30.1] - 2026-10-09
 
 ### Security
