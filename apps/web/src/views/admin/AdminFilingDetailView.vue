@@ -462,15 +462,25 @@ async function openRecompute() {
 
 async function submitRecompute() {
   const reason = recomputeReason.value.trim();
-  if (!reason) return;
+  const preview = recomputePreviewData.value;
+  if (!reason || !preview) return;
   recomputeBusy.value = true;
   try {
-    await adminFilingsApi.recompute(filingId, reason);
+    // PAY-248: store exactly the figures the admin checked in the preview.
+    await adminFilingsApi.recompute(filingId, reason, preview.afterHash);
     notify.success("Worksheet recomputed", "The correction is recorded in the audit log.");
     recomputeDialog.value = false;
     await load();
   } catch (err) {
-    notify.error(err, "Could not recompute the worksheet");
+    const changed = err instanceof ApiError && err.code === "worksheet_changed";
+    notify.error(err, changed ? "Figures changed. Not saved" : "Could not recompute the worksheet");
+    // Show the new figures; the reason stays filled in. No preview → close.
+    if (changed) {
+      recomputePreviewData.value = await adminFilingsApi
+        .recomputePreview(filingId)
+        .catch(() => null);
+      if (!recomputePreviewData.value) recomputeDialog.value = false;
+    }
   } finally {
     recomputeBusy.value = false;
   }
@@ -1413,6 +1423,11 @@ onMounted(async () => {
             the correction in the audit log. Filing status, date, method, and reference are not
             changed.
           </p>
+          <p class="small" style="margin: 0">
+            Only save this if every recomputed figure matches the return you filed. If the return
+            you filed has a mistake, correct it with the IRS (for Form 941, that is Form 941-X).
+            Changing this record does not change the return you filed.
+          </p>
           <Skeleton v-if="recomputeLoading" height="6rem" />
           <template v-else>
             <p v-if="!recomputeDiff.length" class="muted small" style="margin: 0">
@@ -1432,7 +1447,7 @@ onMounted(async () => {
                 rows="3"
                 maxlength="500"
                 auto-resize
-                placeholder="e.g. corrected to match filed return, Letterstream 13601563"
+                placeholder="e.g. corrected to match filed return, Letterstream 10000000"
               />
             </div>
           </template>
@@ -1443,7 +1458,7 @@ onMounted(async () => {
               icon="pi pi-check"
               severity="warn"
               :loading="recomputeBusy"
-              :disabled="!recomputeReason.trim() || recomputeLoading"
+              :disabled="!recomputeReason.trim() || recomputeLoading || !recomputePreviewData"
               @click="submitRecompute"
             />
           </div>

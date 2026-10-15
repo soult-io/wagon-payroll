@@ -880,6 +880,10 @@ export interface WorksheetRecomputePreview {
   afterHash: string;
 }
 
+/** 409 worksheet_changed: a correction refused because the figures moved since the preview. */
+const RECOMPUTE_CHANGED_MESSAGE =
+  "Not saved. The recomputed figures changed since you opened the preview. The preview now shows the new figures. Check them against the return you filed.";
+
 async function filedFilingForRecompute(db: Db, filingId: number): Promise<TaxFilingRow> {
   const rows = await db.select().from(taxFilings).where(eq(taxFilings.id, filingId)).limit(1);
   const filing = rows[0];
@@ -923,11 +927,18 @@ export async function previewWorksheetRecompute(
  * actor) in the same transaction as the update. Filing metadata — status,
  * filed_on, method, reference — is deliberately untouched: the correction
  * changes the worksheet record, never the fact or manner of the filing.
+ *
+ * PAY-248: a filed record must equal the return as filed. The admin checks
+ * the preview against the paper return, so the commit stores exactly that
+ * preview: `expectedWorksheetHash` is the preview's afterHash, and a fresh
+ * recompute with a different hash (the data moved since the preview) is
+ * refused with worksheet_changed and writes nothing.
  */
 export async function recomputeFiledWorksheet(
   deps: Deps,
   filingId: number,
   reason: string,
+  expectedWorksheetHash: string,
   actorId: string,
 ): Promise<TaxFilingRow> {
   const { db } = deps;
@@ -938,10 +949,21 @@ export async function recomputeFiledWorksheet(
       "a reason is required for a worksheet correction (max 500 characters)",
     );
   }
-  const filing = await filedFilingForRecompute(db, filingId);
-  const fresh = await computeFreshWorksheet(db, filing);
+  await filedFilingForRecompute(db, filingId);
 
   return db.transaction(async (tx) => {
+    // FILING_CLOSE_LOCK (same order as markFiled: close lock, then row) keeps
+    // late issues out while the worksheet is recomputed; the row lock makes
+    // the hash check and the write see the same row.
+    await tx.execute(FILING_CLOSE_LOCK);
+    const filing = await lockedFilingRow(tx, filingId);
+    if (filing?.status !== "filed") {
+      throw new FilingServiceError("invalid_transition", "only filed filings can be recomputed");
+    }
+    const fresh = await computeFreshWorksheet(tx, filing);
+    if (fresh.hash !== expectedWorksheetHash) {
+      throw new FilingServiceError("worksheet_changed", RECOMPUTE_CHANGED_MESSAGE);
+    }
     const updated = await tx
       .update(taxFilings)
       .set({

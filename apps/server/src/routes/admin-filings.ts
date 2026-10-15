@@ -51,15 +51,16 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const MONEY = /^-?\d{1,10}(\.\d{1,2})?$/;
 const NONNEG_MONEY = /^\d{1,10}(\.\d{1,2})?$/;
 
+const worksheetHashField = z
+  .string()
+  .regex(/^[0-9a-f]{64}$/, "expectedWorksheetHash must be 64 lowercase hex characters");
+
 const filedBody = z.object({
   filedOn: z.string().regex(ISO_DATE, "filedOn must be YYYY-MM-DD"),
   filingMethod: z.string().trim().min(1).max(50),
   filingReference: z.string().trim().max(100).default(""),
   // PAY-193 (D9.5): the worksheet hash the admin saw (sha-256, lowercase hex).
-  expectedWorksheetHash: z
-    .string()
-    .regex(/^[0-9a-f]{64}$/, "expectedWorksheetHash must be 64 lowercase hex characters")
-    .optional(),
+  expectedWorksheetHash: worksheetHashField.optional(),
 });
 
 const fractionsBody = z.object({
@@ -68,6 +69,8 @@ const fractionsBody = z.object({
 
 const recomputeBody = z.object({
   reason: z.string().trim().min(1, "reason is required").max(500),
+  // PAY-248: the preview's afterHash, i.e. the figures the admin checked.
+  expectedWorksheetHash: worksheetHashField,
 });
 
 const adjustmentBody = z.object({
@@ -186,6 +189,7 @@ export function registerAdminFilingRoutes(app: FastifyInstance, deps: Deps): voi
         { db, config },
         id,
         body.data.reason,
+        body.data.expectedWorksheetHash,
         req.authUser!.id,
       );
       return { filing };

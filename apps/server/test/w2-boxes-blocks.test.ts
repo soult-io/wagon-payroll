@@ -400,7 +400,8 @@ describe("T09 missing federal tax_config -> 409 missing_tax_config everywhere (f
       method: "POST",
       url: `/api/admin/tax-filings/${filed2021Id}/recompute`,
       headers: ADMIN,
-      payload: { reason: "T09" },
+      // PAY-248: a well-formed hash, so the request reaches the config check.
+      payload: { reason: "T09", expectedWorksheetHash: "0".repeat(64) },
     });
     expect(commit.statusCode).toBe(409);
     expect(commit.json()).toEqual({ error: "missing_tax_config", year: 2021 });
@@ -417,7 +418,8 @@ describe("T09 missing federal tax_config -> 409 missing_tax_config everywhere (f
       method: "POST",
       url: `/api/admin/tax-filings/${unfiled2022Id}/recompute`,
       headers: ADMIN,
-      payload: { reason: "T09" },
+      // PAY-248: a well-formed hash, so the request reaches the config check.
+      payload: { reason: "T09", expectedWorksheetHash: "0".repeat(64) },
     });
     expect(commit.statusCode).toBe(409);
     noAmounts(commit.body, T09_AMOUNTS);
