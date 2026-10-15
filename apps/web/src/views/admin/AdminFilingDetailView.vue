@@ -474,11 +474,12 @@ async function submitRecompute() {
   } catch (err) {
     const changed = err instanceof ApiError && err.code === "worksheet_changed";
     notify.error(err, changed ? "Figures changed. Not saved" : "Could not recompute the worksheet");
-    // Show the new figures; the reason stays filled in.
+    // Show the new figures; the reason stays filled in. No preview → close.
     if (changed) {
       recomputePreviewData.value = await adminFilingsApi
         .recomputePreview(filingId)
         .catch(() => null);
+      if (!recomputePreviewData.value) recomputeDialog.value = false;
     }
   } finally {
     recomputeBusy.value = false;
@@ -1446,7 +1447,7 @@ onMounted(async () => {
                 rows="3"
                 maxlength="500"
                 auto-resize
-                placeholder="e.g. corrected to match filed return, Letterstream 13601563"
+                placeholder="e.g. corrected to match filed return, Letterstream 10000000"
               />
             </div>
           </template>
