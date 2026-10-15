@@ -957,7 +957,7 @@ export async function recomputeFiledWorksheet(
     // the hash check and the write see the same row.
     await tx.execute(FILING_CLOSE_LOCK);
     const filing = await lockedFilingRow(tx, filingId);
-    if (!filing || filing.status !== "filed") {
+    if (filing?.status !== "filed") {
       throw new FilingServiceError("invalid_transition", "only filed filings can be recomputed");
     }
     const fresh = await computeFreshWorksheet(tx, filing);
