@@ -206,7 +206,11 @@ describe("GET /api/admin/tax-filings/:id/recompute — read-only preview", () =>
 
 describe("POST /api/admin/tax-filings/:id/recompute — guards", () => {
   it("requires a reason", async () => {
-    for (const payload of [{}, { reason: "" }, { reason: "   " }]) {
+    for (const payload of [
+      { expectedWorksheetHash: originalHash },
+      { reason: "", expectedWorksheetHash: originalHash },
+      { reason: "   ", expectedWorksheetHash: originalHash },
+    ]) {
       const res = await t.app.inject({
         method: "POST",
         url: `/api/admin/tax-filings/${filingId}/recompute`,
@@ -222,7 +226,7 @@ describe("POST /api/admin/tax-filings/:id/recompute — guards", () => {
       method: "POST",
       url: `/api/admin/tax-filings/${filingId}/recompute`,
       headers: EMPLOYEE,
-      payload: { reason: REASON },
+      payload: { reason: REASON, expectedWorksheetHash: originalHash },
     });
     expect(asEmployee.statusCode).toBe(403);
     const anon = await t.app.inject({
@@ -237,7 +241,7 @@ describe("POST /api/admin/tax-filings/:id/recompute — guards", () => {
       method: "POST",
       url: `/api/admin/tax-filings/${unfiledId}/recompute`,
       headers: ADMIN,
-      payload: { reason: REASON },
+      payload: { reason: REASON, expectedWorksheetHash: originalHash },
     });
     expect(res.statusCode, res.body).toBe(409);
   });
@@ -249,7 +253,8 @@ describe("POST /api/admin/tax-filings/:id/recompute — the correction", () => {
       method: "POST",
       url: `/api/admin/tax-filings/${filingId}/recompute`,
       headers: ADMIN,
-      payload: { reason: REASON },
+      // The preview test above asserts afterHash === originalHash.
+      payload: { reason: REASON, expectedWorksheetHash: originalHash },
     });
     expect(res.statusCode, res.body).toBe(200);
     const { filing } = res.json() as { filing: typeof taxFilings.$inferSelect };
@@ -304,7 +309,10 @@ describe("POST /api/admin/tax-filings/:id/recompute — the correction", () => {
       method: "POST",
       url: `/api/admin/tax-filings/${filingId}/recompute`,
       headers: ADMIN,
-      payload: { reason: "re-verified against the e-file acknowledgement" },
+      payload: {
+        reason: "re-verified against the e-file acknowledgement",
+        expectedWorksheetHash: originalHash,
+      },
     });
     expect(res.statusCode, res.body).toBe(200);
     const row = await filingRow(filingId);
