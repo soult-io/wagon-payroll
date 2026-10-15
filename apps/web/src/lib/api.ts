@@ -1656,8 +1656,12 @@ export const adminFilingsApi = {
   // PAY-25 — audited worksheet correction for filed filings
   recomputePreview: (id: number) =>
     get<WorksheetRecomputePreview>(`/api/admin/tax-filings/${id}/recompute`),
-  recompute: (id: number, reason: string) =>
-    post<{ filing: TaxFilingRow }>(`/api/admin/tax-filings/${id}/recompute`, { reason }),
+  /** PAY-248: expectedWorksheetHash = the preview's afterHash (the figures the admin checked). */
+  recompute: (id: number, reason: string, expectedWorksheetHash: string) =>
+    post<{ filing: TaxFilingRow }>(`/api/admin/tax-filings/${id}/recompute`, {
+      reason,
+      expectedWorksheetHash,
+    }),
   addAdjustment: (id: number, input: AdjustmentInput) =>
     post<{ adjustment: TaxAdjustmentRow }>(`/api/admin/tax-filings/${id}/adjustments`, input),
   updateAdjustment: (id: number, adjId: number, input: AdjustmentInput) =>
