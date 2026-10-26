@@ -46,14 +46,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 11.17.0
-
+      # PAY-252: setup-node FIRST. pnpm/action-setup's self-installer runs
+      # `npm ci` with whatever npm is on PATH and appends its own node dir, so
+      # without this it uses the self-hosted runner's bundled npm — which every
+      # runner self-update breaks (actions/runner issue 2094: the externals
+      # npm/npx/corepack symlinks are copied as plain files). The pnpm store
+      # cache lives on action-setup because setup-node's `cache: pnpm` needs
+      # pnpm on PATH before it runs.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.17.0
+          cache: true
 
       - name: Install
         run: pnpm install --frozen-lockfile
