@@ -13,7 +13,7 @@ import type { FilingWorksheet, WorksheetW3State } from "./api";
 const { money, percent } = useMoney();
 const { date } = useDates();
 
-export type FieldKind = "money" | "count" | "yesNo" | "percent" | "quarter" | "date" | "text";
+export type FieldKind = "money" | "count" | "yesNo" | "percent" | "quarter" | "date" | "stateCode";
 
 /** A worksheet field as shown: form line (null = no line on the form), label, value kind. */
 export interface FieldLabel {
@@ -22,93 +22,85 @@ export interface FieldLabel {
   kind: FieldKind;
 }
 
-const money_ = (line: string | null, label: string): FieldLabel => ({ line, label, kind: "money" });
+const field = (line: string | null, label: string, kind: FieldKind = "money"): FieldLabel => ({
+  line,
+  label,
+  kind,
+});
 
 /** Form 941, keyed by flattened worksheet key. Declaration order = row order. */
 export const WORKSHEET_941_FIELDS = {
   form: null,
   year: null,
   quarter: null,
-  line1Employees: {
-    line: "1",
-    label: "Employees paid (pay period incl. the 12th of month 1)",
-    kind: "count",
-  },
-  line2Wages: money_("2", "Wages, tips, and other compensation"),
-  line3FederalWithheld: money_("3", "Federal income tax withheld"),
-  line5aTaxableSsWages: money_("5a", "Taxable Social Security wages"),
-  line5aTax: money_("5a", "Social Security tax"),
-  line5cTaxableMedicareWages: money_("5c", "Taxable Medicare wages"),
-  line5cTax: money_("5c", "Medicare tax"),
-  line5dAdditionalMedicare: money_("5d", "Additional Medicare Tax withheld"),
-  line5eTotal: money_("5e", "Total Social Security and Medicare taxes"),
-  line6TotalTaxes: money_("6", "Total taxes before adjustments (lines 3 + 5e + 5f)"),
-  line7FractionsOfCents: money_("7", "Fractions of cents"),
+  line1Employees: field("1", "Employees paid (pay period incl. the 12th of month 1)", "count"),
+  line2Wages: field("2", "Wages, tips, and other compensation"),
+  line3FederalWithheld: field("3", "Federal income tax withheld"),
+  line5aTaxableSsWages: field("5a", "Taxable Social Security wages"),
+  line5aTax: field("5a", "Social Security tax"),
+  line5cTaxableMedicareWages: field("5c", "Taxable Medicare wages"),
+  line5cTax: field("5c", "Medicare tax"),
+  line5dAdditionalMedicare: field("5d", "Additional Medicare Tax withheld"),
+  line5eTotal: field("5e", "Total Social Security and Medicare taxes"),
+  line6TotalTaxes: field("6", "Total taxes before adjustments (lines 3 + 5e + 5f)"),
+  line7FractionsOfCents: field("7", "Fractions of cents"),
   // The default line 7 before an admin override — not a line on the form.
   line7Computed: null,
-  line10TotalAfterAdjustments: money_("10", "Total taxes after adjustments"),
-  line11ResearchCredit: money_("11", "Qualified small business R&D credit"),
-  line12TotalAfterCredits: money_("12", "Total taxes after credits"),
-  line13Deposits: money_("13", "Total deposits for the quarter (incl. overpayments applied)"),
-  line14BalanceDue: money_("14", "Balance due"),
-  line15Overpayment: money_("15a", "Overpayment"),
-  "line16.month1": money_("16", "Month 1 liability"),
-  "line16.month2": money_("16", "Month 2 liability"),
-  "line16.month3": money_("16", "Month 3 liability"),
-  "line16.deMinimis": {
-    line: "16",
-    label: "Line 12 is under $2,500 (no monthly breakdown)",
-    kind: "yesNo",
-  },
+  line10TotalAfterAdjustments: field("10", "Total taxes after adjustments"),
+  line11ResearchCredit: field("11", "Qualified small business R&D credit"),
+  line12TotalAfterCredits: field("12", "Total taxes after credits"),
+  line13Deposits: field("13", "Total deposits for the quarter (incl. overpayments applied)"),
+  line14BalanceDue: field("14", "Balance due"),
+  line15Overpayment: field("15a", "Overpayment"),
+  "line16.month1": field("16", "Month 1 liability"),
+  "line16.month2": field("16", "Month 2 liability"),
+  "line16.month3": field("16", "Month 3 liability"),
+  "line16.deMinimis": field("16", "Line 12 is under $2,500 (no monthly breakdown)", "yesNo"),
 } as const satisfies Record<string, FieldLabel | null>;
 
 /** Form 940 (FUTA). */
 export const WORKSHEET_940_FIELDS = {
   form: null,
   year: null,
-  sutaCreditRate: { line: null, label: "SUTA credit rate", kind: "percent" },
-  futaRate: { line: null, label: "Net FUTA rate", kind: "percent" },
-  line3TotalPayments: money_("3", "Total payments to all employees"),
-  line7FutaTaxableWages: money_("7", "Total taxable FUTA wages (first $7,000 per employee)"),
-  line8FutaTax: money_("8", "FUTA tax before adjustments"),
-  line12TotalFutaTax: money_("12", "Total FUTA tax after adjustments"),
-  futaTaxPerFrozenEntries: money_(null, "FUTA tax recorded in issued pay runs"),
-  roundingDelta: money_(null, "Rounding difference (pay runs vs. line 12)"),
-  depositThresholdCrossedQuarter: {
-    line: null,
-    label: "Quarter FUTA liability crossed $500",
-    kind: "quarter",
-  },
-  depositDueBy: { line: null, label: "Deposit due by", kind: "date" },
-  balanceDue: money_("14", "Balance due"),
+  sutaCreditRate: field(null, "SUTA credit rate", "percent"),
+  futaRate: field(null, "Net FUTA rate", "percent"),
+  line3TotalPayments: field("3", "Total payments to all employees"),
+  line7FutaTaxableWages: field("7", "Total taxable FUTA wages (first $7,000 per employee)"),
+  line8FutaTax: field("8", "FUTA tax before adjustments"),
+  line12TotalFutaTax: field("12", "Total FUTA tax after adjustments"),
+  futaTaxPerFrozenEntries: field(null, "FUTA tax recorded in issued pay runs"),
+  roundingDelta: field(null, "Rounding difference (pay runs vs. line 12)"),
+  depositThresholdCrossedQuarter: field(null, "Quarter FUTA liability crossed $500", "quarter"),
+  depositDueBy: field(null, "Deposit due by", "date"),
+  balanceDue: field("14", "Balance due"),
 } as const satisfies Record<string, FieldLabel | null>;
 
 /** W-3 transmittal (the per-state rows are in WORKSHEET_W3_STATE_FIELDS). */
 export const WORKSHEET_W3_FIELDS = {
   form: null,
   year: null,
-  employeeCount: { line: null, label: "W-2 forms included", kind: "count" },
-  w2FormCount: { line: "c", label: "Total number of Forms W-2", kind: "count" },
-  box1Wages: money_("1", "Wages, tips, other compensation"),
-  box2FederalWithheld: money_("2", "Federal income tax withheld"),
-  box3SsWages: money_("3", "Social Security wages"),
-  box4SsTax: money_("4", "Social Security tax withheld"),
-  box5MedicareWages: money_("5", "Medicare wages and tips"),
-  box6MedicareTax: money_("6", "Medicare tax withheld"),
-  box15State: { line: "15", label: "State", kind: "text" },
-  box16StateWages: money_("16", "State wages, tips, etc."),
-  box17StateTax: money_("17", "State income tax"),
-  blockedEmployees: { line: null, label: "Employees with W-2s on hold", kind: "count" },
+  employeeCount: field(null, "W-2 forms included", "count"),
+  w2FormCount: field("c", "Total number of Forms W-2", "count"),
+  box1Wages: field("1", "Wages, tips, other compensation"),
+  box2FederalWithheld: field("2", "Federal income tax withheld"),
+  box3SsWages: field("3", "Social Security wages"),
+  box4SsTax: field("4", "Social Security tax withheld"),
+  box5MedicareWages: field("5", "Medicare wages and tips"),
+  box6MedicareTax: field("6", "Medicare tax withheld"),
+  box15State: field("15", "State", "stateCode"),
+  box16StateWages: field("16", "State wages, tips, etc."),
+  box17StateTax: field("17", "State income tax"),
+  blockedEmployees: field(null, "Employees with W-2s on hold", "count"),
 } as const satisfies Record<string, FieldLabel | null>;
 
 /** One state's W-3 reconciliation row; `state` is the row key, not a field. */
 export const WORKSHEET_W3_STATE_FIELDS = {
-  w2Lines: { line: null, label: "W-2 state lines", kind: "count" },
-  box16: money_(null, "W-2 box 16 total"),
-  box17: money_(null, "W-2 box 17 total"),
-  runWithholding: money_(null, "State tax withheld in pay runs"),
-  attributedLegacy: money_(null, "Older withholding attributed"),
-  reconciled: { line: null, label: "Matches pay runs", kind: "yesNo" },
+  w2Lines: field(null, "W-2 state lines", "count"),
+  box16: field(null, "W-2 box 16 total"),
+  box17: field(null, "W-2 box 17 total"),
+  runWithholding: field(null, "State tax withheld in pay runs"),
+  attributedLegacy: field(null, "Older withholding attributed"),
+  reconciled: field(null, "Matches pay runs", "yesNo"),
 } as const satisfies Record<keyof Omit<WorksheetW3State, "state">, FieldLabel | null>;
 
 /** A worksheet table row (line number, label, formatted value). */
@@ -166,7 +158,7 @@ function formatValue(kind: FieldKind, v: unknown): string {
       return v === null ? "None" : `Q${String(v)}`;
     case "date":
       return date(v as string | null);
-    case "text":
+    case "stateCode":
       return box15Text(v as string | null);
   }
 }
@@ -187,16 +179,10 @@ function flatten(obj: unknown, prefix = ""): Record<string, unknown> {
   return out;
 }
 
-/** W-3 state rows flattened by state code: `states.NY.box16`. */
-function flattenStates(ws: unknown): Record<string, unknown> {
+/** W-3 state rows by state code (the row without its `state` key). */
+function statesByCode(ws: FilingWorksheet | null): Map<string, Record<string, unknown>> {
   const states = (ws as { states?: WorksheetW3State[] } | null)?.states ?? [];
-  const out: Record<string, unknown> = {};
-  for (const s of states) {
-    for (const [k, v] of Object.entries(s)) {
-      if (k !== "state") out[`states.${s.state}.${k}`] = v;
-    }
-  }
-  return out;
+  return new Map(states.map(({ state, ...rest }) => [state, rest]));
 }
 
 export interface RecomputeDiffRow {
@@ -238,26 +224,17 @@ function diffAgainst(
 }
 
 /** W-3 state rows that changed, matched by state code, titled "NY — W-2 box 16 total". */
-function stateDiff(
-  before: Record<string, unknown>,
-  after: Record<string, unknown>,
-): RecomputeDiffRow[] {
+function stateDiff(before: FilingWorksheet | null, after: FilingWorksheet): RecomputeDiffRow[] {
+  const b = statesByCode(before);
+  const a = statesByCode(after);
   // Codes from both sides, so a state the recompute removes still shows.
-  const keys = [...Object.keys(before), ...Object.keys(after)];
-  const codes = [...new Set(keys.map((k) => k.split(".")[1] ?? ""))];
-  return codes.flatMap((code) => {
-    const strip = (o: Record<string, unknown>) =>
-      Object.fromEntries(
-        Object.entries(o)
-          .filter(([k]) => k.startsWith(`states.${code}.`))
-          .map(([k, v]) => [k.slice(`states.${code}.`.length), v]),
-      );
-    return diffAgainst(WORKSHEET_W3_STATE_FIELDS, "", strip(before), strip(after)).map((r) => ({
+  return [...new Set([...b.keys(), ...a.keys()])].flatMap((code) =>
+    diffAgainst(WORKSHEET_W3_STATE_FIELDS, "", b.get(code) ?? {}, a.get(code) ?? {}).map((r) => ({
       ...r,
       key: `states.${code}.${r.key}`,
       title: `${code} — ${r.title}`,
-    }));
-  });
+    })),
+  );
 }
 
 /** The recompute dialog's change table: changed, visible fields only, labelled and formatted. */
@@ -270,8 +247,5 @@ export function recomputeDiffRows(
   if (after.form === "941") return diffAgainst(WORKSHEET_941_FIELDS, "Line", b, a);
   if (after.form === "940") return diffAgainst(WORKSHEET_940_FIELDS, "Line", b, a);
   if (after.form !== "w2_w3") return diffAgainst({}, "", b, a);
-  return [
-    ...diffAgainst(WORKSHEET_W3_FIELDS, "Box", b, a),
-    ...stateDiff(flattenStates(before), flattenStates(after)),
-  ];
+  return [...diffAgainst(WORKSHEET_W3_FIELDS, "Box", b, a), ...stateDiff(before, after)];
 }
