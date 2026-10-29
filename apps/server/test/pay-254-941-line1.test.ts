@@ -469,6 +469,24 @@ describe("PAY-254 — a contractor paid across Jun 12 is not counted", () => {
   });
 });
 
+describe("PAY-254 — a 1099 worker with an issued payroll run is not counted", () => {
+  const { ctx } = useFreshDb();
+
+  // runs.ts refuses to create a run for a non-W-2 employee today, so this row
+  // can only exist if inserted directly. It pins line 1's W-2 filter in case
+  // that refusal ever goes away: the 1099 run is issued, covers Jun 12 and has
+  // gross > 0, so only employment_type keeps it off line 1.
+  it("only the W-2 employee counts", async () => {
+    const t = ctx();
+    const w2 = await createEmployee(t);
+    await insertRun(t, monthRun(w2, 2026, 6, "3000.00"));
+    const c = await createEmployee(t, { employmentType: "1099" });
+    await insertRun(t, monthRun(c, 2026, 6, "4000.00"));
+    // W-2 employee (Jun 1–30, issued, 3,000.00) → 1; 1099 worker → 0. Total 1.
+    expect(await line1(t, 2026, 2)).toBe(1);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // All of A–K plus mixed frequencies in one database: distinct count
 // ---------------------------------------------------------------------------
