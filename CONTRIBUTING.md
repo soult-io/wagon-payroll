@@ -121,6 +121,15 @@ filtering by test name. Upstream's name filter never matches under Vitest 5
 state between `it` blocks, so a filtered subset fails for reasons unrelated to
 the mutant. Revisit when upgrading Stryker.
 
+The runner also forces Vitest's `threads` pool, where the clock-shift preload
+(`execArgv` in `apps/server/vitest.config.ts`) makes every worker fail at
+start. Server mutation runs therefore use `apps/server/vitest.mutation.config.ts`,
+the same config without the preload, and refuse to start while
+`PAYROLL_CLOCK_SHIFT_DAYS` is set. Tests in a mutation target must find files
+outside `apps/server` from the workspace root (`workspaceRoot` in
+`test/helpers.ts`), not with a fixed `../..`: a Stryker sandbox copies only
+`apps/server`.
+
 ## PR expectations
 
 - Green CI is required: Biome 0 errors, typecheck clean, unit tests and

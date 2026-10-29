@@ -31,7 +31,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
  * than a fixed "../../.." — Stryker (PAY-93) runs these tests from a sandbox
  * copy nested under apps/server/.stryker-tmp/, where a fixed hop count misses.
  */
-function workspaceRoot(from: string): string {
+export function workspaceRoot(from: string): string {
   let dir = from;
   while (!existsSync(resolve(dir, "pnpm-workspace.yaml"))) {
     const parent = dirname(dir);
