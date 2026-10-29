@@ -40,18 +40,18 @@ export const WORKSHEET_941_FIELDS = {
   line5aTax: money_("5a", "Social Security tax"),
   line5cTaxableMedicareWages: money_("5c", "Taxable Medicare wages"),
   line5cTax: money_("5c", "Medicare tax"),
-  line5dAdditionalMedicare: money_("5d", "Additional Medicare withholding"),
+  line5dAdditionalMedicare: money_("5d", "Additional Medicare Tax withheld"),
   line5eTotal: money_("5e", "Total Social Security and Medicare taxes"),
-  line6TotalTaxes: money_("6", "Total taxes (line 3 + line 5e)"),
+  line6TotalTaxes: money_("6", "Total taxes before adjustments (lines 3 + 5e + 5f)"),
   line7FractionsOfCents: money_("7", "Fractions of cents"),
   // The default line 7 before an admin override — not a line on the form.
   line7Computed: null,
   line10TotalAfterAdjustments: money_("10", "Total taxes after adjustments"),
   line11ResearchCredit: money_("11", "Qualified small business R&D credit"),
   line12TotalAfterCredits: money_("12", "Total taxes after credits"),
-  line13Deposits: money_("13", "Total deposits + adjustment payments"),
+  line13Deposits: money_("13", "Total deposits for the quarter (incl. overpayments applied)"),
   line14BalanceDue: money_("14", "Balance due"),
-  line15Overpayment: money_("15", "Overpayment"),
+  line15Overpayment: money_("15a", "Overpayment"),
   "line16.month1": money_("16", "Month 1 liability"),
   "line16.month2": money_("16", "Month 2 liability"),
   "line16.month3": money_("16", "Month 3 liability"),
@@ -72,11 +72,8 @@ export const WORKSHEET_940_FIELDS = {
   line7FutaTaxableWages: money_("7", "Total taxable FUTA wages (first $7,000 per employee)"),
   line8FutaTax: money_("8", "FUTA tax before adjustments"),
   line12TotalFutaTax: money_("12", "Total FUTA tax after adjustments"),
-  futaTaxPerFrozenEntries: money_(
-    null,
-    "FUTA withheld in frozen payroll entries (accrued-liability truth)",
-  ),
-  roundingDelta: money_(null, "Rounding delta (frozen entries − line 12)"),
+  futaTaxPerFrozenEntries: money_(null, "FUTA tax recorded in issued pay runs"),
+  roundingDelta: money_(null, "Rounding difference (pay runs vs. line 12)"),
   depositThresholdCrossedQuarter: {
     line: null,
     label: "Quarter FUTA liability crossed $500",
@@ -174,12 +171,15 @@ function formatValue(kind: FieldKind, v: unknown): string {
   }
 }
 
-/** Flatten nested objects to dotted keys (`line16.month1`); arrays are left out. */
+/**
+ * Flatten nested objects and arrays to dotted keys (`line16.month1`). The
+ * top-level W-3 `states` array is left out — stateDiff matches it by code.
+ */
 function flatten(obj: unknown, prefix = ""): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (obj === null || typeof obj !== "object") return out;
   for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
-    if (Array.isArray(v)) continue;
+    if (!prefix && k === "states" && (obj as { form?: unknown }).form === "w2_w3") continue;
     const key = prefix ? `${prefix}.${k}` : k;
     if (v !== null && typeof v === "object") Object.assign(out, flatten(v, key));
     else out[key] = v;
@@ -217,7 +217,8 @@ function diffAgainst(
   before: Record<string, unknown>,
   after: Record<string, unknown>,
 ): RecomputeDiffRow[] {
-  const changed = (k: string) => k in after && String(before[k]) !== String(after[k]);
+  // A key in either side counts: a figure the recompute drops still shows (after "—").
+  const changed = (k: string) => String(before[k]) !== String(after[k]);
   const rows: RecomputeDiffRow[] = [];
   for (const [key, f] of Object.entries(map)) {
     if (f === null || !changed(key)) continue;
@@ -228,14 +229,10 @@ function diffAgainst(
       after: formatValue(f.kind, after[key]),
     });
   }
-  for (const key of Object.keys(after)) {
+  const raw = (v: unknown) => (v === undefined ? "—" : String(v));
+  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
     if (key in map || !changed(key)) continue;
-    rows.push({
-      key,
-      title: "Other figure",
-      before: before[key] === undefined ? "—" : String(before[key]),
-      after: String(after[key]),
-    });
+    rows.push({ key, title: "Other figure", before: raw(before[key]), after: raw(after[key]) });
   }
   return rows;
 }
@@ -245,7 +242,9 @@ function stateDiff(
   before: Record<string, unknown>,
   after: Record<string, unknown>,
 ): RecomputeDiffRow[] {
-  const codes = [...new Set(Object.keys(after).map((k) => k.split(".")[1] ?? ""))];
+  // Codes from both sides, so a state the recompute removes still shows.
+  const keys = [...Object.keys(before), ...Object.keys(after)];
+  const codes = [...new Set(keys.map((k) => k.split(".")[1] ?? ""))];
   return codes.flatMap((code) => {
     const strip = (o: Record<string, unknown>) =>
       Object.fromEntries(
@@ -270,6 +269,7 @@ export function recomputeDiffRows(
   const a = flatten(after);
   if (after.form === "941") return diffAgainst(WORKSHEET_941_FIELDS, "Line", b, a);
   if (after.form === "940") return diffAgainst(WORKSHEET_940_FIELDS, "Line", b, a);
+  if (after.form !== "w2_w3") return diffAgainst({}, "", b, a);
   return [
     ...diffAgainst(WORKSHEET_W3_FIELDS, "Box", b, a),
     ...stateDiff(flattenStates(before), flattenStates(after)),

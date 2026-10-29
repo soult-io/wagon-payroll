@@ -459,3 +459,134 @@ describe("PAY-251 recompute dialog labels", () => {
     });
   });
 });
+
+/*
+ * Contract additions after code review (coordinator, 2026-10-29):
+ *  R1 a W-3 state in `before` but missing from `after` still yields
+ *     states.<CODE>.* rows with after "—" (also when its box16/box17 are zero);
+ *  R2 a top-level key missing from `after` yields a row with after "—"
+ *     (mapped -> its title; unmapped -> "Other figure");
+ *  R3 a future array field surfaces as "Other figure" rows; W-3 `states`
+ *     never does;
+ *  R4 an unknown form type yields "Other figure" rows for changed keys only;
+ *  R5 label updates from the federal SME.
+ */
+describe("PAY-251 review additions", () => {
+  it("R1 a W-3 state dropped from after still shows, after '—' (non-zero and zero values)", async () => {
+    const rows = need(await lib(), "recomputeDiffRows");
+    const nonZero = byKey(rows(BW3, { ...BW3, states: [BW3.states[0]] }));
+    const zeroCa = { ...BW3.states[1], box16: "0.00", box17: "0.00" };
+    const zeroBefore = { ...BW3, states: [BW3.states[0], zeroCa] };
+    const zero = byKey(rows(zeroBefore, { ...BW3, states: [BW3.states[0]] }));
+    const caKeys = (k: Record<string, Row>) =>
+      Object.keys(k).filter((x) => x.startsWith("states.CA."));
+    expect({
+      nzOnlyCa: Object.keys(nonZero).every((k) => k.startsWith("states.CA.")),
+      nzHasBoxes: ["states.CA.box16", "states.CA.box17"].every((k) => k in nonZero),
+      nzAfter: [...new Set(caKeys(nonZero).map((k) => nonZero[k].after))],
+      nzBox16: nonZero["states.CA.box16"]
+        ? [nonZero["states.CA.box16"].before, nonZero["states.CA.box16"].after]
+        : undefined,
+      zHasBoxes: ["states.CA.box16", "states.CA.box17"].every((k) => k in zero),
+      zAfter: [...new Set(caKeys(zero).map((k) => zero[k].after))],
+      zBox16: zero["states.CA.box16"]
+        ? [zero["states.CA.box16"].before, zero["states.CA.box16"].after]
+        : undefined,
+    }).toEqual({
+      nzOnlyCa: true,
+      nzHasBoxes: true,
+      nzAfter: ["—"],
+      nzBox16: ["$2,001.00", "—"],
+      zHasBoxes: true,
+      zAfter: ["—"],
+      zBox16: ["$0.00", "—"],
+    });
+  });
+
+  it("R2 a top-level key missing from after shows with after '—' (mapped title or 'Other figure')", async () => {
+    const m = await lib();
+    const rows = need(m, "recomputeDiffRows");
+    const f940 = need(m, "WORKSHEET_940_FIELDS");
+    const { sutaCreditRate: _drop, ...afterNoSuta } = B940;
+    const mapped: Row[] = rows(B940, afterNoSuta);
+    const unmapped: Row[] = rows({ ...B940, legacyFigure: "7.00" }, B940);
+    const sutaLabel = f940.sutaCreditRate;
+    const expectedTitle = sutaLabel?.line
+      ? `Line ${sutaLabel.line} — ${sutaLabel.label}`
+      : sutaLabel?.label;
+    expect({
+      mapped: mapped.map((r) => [r.key, r.title, r.before, r.after]),
+      unmapped: unmapped.map((r) => [r.key, r.title, r.after]),
+      unmappedBeforeShown: unmapped[0]?.before.includes("7"),
+    }).toEqual({
+      mapped: [["sutaCreditRate", expectedTitle, "5.4%", "—"]],
+      unmapped: [["legacyFigure", "Other figure", "—"]],
+      unmappedBeforeShown: true,
+    });
+    expect(mapped[0]?.title).not.toBe("Other figure");
+  });
+
+  it("R3 a future array field surfaces as 'Other figure'; W-3 states never do", async () => {
+    const rows = need(await lib(), "recomputeDiffRows");
+    const arr: Row[] = rows({ ...B941, extra: ["1", "2"] }, { ...B941, extra: ["1", "3"] });
+    const sameArr: Row[] = rows({ ...B941, extra: ["1", "2"] }, { ...B941, extra: ["1", "2"] });
+    const statesOnly: Row[] = rows(BW3, {
+      ...BW3,
+      states: [{ ...BW3.states[0], box16: "1500.00" }, BW3.states[1]],
+    });
+    expect({
+      arrRows: arr.length > 0,
+      arrTitles: [...new Set(arr.map((r) => r.title))],
+      arrKeysFromExtra: arr.every((r) => r.key.startsWith("extra")),
+      arrShowsNewValue: arr.some((r) => r.after.includes("3")),
+      sameArr,
+      statesOther: statesOnly.filter((r) => r.title === "Other figure").map((r) => r.key),
+      statesKeys: statesOnly.map((r) => r.key),
+    }).toEqual({
+      arrRows: true,
+      arrTitles: ["Other figure"],
+      arrKeysFromExtra: true,
+      arrShowsNewValue: true,
+      sameArr: [],
+      statesOther: [],
+      statesKeys: ["states.NY.box16"],
+    });
+  });
+
+  it("R4 an unknown form type yields 'Other figure' rows only for changed keys", async () => {
+    const rows = need(await lib(), "recomputeDiffRows");
+    const before = { form: "999", year: 2026, box1Wages: "100.00", alpha: "1.00", beta: "2.00" };
+    const after = { form: "999", year: 2026, box1Wages: "200.00", alpha: "1.00", beta: "3.00" };
+    const out: Row[] = rows(before, after);
+    expect({
+      keys: out.map((r) => r.key).sort(),
+      titles: [...new Set(out.map((r) => r.title))],
+      noBoxOrLine: out.every((r) => !/^(Box|Line) /.test(r.title)),
+    }).toEqual({
+      keys: ["beta", "box1Wages"],
+      titles: ["Other figure"],
+      noBoxOrLine: true,
+    });
+  });
+
+  it("R5 federal SME label updates", async () => {
+    const rows = need(await lib(), "recomputeDiffRows");
+    const t941 = byKey(rows(B941, A941));
+    const t940 = byKey(rows(B940, A940));
+    expect({
+      l15: t941.line15Overpayment?.title,
+      l6: t941.line6TotalTaxes?.title,
+      l13: t941.line13Deposits?.title,
+      l5d: t941.line5dAdditionalMedicare?.title,
+      frozen: t940.futaTaxPerFrozenEntries?.title,
+      rounding: t940.roundingDelta?.title,
+    }).toEqual({
+      l15: "Line 15a — Overpayment",
+      l6: "Line 6 — Total taxes before adjustments (lines 3 + 5e + 5f)",
+      l13: "Line 13 — Total deposits for the quarter (incl. overpayments applied)",
+      l5d: "Line 5d — Additional Medicare Tax withheld",
+      frozen: "FUTA tax recorded in issued pay runs",
+      rounding: "Rounding difference (pay runs vs. line 12)",
+    });
+  });
+});

@@ -1376,11 +1376,12 @@ onMounted(async () => {
         modal
         :header="`Recompute worksheet — ${thisFilingName}`"
         :style="{ width: '36rem' }"
+        :breakpoints="{ '640px': '95vw' }"
       >
         <div class="stack">
           <p class="muted small" style="margin: 0">
-            Recomputes the worksheet from frozen issued-run entries and current config, and records
-            the correction in the audit log. Filing status, date, method, and reference are not
+            Recalculates the worksheet from issued pay runs and current settings, and records the
+            correction in the audit log. Filing status, date, method, and reference are not
             changed.
           </p>
           <p class="small" style="margin: 0">
@@ -1391,11 +1392,10 @@ onMounted(async () => {
           <Skeleton v-if="recomputeLoading" height="6rem" />
           <template v-else>
             <p v-if="!recomputeDiff.length" class="muted small" style="margin: 0">
-              Recomputation produces the current worksheet — no line changes. You can still record
-              a correction (e.g. to log a review).
+              No figures change. You can still save to record a review in the audit log.
             </p>
             <DataTable v-else :value="recomputeDiff" striped-rows>
-              <Column field="title" header="Line" />
+              <Column field="title" header="Figure" />
               <Column field="before" header="Current" style="width: 8rem; text-align: right" />
               <Column field="after" header="Recomputed" style="width: 8rem; text-align: right" />
             </DataTable>
