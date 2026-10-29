@@ -190,6 +190,9 @@ function namesFiling(text: string, view: string): boolean {
   return false;
 }
 
+/** Escapes every regex metacharacter so a variable can be matched literally. */
+const reEscape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 /** The body of w3WorksheetLines references the W-3 map imported from worksheet-labels (alias allowed). */
 function w3UsesMap(w2: string): boolean {
   const imp = w2.match(/import\s*\{([^}]*)\}\s*from\s*["']\.\/worksheet-labels["']/)?.[1] ?? "";
@@ -199,8 +202,7 @@ function w3UsesMap(w2: string): boolean {
   const fn = w2.slice(Math.max(0, w2.indexOf("function w3WorksheetLines")));
   const body = fn.slice(0, fn.search(/\n}\n/) + 2);
   return (
-    w2.includes("function w3WorksheetLines") &&
-    new RegExp(`\\b${name.replace(/\$/g, "\\$")}\\b`).test(body)
+    w2.includes("function w3WorksheetLines") && new RegExp(`\\b${reEscape(name)}\\b`).test(body)
   );
 }
 
