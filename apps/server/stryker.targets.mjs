@@ -65,7 +65,8 @@ export function strykerConfig(name) {
     packageManager: "pnpm",
     testRunner: "vitest",
     plugins: ["@stryker-mutator/vitest-runner"],
-    vitest: { configFile: "vitest.config.ts" },
+    // The server suite config minus the clock-shift preload; see the file.
+    vitest: { configFile: "vitest.mutation.config.ts" },
     mutate: target.mutate,
     // Only the suites that exercise this module. Each file boots its own
     // PGlite, so running every suite per mutant would add hours for no signal.
