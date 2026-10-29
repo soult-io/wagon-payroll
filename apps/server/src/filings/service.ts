@@ -240,8 +240,7 @@ async function refreshWorksheetOrSkip(db: Db, row: TaxFilingRow): Promise<boolea
  * gross pay summing to 0 or less) are not counted.
  */
 async function line1EmployeeCount(db: Db, year: number, quarter: number): Promise<number> {
-  const [keyYear, keyMonth] = quarterMonths(year, quarter)[2]!;
-  const keyDay = `${keyYear}-${String(keyMonth).padStart(2, "0")}-12`;
+  const keyDay = `${year}-${String(quarter * 3).padStart(2, "0")}-12`; // Mar/Jun/Sep/Dec 12
   const rows = await db
     .select({ employeeId: payrollRuns.employeeId })
     .from(payrollRuns)
@@ -265,7 +264,8 @@ async function line1EmployeeCount(db: Db, year: number, quarter: number): Promis
 
 /**
  * Compute the quarterly 941 worksheet from issued-run entry snapshots with
- * pay dates in the quarter. fractionsOfCents defaults to the computed delta
+ * pay dates in the quarter (line 1 uses the pay-period basis instead; see
+ * line1EmployeeCount). fractionsOfCents defaults to the computed delta
  * (D4); pass an override to re-render the totals chain with an admin-set
  * value (the override lives on the tax_filings row).
  */
@@ -280,7 +280,7 @@ export async function computeWorksheet(
   const lastDay = quarterEnd(year, quarter);
 
   const runs = await db
-    .select()
+    .select({ id: payrollRuns.id })
     .from(payrollRuns)
     .where(
       and(
