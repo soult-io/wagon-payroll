@@ -448,7 +448,10 @@ describe("PAY-247 scenario 6 — two employees, one capped", () => {
       line7: "0.03",
       line12: "6620.78",
     });
-    expect(w.line1Employees).toBe(2); // both paid for the period including Jul 12
+    // PAY-254: line 1 is the pay period including Sep 12 (the quarter's LAST
+    // month). Only B has a September run (Sep 1–30 covers Sep 12); A's last
+    // Q3 run is August → 1. (Was 2 under the old Jul 12 rule.)
+    expect(w.line1Employees).toBe(1);
   });
 });
 
