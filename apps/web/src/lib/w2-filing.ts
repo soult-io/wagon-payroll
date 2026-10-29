@@ -7,6 +7,12 @@
 
 import { stateName, W2_TWO_UP_FROM_YEAR, W2_UNRECORDED_PAY_FROM_YEAR } from "@payroll/shared";
 import { useMoney } from "../composables/useMoney";
+import {
+  box15Text,
+  fieldRow as row,
+  WORKSHEET_W3_FIELDS as W3,
+  type WorksheetLine,
+} from "./worksheet-labels";
 import type {
   StateIdFurnished,
   StateIdRow,
@@ -17,46 +23,30 @@ import type {
 
 const { money } = useMoney();
 
-/** One W-3 totals table row. */
-export interface W3Line {
-  line: string;
-  label: string;
-  value: string;
-}
-
-/** W-3 box 15 as shown: one state code, "X (more than one state)", or "—". */
-function box15Text(state: string | null): string {
-  if (state === null) return "—";
-  return state === "X" ? "X (more than one state)" : state;
-}
-
 /**
  * The W-3 totals table. Tax years before 2026 (no box15State key) keep the
  * PAY-11 rows. From 2026: box c is the number of W-2 forms (S24-D12), plus
  * boxes 15–17.
  */
-export function w3WorksheetLines(w: WorksheetW3): W3Line[] {
-  const federal: W3Line[] = [
-    { line: "1", label: "Wages, tips, other compensation", value: money(w.box1Wages) },
-    { line: "2", label: "Federal income tax withheld", value: money(w.box2FederalWithheld) },
-    { line: "3", label: "Social Security wages", value: money(w.box3SsWages) },
-    { line: "4", label: "Social Security tax withheld", value: money(w.box4SsTax) },
-    { line: "5", label: "Medicare wages and tips", value: money(w.box5MedicareWages) },
-    { line: "6", label: "Medicare tax withheld", value: money(w.box6MedicareTax) },
+export function w3WorksheetLines(w: WorksheetW3): WorksheetLine[] {
+  // PAY-251: line numbers and labels come from the shared worksheet map.
+  const federal: WorksheetLine[] = [
+    row(W3.box1Wages, money(w.box1Wages)),
+    row(W3.box2FederalWithheld, money(w.box2FederalWithheld)),
+    row(W3.box3SsWages, money(w.box3SsWages)),
+    row(W3.box4SsTax, money(w.box4SsTax)),
+    row(W3.box5MedicareWages, money(w.box5MedicareWages)),
+    row(W3.box6MedicareTax, money(w.box6MedicareTax)),
   ];
   if (w.box15State === undefined) {
-    return [{ line: "—", label: "W-2 forms included", value: String(w.employeeCount) }, ...federal];
+    return [row(W3.employeeCount, String(w.employeeCount)), ...federal];
   }
   return [
-    {
-      line: "c",
-      label: "Total number of Forms W-2",
-      value: String(w.w2FormCount ?? w.employeeCount),
-    },
+    row(W3.w2FormCount, String(w.w2FormCount ?? w.employeeCount)),
     ...federal,
-    { line: "15", label: "State", value: box15Text(w.box15State) },
-    { line: "16", label: "State wages, tips, etc.", value: money(w.box16StateWages) },
-    { line: "17", label: "State income tax", value: money(w.box17StateTax) },
+    row(W3.box15State, box15Text(w.box15State)),
+    row(W3.box16StateWages, money(w.box16StateWages)),
+    row(W3.box17StateTax, money(w.box17StateTax)),
   ];
 }
 

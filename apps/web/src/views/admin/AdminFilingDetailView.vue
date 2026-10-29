@@ -53,6 +53,16 @@ import {
   type WorksheetRecomputePreview,
   type WorksheetW3,
 } from "../../lib/api";
+import {
+  fieldRow as row,
+  filingName,
+  formLabel,
+  periodLabel as periodText,
+  recomputeDiffRows,
+  WORKSHEET_940_FIELDS as F940,
+  WORKSHEET_941_FIELDS as F941,
+  type WorksheetLine,
+} from "../../lib/worksheet-labels";
 import { useDates } from "../../composables/useDates";
 import { useMoney } from "../../composables/useMoney";
 import { useConfirm } from "primevue/useconfirm";
@@ -316,16 +326,6 @@ const markFiledHeldReason = computed<string | null>(() => {
 });
 const markFiledHeld = computed(() => markFiledHeldReason.value !== null);
 
-const FORM_LABELS: Record<string, string> = {
-  "941": "Form 941",
-  "940": "Form 940",
-  w2_w3: "Forms W-2/W-3",
-};
-
-function formLabel(formType: string): string {
-  return FORM_LABELS[formType] ?? formType;
-}
-
 // PAY-11: the worksheet shape depends on the form type.
 const worksheet941 = computed<Worksheet941 | null>(() =>
   filing.value?.worksheet?.form === "941" ? filing.value.worksheet : null,
@@ -339,9 +339,14 @@ const worksheetW3 = computed<WorksheetW3 | null>(() =>
 
 function periodLabel(): string {
   const f = filing.value;
-  if (!f) return "";
-  return f.quarter === 0 ? String(f.year) : `Q${f.quarter} ${f.year}`;
+  return f ? periodText(f.year, f.quarter) : "";
 }
+
+/** "Form 941, Q3 2026" — named in the recompute dialog so it runs on the right filing. */
+const thisFilingName = computed(() => {
+  const f = filing.value;
+  return f ? filingName(f.formType, f.year, f.quarter) : "";
+});
 
 async function load() {
   loading.value = true;
@@ -418,27 +423,10 @@ const recomputeReason = ref("");
 const recomputeBusy = ref(false);
 const recomputeLoading = ref(false);
 
-/** Flatten a worksheet (nested objects → dotted keys) for the diff table. */
-function flattenWs(ws: unknown, prefix = ""): Record<string, string> {
-  const out: Record<string, string> = {};
-  if (ws === null || typeof ws !== "object") return out;
-  for (const [k, v] of Object.entries(ws as Record<string, unknown>)) {
-    const key = prefix ? `${prefix}.${k}` : k;
-    if (v !== null && typeof v === "object") Object.assign(out, flattenWs(v, key));
-    else out[key] = String(v);
-  }
-  return out;
-}
-
-/** Lines whose value changes under recomputation (old → new). */
+/** PAY-251: lines whose value changes under recomputation, labelled as on the form. */
 const recomputeDiff = computed(() => {
   const p = recomputePreviewData.value;
-  if (!p) return [];
-  const before = flattenWs(p.beforeWorksheet);
-  const after = flattenWs(p.afterWorksheet);
-  return Object.keys(after)
-    .filter((k) => before[k] !== after[k])
-    .map((k) => ({ key: k, before: before[k] ?? "—", after: after[k] }));
+  return p?.afterWorksheet ? recomputeDiffRows(p.beforeWorksheet, p.afterWorksheet) : [];
 });
 
 function shortHash(hash: string | null | undefined): string {
@@ -487,59 +475,38 @@ async function submitRecompute() {
 }
 
 // ------------------------------------------------------------- worksheet rows
-interface WorksheetLine {
-  line: string;
-  label: string;
-  value: string;
-}
 
 const worksheetLines = computed<WorksheetLine[]>(() => {
   const w = worksheet941.value;
   if (!w) return [];
   return [
-    {
-      line: "1",
-      label: "Employees paid (pay period incl. the 12th of month 1)",
-      value: String(w.line1Employees),
-    },
-    { line: "2", label: "Wages, tips, and other compensation", value: money(w.line2Wages) },
-    { line: "3", label: "Federal income tax withheld", value: money(w.line3FederalWithheld) },
-    {
-      line: "5a",
-      label: `Taxable Social Security wages (${money(w.line5aTaxableSsWages)} × 12.4%)`,
-      value: money(w.line5aTax),
-    },
-    {
-      line: "5c",
-      label: `Taxable Medicare wages (${money(w.line5cTaxableMedicareWages)} × 2.9%)`,
-      value: money(w.line5cTax),
-    },
-    {
-      line: "5d",
-      label: "Additional Medicare withholding",
-      value: money(w.line5dAdditionalMedicare),
-    },
-    { line: "5e", label: "Total Social Security and Medicare taxes", value: money(w.line5eTotal) },
-    { line: "6", label: "Total taxes (line 3 + line 5e)", value: money(w.line6TotalTaxes) },
-    {
-      line: "7",
-      label: "Fractions of cents (admin-editable below)",
-      value: money(w.line7FractionsOfCents),
-    },
-    {
-      line: "10",
-      label: "Total taxes after adjustments",
-      value: money(w.line10TotalAfterAdjustments),
-    },
-    {
-      line: "11",
-      label: "Qualified small business R&D credit",
-      value: money(w.line11ResearchCredit),
-    },
-    { line: "12", label: "Total taxes after credits", value: money(w.line12TotalAfterCredits) },
-    { line: "13", label: "Total deposits + adjustment payments", value: money(w.line13Deposits) },
-    { line: "14", label: "Balance due", value: money(w.line14BalanceDue) },
-    { line: "15", label: "Overpayment", value: money(w.line15Overpayment) },
+    row(F941.line1Employees, String(w.line1Employees)),
+    row(F941.line2Wages, money(w.line2Wages)),
+    row(F941.line3FederalWithheld, money(w.line3FederalWithheld)),
+    row(
+      F941.line5aTax,
+      money(w.line5aTax),
+      `${F941.line5aTaxableSsWages.label} (${money(w.line5aTaxableSsWages)} × 12.4%)`,
+    ),
+    row(
+      F941.line5cTax,
+      money(w.line5cTax),
+      `${F941.line5cTaxableMedicareWages.label} (${money(w.line5cTaxableMedicareWages)} × 2.9%)`,
+    ),
+    row(F941.line5dAdditionalMedicare, money(w.line5dAdditionalMedicare)),
+    row(F941.line5eTotal, money(w.line5eTotal)),
+    row(F941.line6TotalTaxes, money(w.line6TotalTaxes)),
+    row(
+      F941.line7FractionsOfCents,
+      money(w.line7FractionsOfCents),
+      `${F941.line7FractionsOfCents.label} (admin-editable below)`,
+    ),
+    row(F941.line10TotalAfterAdjustments, money(w.line10TotalAfterAdjustments)),
+    row(F941.line11ResearchCredit, money(w.line11ResearchCredit)),
+    row(F941.line12TotalAfterCredits, money(w.line12TotalAfterCredits)),
+    row(F941.line13Deposits, money(w.line13Deposits)),
+    row(F941.line14BalanceDue, money(w.line14BalanceDue)),
+    row(F941.line15Overpayment, money(w.line15Overpayment)),
   ];
 });
 
@@ -562,30 +529,18 @@ const worksheet940Lines = computed<WorksheetLine[]>(() => {
       : "6.0% statutory − 5.4% SUTA credit = 0.6% net (assumed — worksheet predates the rate fields)";
   return [
     { line: "—", label: "FUTA rate assumption", value: rateAssumption },
-    { line: "3", label: "Total payments to all employees", value: money(w.line3TotalPayments) },
-    {
-      line: "7",
-      label: "Total taxable FUTA wages (first $7,000 per employee)",
-      value: money(w.line7FutaTaxableWages),
-    },
-    {
-      line: "8",
-      label: `FUTA tax before adjustments (line 7 × ${netRate}%)`,
-      value: money(w.line8FutaTax),
-    },
-    { line: "12", label: "Total FUTA tax after adjustments", value: money(w.line12TotalFutaTax) },
-    {
-      line: "—",
-      label: "FUTA withheld in frozen payroll entries (accrued-liability truth)",
-      value: money(w.futaTaxPerFrozenEntries),
-    },
-    {
-      line: "—",
-      label: "Rounding delta (frozen entries − line 12)",
-      value: money(w.roundingDelta),
-    },
+    row(F940.line3TotalPayments, money(w.line3TotalPayments)),
+    row(F940.line7FutaTaxableWages, money(w.line7FutaTaxableWages)),
+    row(
+      F940.line8FutaTax,
+      money(w.line8FutaTax),
+      `${F940.line8FutaTax.label} (line 7 × ${netRate}%)`,
+    ),
+    row(F940.line12TotalFutaTax, money(w.line12TotalFutaTax)),
+    row(F940.futaTaxPerFrozenEntries, money(w.futaTaxPerFrozenEntries)),
+    row(F940.roundingDelta, money(w.roundingDelta)),
     { line: "—", label: "Deposit rule", value: depositRule },
-    { line: "14", label: "Balance due", value: money(w.balanceDue) },
+    row(F940.balanceDue, money(w.balanceDue)),
   ];
 });
 
@@ -1416,7 +1371,12 @@ onMounted(async () => {
         </DataTable>
       </section>
 
-      <Dialog v-model:visible="recomputeDialog" modal header="Recompute worksheet" :style="{ width: '36rem' }">
+      <Dialog
+        v-model:visible="recomputeDialog"
+        modal
+        :header="`Recompute worksheet — ${thisFilingName}`"
+        :style="{ width: '36rem' }"
+      >
         <div class="stack">
           <p class="muted small" style="margin: 0">
             Recomputes the worksheet from frozen issued-run entries and current config, and records
@@ -1435,7 +1395,7 @@ onMounted(async () => {
               a correction (e.g. to log a review).
             </p>
             <DataTable v-else :value="recomputeDiff" striped-rows>
-              <Column field="key" header="Line" />
+              <Column field="title" header="Line" />
               <Column field="before" header="Current" style="width: 8rem; text-align: right" />
               <Column field="after" header="Recomputed" style="width: 8rem; text-align: right" />
             </DataTable>
@@ -1451,10 +1411,13 @@ onMounted(async () => {
               />
             </div>
           </template>
+          <p class="small" style="margin: 0">
+            <strong>This rewrites the saved worksheet for {{ thisFilingName }}.</strong>
+          </p>
           <div class="row dialog-actions">
             <Button label="Cancel" text severity="secondary" @click="recomputeDialog = false" />
             <Button
-              label="Recompute worksheet"
+              :label="`Recompute ${thisFilingName}`"
               icon="pi pi-check"
               severity="warn"
               :loading="recomputeBusy"
