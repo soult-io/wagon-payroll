@@ -65,6 +65,8 @@ function changedPlan(since) {
   const diff = execFileSync(
     "git",
     [
+      "-c",
+      "core.quotePath=false",
       "diff",
       "--unified=0",
       "--no-color",

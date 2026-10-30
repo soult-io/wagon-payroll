@@ -127,7 +127,10 @@ missing shard report fails it. Each shard report is first cut down to the files
 that shard owns: Stryker's incremental file carries every mutant of a file the
 shard tested on an earlier run, even after the file moved to another shard. To check a branch, run the workflow on that
 branch with `since` set to `origin/main`: only the changed lines of mutated
-files are tested, each target against its own threshold. A failed scheduled
+files are tested, each target against its own threshold. Stryker mutates a
+node only when it lies wholly inside a changed range, so a one-line edit
+inside a block does not mutate the block or a multi-line condition around it;
+the weekly full run covers those. A failed scheduled
 run opens (or comments on) the "Weekly mutation run failed" issue.
 
 Note: `patches/@stryker-mutator__vitest-runner@10.0.0.patch` makes the runner
