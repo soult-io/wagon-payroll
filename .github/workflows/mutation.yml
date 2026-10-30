@@ -8,14 +8,24 @@ name: mutation
 #   server-deposits — apps/server/src/deposits against the PGlite suites.
 #   server-filings  — apps/server/src/filings against the PGlite suites.
 #
-# The server is split per module (PAY-108) so each fits its own timeout. Its
-# test suites are chosen by glob (apps/server/stryker.targets.mjs); the CI
-# verify job fails if a suite importing a module matches no glob.
+# The server is split per module (PAY-108). Its test suites are chosen by glob
+# (apps/server/stryker.targets.mjs); the CI verify job fails if a suite
+# importing a module matches no glob.
 #
-# Each target sets thresholds.break a little below its baseline
-# (recorded 2026-09): a score drop fails the job. Runs are
-# incremental: each target's previous result file is restored from the actions
-# cache, so only mutants whose code or tests changed are re-tested.
+# PAY-255: a whole server module no longer fits one 6-hour job, so a full run
+# splits each into shards (parallel jobs over parts of the module), and a
+# merge job scores the module from every shard report against its break
+# threshold. A missing shard report (crash, timeout) fails the merge: no
+# partial score. scripts/mutation-plan.mjs builds the job list.
+#
+# Dispatch with `since` (e.g. origin/main) to mutate only the lines a branch
+# changed — the PR gate in PIPELINE terms. Each target with changes is judged
+# against its own break threshold, in one job, without the cache.
+#
+# Full runs are incremental: each shard's previous result file is restored
+# from the actions cache, so only mutants whose code or tests changed are
+# re-tested. A failed scheduled run opens (or comments on) a GitHub issue, so
+# a broken run cannot go unseen for weeks again.
 #
 # Public repo: the uploaded report holds only source code, test names and
 # mutant diffs. No secrets are used and no env reaches the report.
@@ -29,6 +39,10 @@ on:
         description: "Ignore the incremental cache and re-test every mutant"
         type: boolean
         default: false
+      since:
+        description: "Only mutate lines changed since this ref (e.g. origin/main); empty = full run"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -38,33 +52,46 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      run: ${{ steps.plan.outputs.run }}
+      merge: ${{ steps.plan.outputs.merge }}
+      has-run: ${{ steps.plan.outputs.has-run }}
+      has-merge: ${{ steps.plan.outputs.has-merge }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.17.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Plan
+        id: plan
+        env:
+          SINCE: ${{ inputs.since }}
+        run: node scripts/mutation-plan.mjs
+
   mutation:
+    needs: plan
+    if: needs.plan.outputs.has-run == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - target: engine
-            package: "@payroll/engine"
-            dir: packages/engine
-            timeout: 20
-            config: stryker.config.mjs
-            incremental: reports/stryker-incremental.json
-            report: reports/mutation/
-          - target: server-deposits
-            package: "@payroll/server"
-            dir: apps/server
-            timeout: 90
-            config: stryker.deposits.config.mjs
-            incremental: reports/stryker-incremental-deposits.json
-            report: reports/mutation-deposits/
-          - target: server-filings
-            package: "@payroll/server"
-            dir: apps/server
-            timeout: 120
-            config: stryker.filings.config.mjs
-            incremental: reports/stryker-incremental-filings.json
-            report: reports/mutation-filings/
+        include: ${{ fromJSON(needs.plan.outputs.run) }}
+    name: mutation (${{ matrix.id }})
     timeout-minutes: ${{ matrix.timeout }}
     steps:
       - uses: actions/checkout@v4
@@ -87,18 +114,22 @@ jobs:
         run: pnpm --filter "@payroll/server^..." run build
 
       # Keyed per run so each run saves a fresh file; restore-keys picks the
-      # newest earlier one.
+      # newest earlier one. The key includes the shard ("filings-2of5"), so a
+      # new shard count starts fresh instead of reusing another split.
       - name: Restore incremental results
+        if: matrix.save
         uses: actions/cache/restore@v4
         with:
           path: ${{ matrix.dir }}/${{ matrix.incremental }}
-          key: stryker-incremental-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: stryker-incremental-${{ matrix.target }}-
+          key: stryker-incremental-${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: stryker-incremental-${{ matrix.id }}-
 
-      - name: Stryker (${{ matrix.target }})
+      - name: Stryker (${{ matrix.id }})
         env:
           PACKAGE: ${{ matrix.package }}
           CONFIG: ${{ matrix.config }}
+          STRYKER_SHARD: ${{ matrix.shard }}
+          STRYKER_MUTATE: ${{ matrix.mutate }}
           FORCE: ${{ inputs.force && 'true' || 'false' }}
         run: |
           args=()
@@ -108,18 +139,71 @@ jobs:
       # Save even when the threshold failed the run: the results are still
       # valid and the next run re-tests only what changed.
       - name: Save incremental results
-        if: always() && hashFiles(format('{0}/{1}', matrix.dir, matrix.incremental)) != ''
+        if: always() && matrix.save && hashFiles(format('{0}/{1}', matrix.dir, matrix.incremental)) != ''
         uses: actions/cache/save@v4
         with:
           path: ${{ matrix.dir }}/${{ matrix.incremental }}
-          key: stryker-incremental-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: stryker-incremental-${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       # Upload on pass AND fail: a failed threshold is when the report matters.
       - name: Upload mutation report
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: mutation-report-${{ matrix.target }}
+          name: mutation-report-${{ matrix.id }}
           path: ${{ matrix.dir }}/${{ matrix.report }}
           if-no-files-found: warn
           retention-days: 30
+
+  merge:
+    needs: [plan, mutation]
+    if: always() && needs.plan.outputs.has-merge == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.merge) }}
+    name: score (${{ matrix.target }})
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Download shard reports
+        uses: actions/download-artifact@v7
+        with:
+          pattern: mutation-report-${{ matrix.target }}-*of*
+          path: shard-reports
+
+      - name: Score ${{ matrix.target }}
+        env:
+          TARGET: ${{ matrix.target }}
+          SHARDS: ${{ matrix.shards }}
+          BREAK: ${{ matrix.break }}
+        run: node scripts/merge-mutation-reports.mjs "$TARGET" "$SHARDS" "$BREAK" shard-reports
+
+  alert:
+    needs: [plan, mutation, merge]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Weekly mutation run failed"
+          body="The scheduled mutation run failed: $RUN_URL. Until it is green, money-path PRs have no mutation score (PIPELINE gate)."
+          existing=$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "Failed again: $RUN_URL"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi

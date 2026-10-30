@@ -1,6 +1,12 @@
 // Mutation testing for the pure withholding engine (PAY-93). Run with
 // `pnpm mutation:engine` from the repo root; see CONTRIBUTING.md.
 // The HTML report holds only source code and mutant diffs — no env, no data.
+//
+// PAY-255: STRYKER_MUTATE="src/a.ts:10-40,..." mutates only those lines (a
+// PR's changed lines; see .github/workflows/mutation.yml), not incrementally.
+import { parseMutateList } from "../../scripts/mutation-shards.mjs";
+
+const changedOnly = process.env.STRYKER_MUTATE ? parseMutateList(process.env.STRYKER_MUTATE) : null;
 
 /** @type {import('@stryker-mutator/api/core').PartialStrykerOptions} */
 export default {
@@ -12,11 +18,11 @@ export default {
   checkers: ["typescript"],
   tsconfigFile: "tsconfig.json",
   vitest: { configFile: "vitest.config.ts" },
-  mutate: ["src/**/*.ts"],
+  mutate: changedOnly ?? ["src/**/*.ts"],
   coverageAnalysis: "perTest",
   // Only re-test mutants whose source or covering tests changed since the
   // last run. CI restores the file from the actions cache.
-  incremental: true,
+  incremental: changedOnly === null,
   incrementalFile: "reports/stryker-incremental.json",
   reporters: ["html", "json", "clear-text", "progress"],
   htmlReporter: { fileName: "reports/mutation/index.html" },

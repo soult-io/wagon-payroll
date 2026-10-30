@@ -81,9 +81,13 @@ pin down. It covers the withholding engine and the server's `deposits/` and
 
 ```sh
 pnpm mutation:engine            # packages/engine/src — seconds
-pnpm mutation:server-deposits   # apps/server/src/deposits — tens of minutes
-pnpm mutation:server-filings    # apps/server/src/filings — tens of minutes
+pnpm mutation:server-deposits   # apps/server/src/deposits — hours from scratch
+pnpm mutation:server-filings    # apps/server/src/filings — hours from scratch
 ```
+
+To mutate only some lines (what a PR changed), set `STRYKER_MUTATE`, e.g.
+`STRYKER_MUTATE="src/filings/service.ts:120-180" pnpm mutation:server-filings`.
+`STRYKER_SHARD="2/5"` runs one shard of a module, as CI does.
 
 The server targets are defined in `apps/server/stryker.targets.mjs`: per module,
 the `mutate` glob, the test suites to run (`testFiles`, as globs) and the
@@ -113,6 +117,15 @@ Each target sets `thresholds.break` a little below its recorded baseline;
 a score below it fails the run. The
 `mutation` workflow runs weekly and on demand (Actions → mutation → Run
 workflow), not on PRs, and uploads the HTML report as an artifact.
+
+A full run splits each server module into `shards` parallel jobs
+(`stryker.targets.mjs`; large files are cut into line ranges), because a whole
+module no longer fits GitHub's 6-hour job limit. A `score (<target>)` job then
+scores the module from all shard reports against its break threshold; a
+missing shard report fails it. To check a branch, run the workflow on that
+branch with `since` set to `origin/main`: only the changed lines of mutated
+files are tested, each target against its own threshold. A failed scheduled
+run opens (or comments on) the "Weekly mutation run failed" issue.
 
 Note: `patches/@stryker-mutator__vitest-runner@10.0.0.patch` makes the runner
 run whole test files (every test in each file that covers a mutant) instead of
