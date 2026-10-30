@@ -734,8 +734,18 @@ test("splitFile: a statement larger than maxBytes gets its own chunk; first chun
 });
 
 test("splitFile: maxBytes <= 0 (or not a number > 0) throws", () => {
-  const small = { path: "src/a.ts", bytes: 10, lines: 2, statements: [stmt(1, 1, 5), stmt(2, 2, 5)] };
-  const big = { path: "src/b.ts", bytes: 500, lines: 4, statements: [stmt(1, 2, 250), stmt(3, 4, 250)] };
+  const small = {
+    path: "src/a.ts",
+    bytes: 10,
+    lines: 2,
+    statements: [stmt(1, 1, 5), stmt(2, 2, 5)],
+  };
+  const big = {
+    path: "src/b.ts",
+    bytes: 500,
+    lines: 4,
+    statements: [stmt(1, 2, 250), stmt(3, 4, 250)],
+  };
   for (const file of [small, big]) {
     assert.throws(() => splitFile(file, 0), Error);
     assert.throws(() => splitFile(file, -1), Error);
@@ -768,6 +778,7 @@ function genFile(seed) {
   return { path: "src/gen.ts", bytes: sum + rnd(50), lines: end + rnd(4), statements };
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one property check over generated inputs; splitting it would scatter the contract rules it asserts together.
 test("splitFile: generated inputs obey every rule of the contract", () => {
   for (let seed = 1; seed <= 60; seed++) {
     const file = genFile(seed);
