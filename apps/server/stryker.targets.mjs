@@ -13,8 +13,8 @@
 // PAY-255: a full run is split into `shards` parallel CI jobs (a whole module
 // no longer fits one 6-hour job); the merge job scores the module from all
 // shard reports against `break`. Two env vars select what one run mutates:
-//   STRYKER_SHARD="2/5"   shard 2 of 5 of the full module (no break here;
-//                         the merge job judges the module score)
+//   STRYKER_SHARD="2/5"   shard 2 of 5 of the module's files (whole files;
+//                         no break here, the merge job judges the module)
 //   STRYKER_MUTATE="src/filings/service.ts:120-180,..."
 //                         only these files/line ranges (a PR's changed lines);
 //                         judged against the module's break, not incremental
@@ -133,14 +133,30 @@ export function selection(name, env) {
       const text = readFileSync(resolve(HERE, path), "utf8");
       return { path, bytes: Buffer.byteLength(text), lines: text.split("\n").length };
     });
+    const mutate = planShards(units, count)[index - 1];
+    if (mutate.length === 0)
+      throw new Error(`${name}: shard ${index}/${count} has no files; lower shards`);
     return {
-      mutate: planShards(units, count)[index - 1],
+      mutate,
       suffix: `-${index}of${count}`,
       incremental: true,
       thresholds: { ...target.thresholds, break: null },
     };
   }
   return { mutate: target.mutate, suffix: "", incremental: true, thresholds: target.thresholds };
+}
+
+/**
+ * The files shard `index` of `count` mutates (what selection() gives it).
+ * The merge job keeps only these from that shard's report: Stryker's
+ * incremental mode carries every mutant of a file it saw last time into the
+ * report, even after the file moved to another shard.
+ * @param {keyof typeof TARGETS} name
+ * @param {number} index
+ * @param {number} count
+ */
+export function shardFiles(name, index, count) {
+  return selection(name, { STRYKER_SHARD: `${index}/${count}` }).mutate;
 }
 
 /**

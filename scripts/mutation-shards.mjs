@@ -8,9 +8,11 @@
 // lines it changed.
 
 /**
- * Split mutate units into `count` shards of similar size, by bytes as a proxy
- * for mutant count. A file bigger than one shard's share is cut into line
- * ranges. Returns Stryker mutate entries: "path" or "path:start-end".
+ * Split a module's files into `count` shards of similar size, by bytes as a
+ * proxy for mutant count. Files are never cut into line ranges: Stryker only
+ * creates a mutant whose whole node lies inside one range, so a cut would
+ * silently drop every mutant spanning it. A shard can be empty when there are
+ * fewer files than shards; callers reject that.
  * @param {{ path: string, bytes: number, lines: number }[]} units
  * @param {number} count
  * @returns {string[][]}
@@ -19,40 +21,17 @@ export function planShards(units, count) {
   if (!Number.isInteger(count) || count < 1)
     throw new Error(`shard count must be an integer >= 1, got ${count}`);
   if (!Array.isArray(units) || units.length === 0) throw new Error("no files to mutate");
-  const total = units.reduce((sum, u) => sum + u.bytes, 0);
-  const target = Math.ceil(total / count);
-  const pieces = units.flatMap((u) => splitUnit(u, count > 1 ? target : Infinity));
-  pieces.sort((a, b) => b.bytes - a.bytes || (a.entry < b.entry ? -1 : a.entry > b.entry ? 1 : 0));
+  const sorted = [...units].sort(
+    (a, b) => b.bytes - a.bytes || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
+  );
   const shards = Array.from({ length: count }, () => /** @type {string[]} */ ([]));
   const loads = new Array(count).fill(0);
-  for (const p of pieces) {
+  for (const u of sorted) {
     const best = loads.indexOf(Math.min(...loads));
-    shards[best].push(p.entry);
-    loads[best] += p.bytes;
+    shards[best].push(u.path);
+    loads[best] += u.bytes;
   }
   return shards;
-}
-
-/**
- * One file as a whole piece, or as near-equal line ranges when it is bigger
- * than `target` bytes. Earlier ranges take the extra lines.
- * @param {{ path: string, bytes: number, lines: number }} u
- * @param {number} target
- * @returns {{ entry: string, bytes: number }[]}
- */
-function splitUnit(u, target) {
-  if (u.lines <= 1 || u.bytes <= target) return [{ entry: u.path, bytes: u.bytes }];
-  const k = Math.min(Math.ceil(u.bytes / target), u.lines);
-  const base = Math.floor(u.lines / k);
-  const extra = u.lines % k;
-  const pieces = [];
-  let start = 1;
-  for (let i = 0; i < k; i++) {
-    const n = base + (i < extra ? 1 : 0);
-    pieces.push({ entry: `${u.path}:${start}-${start + n - 1}`, bytes: (u.bytes * n) / u.lines });
-    start += n;
-  }
-  return pieces;
 }
 
 /**
@@ -101,33 +80,40 @@ export function parseMutateList(str) {
 export function changedRanges(diffText) {
   /** @type {Map<string, [number, number][]>} */
   const raw = new Map();
+  const lines = String(diffText).split("\n");
   let current = null;
-  for (const line of String(diffText).split("\n")) {
-    if (line.startsWith("+++ ")) {
-      const target = line.slice(4).trim();
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].startsWith("+++ ") && i > 0 && lines[i - 1].startsWith("--- ")) {
+      const target = lines[i].slice(4).trim();
       current = target.startsWith("b/") ? target.slice(2) : null;
       continue;
     }
-    const range = current === null ? null : hunkRange(line);
-    if (current === null || range === null) continue;
-    if (!raw.has(current)) raw.set(current, []);
-    raw.get(current)?.push(range);
+    const hunk = hunkHeader(lines[i]);
+    if (hunk === null) continue;
+    // Skip the hunk body by its counts: a body line is never a header, even
+    // when its text makes it look like "--- x" / "+++ y".
+    i += hunk.oldLen + hunk.newLen;
+    if (current === null || hunk.newLen === 0) continue;
+    const ranges = raw.get(current) ?? [];
+    ranges.push([hunk.newStart, hunk.newStart + hunk.newLen - 1]);
+    raw.set(current, ranges);
   }
   return new Map([...raw].map(([path, ranges]) => [path, mergeRanges(ranges)]));
 }
 
 /**
- * The new-side line range of a `@@ -a,b +c,d @@` hunk header; null for any
- * other line or a pure deletion (d = 0).
+ * The counts of a `@@ -a,b +c,d @@` hunk header (b and d default to 1); null
+ * for any other line.
  * @param {string} line
- * @returns {[number, number] | null}
  */
-function hunkRange(line) {
-  const m = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
+function hunkHeader(line) {
+  const m = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
   if (!m) return null;
-  const start = Number(m[1]);
-  const len = m[2] === undefined ? 1 : Number(m[2]);
-  return len === 0 ? null : [start, start + len - 1];
+  return {
+    oldLen: m[1] === undefined ? 1 : Number(m[1]),
+    newStart: Number(m[2]),
+    newLen: m[3] === undefined ? 1 : Number(m[3]),
+  };
 }
 
 /**
@@ -158,9 +144,9 @@ const STATUS_KEY = {
 };
 
 /**
- * Module mutation score across shard reports (Stryker JSON reports). A file
- * split into line ranges appears in several reports, each with only its own
- * mutants; the same mutant in two reports means the shards overlapped.
+ * Module mutation score across shard reports (Stryker JSON reports), each
+ * already limited to the files its shard owns. The same mutant in two reports
+ * means the shards overlapped.
  * @param {{ files: Record<string, { mutants: { status: string, mutatorName: string, replacement?: string, location: { start: { line: number, column: number }, end: { line: number, column: number } } }[] }> }[]} reports
  */
 export function mergeScore(reports) {

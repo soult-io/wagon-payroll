@@ -12,127 +12,56 @@ import {
   planShards,
 } from "./mutation-shards.mjs";
 
-/** Parse one mutate entry into { path, start, end } (null start/end = whole file). */
-function parseEntry(entry) {
-  const m = /^(.+):(\d+)-(\d+)$/.exec(entry);
-  if (!m) return { path: entry, start: null, end: null };
-  return { path: m[1], start: Number(m[2]), end: Number(m[3]) };
+/** Assert every unit path appears exactly once, bare, across all shards, and nothing else does. */
+function assertEachPathOnce(units, shards) {
+  const all = shards.flat();
+  assert.deepEqual([...all].sort(), units.map((u) => u.path).sort());
 }
 
-/**
- * Expand every entry of every shard over the synthetic units and assert each line of each
- * unit is covered exactly once, ranges stay inside the file, and a file is either one bare
- * path or only ranges.
- */
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one walk that checks coverage, bounds and entry form together
-function assertFullCoverage(units, shards) {
-  const byPath = new Map(units.map((u) => [u.path, u]));
-  const seen = new Map(units.map((u) => [u.path, new Array(u.lines + 1).fill(0)]));
-  const forms = new Map();
-  for (const shard of shards) {
-    for (const entry of shard) {
-      const { path, start, end } = parseEntry(entry);
-      const unit = byPath.get(path);
-      assert.ok(unit, `entry ${entry} names a known unit`);
-      const form = start === null ? "bare" : "range";
-      const prev = forms.get(path);
-      if (form === "bare") {
-        assert.equal(prev, undefined, `${path} bare path appears once and alone`);
-      } else {
-        assert.notEqual(prev, "bare", `${path} is not both bare and ranged`);
-      }
-      forms.set(path, form);
-      const lo = start ?? 1;
-      const hi = end ?? unit.lines;
-      if (start !== null) {
-        assert.ok(lo >= 1 && lo <= hi && hi <= unit.lines, `${entry} lies inside 1-${unit.lines}`);
-      }
-      const counts = seen.get(path);
-      for (let line = lo; line <= hi; line++) counts[line] += 1;
-    }
-  }
-  for (const unit of units) {
-    assert.ok(forms.has(unit.path), `${unit.path} appears in some shard`);
-    const counts = seen.get(unit.path);
-    for (let line = 1; line <= unit.lines; line++) {
-      assert.equal(counts[line], 1, `${unit.path} line ${line} covered exactly once`);
-    }
-  }
-}
-
-/** Estimated load of one shard: whole files at their bytes, chunks at bytes * chunkLines / lines. */
+/** Load of one shard in bytes. */
 function shardLoad(units, shard) {
-  const byPath = new Map(units.map((u) => [u.path, u]));
-  let load = 0;
-  for (const entry of shard) {
-    const { path, start, end } = parseEntry(entry);
-    const unit = byPath.get(path);
-    load += start === null ? unit.bytes : (unit.bytes * (end - start + 1)) / unit.lines;
-  }
-  return load;
+  const byPath = new Map(units.map((u) => [u.path, u.bytes]));
+  return shard.reduce((sum, path) => sum + byPath.get(path), 0);
 }
 
 // ---------------------------------------------------------------- planShards
 
-test("planShards: splits the oversize file, keeps the rest whole, greedy placement", () => {
-  // total 150, count 3 -> target 50. a.ts (100 > 50) -> k = 2 chunks of 5 lines, 50 bytes each.
-  // Pieces sorted: a.ts:1-5 (50), a.ts:6-10 (50), b.ts (30), c.ts (20).
-  // Greedy: s0 = a:1-5, s1 = a:6-10, s2 = b (30), c -> s2 (smallest load 30).
+test("planShards: greedy placement by bytes desc onto the lightest shard", () => {
+  // Sorted: a (50), b (30), c (25), d (20).
+  // s0 = a (50), s1 = b (30); c -> s1 (55); d -> s0 (50 < 55) = 70.
+  const units = [
+    { path: "c.ts", bytes: 25, lines: 3 },
+    { path: "a.ts", bytes: 50, lines: 10 },
+    { path: "d.ts", bytes: 20, lines: 2 },
+    { path: "b.ts", bytes: 30, lines: 3 },
+  ];
+  const shards = planShards(units, 2);
+  assert.deepEqual(shards, [
+    ["a.ts", "d.ts"],
+    ["b.ts", "c.ts"],
+  ]);
+  assertEachPathOnce(units, shards);
+});
+
+test("planShards: never splits a file, however large", () => {
+  // One file far bigger than total/count: it stays whole, the other shards are empty.
+  const big = [{ path: "src/filings/annual.ts", bytes: 90000, lines: 2000 }];
+  assert.deepEqual(planShards(big, 3), [["src/filings/annual.ts"], [], []]);
+
+  // An oversize file next to small ones: still one bare path, no ":<start>-<end>" anywhere.
   const units = [
     { path: "a.ts", bytes: 100, lines: 10 },
     { path: "b.ts", bytes: 30, lines: 3 },
     { path: "c.ts", bytes: 20, lines: 2 },
   ];
+  // s0 = a (100), s1 = b (30), s2 = c (20).
   const shards = planShards(units, 3);
-  assert.deepEqual(shards, [["a.ts:1-5"], ["a.ts:6-10"], ["b.ts", "c.ts"]]);
-  assertFullCoverage(units, shards);
+  assert.deepEqual(shards, [["a.ts"], ["b.ts"], ["c.ts"]]);
+  for (const entry of shards.flat()) assert.doesNotMatch(entry, /:\d+-\d+$/);
 });
 
-test("planShards: splits only when bytes > target (equal to target stays whole)", () => {
-  // total 100, count 2 -> target 50. 50 is not > 50: both whole.
-  const equal = [
-    { path: "a.ts", bytes: 50, lines: 10 },
-    { path: "b.ts", bytes: 50, lines: 10 },
-  ];
-  assert.deepEqual(planShards(equal, 2), [["a.ts"], ["b.ts"]]);
-
-  // total 100 -> target 50. a.ts 51 > 50 -> k = ceil(51/50) = 2: a.ts:1-5, a.ts:6-10 at 25.5 each.
-  // Sorted: b.ts (49), a.ts:1-5 (25.5), a.ts:6-10 (25.5).
-  // s0 = b (49), s1 = a:1-5 (25.5), a:6-10 -> s1 (25.5 < 49).
-  const over = [
-    { path: "a.ts", bytes: 51, lines: 10 },
-    { path: "b.ts", bytes: 49, lines: 10 },
-  ];
-  const shards = planShards(over, 2);
-  assert.deepEqual(shards, [["b.ts"], ["a.ts:1-5", "a.ts:6-10"]]);
-  assertFullCoverage(over, shards);
-});
-
-test("planShards: near-equal chunks, the extra lines go to the first chunks", () => {
-  // One file, count 3: total 70 -> target ceil(70/3) = 24; k = ceil(70/24) = 3.
-  // 10 lines / 3 -> 4, 3, 3: 1-4 (28), 5-7 (21), 8-10 (21).
-  const ten = [{ path: "x.ts", bytes: 70, lines: 10 }];
-  assert.deepEqual(planShards(ten, 3), [["x.ts:1-4"], ["x.ts:5-7"], ["x.ts:8-10"]]);
-  assertFullCoverage(ten, planShards(ten, 3));
-
-  // 11 lines / 3 -> 4, 4, 3: 1-4 (28), 5-8 (28), 9-11 (21).
-  const eleven = [{ path: "x.ts", bytes: 77, lines: 11 }];
-  // total 77 -> target 26; k = ceil(77/26) = 3.
-  assert.deepEqual(planShards(eleven, 3), [["x.ts:1-4"], ["x.ts:5-8"], ["x.ts:9-11"]]);
-
-  // Even split: 12 lines / 4 -> 3 each, 30 bytes each. total 120 -> target 30; k = 4.
-  // Equal bytes tie-break on the entry STRING: "x.ts:10-12" sorts before "x.ts:4-6".
-  const twelve = [{ path: "x.ts", bytes: 120, lines: 12 }];
-  assert.deepEqual(planShards(twelve, 4), [
-    ["x.ts:1-3"],
-    ["x.ts:10-12"],
-    ["x.ts:4-6"],
-    ["x.ts:7-9"],
-  ]);
-});
-
-test("planShards: ties sort by entry string, ties in load go to the lowest index", () => {
-  // Equal bytes; input order z, a, m. Sorted by entry asc: a, m, z.
+test("planShards: ties sort by path, ties in load go to the lowest index", () => {
+  // Equal bytes; input order z, a, m. Sorted by path asc: a, m, z.
   // s0 = a, s1 = m, z -> loads 10/10 tie -> s0.
   const units = [
     { path: "z.ts", bytes: 10, lines: 5 },
@@ -140,6 +69,15 @@ test("planShards: ties sort by entry string, ties in load go to the lowest index
     { path: "m.ts", bytes: 10, lines: 5 },
   ];
   assert.deepEqual(planShards(units, 2), [["a.ts", "z.ts"], ["m.ts"]]);
+});
+
+test("planShards: path tie-break is plain string comparison, not locale order", () => {
+  // Code-unit order: "B" (66) < "a" (97). localeCompare would put "a.ts" first.
+  const units = [
+    { path: "a.ts", bytes: 10, lines: 1 },
+    { path: "B.ts", bytes: 10, lines: 1 },
+  ];
+  assert.deepEqual(planShards(units, 2), [["B.ts"], ["a.ts"]]);
 });
 
 test("planShards: deterministic, and independent of input order", () => {
@@ -150,13 +88,16 @@ test("planShards: deterministic, and independent of input order", () => {
     { path: "src/d.ts", bytes: 120, lines: 12 },
     { path: "src/e.ts", bytes: 80, lines: 8 },
   ];
-  const first = planShards(units, 3);
-  assert.deepEqual(planShards(units, 3), first);
-  assert.deepEqual(planShards([...units].reverse(), 3), first);
-  assertFullCoverage(units, first);
+  // Sorted: a 900, b 300, c 300, d 120, e 80.
+  // s0 = a, s1 = b, s2 = c; d -> s1 (300 tie s2, lowest) = 420; e -> s2 (300) = 380.
+  const expected = [["src/a.ts"], ["src/b.ts", "src/d.ts"], ["src/c.ts", "src/e.ts"]];
+  assert.deepEqual(planShards(units, 3), expected);
+  assert.deepEqual(planShards(units, 3), expected);
+  assert.deepEqual(planShards([...units].reverse(), 3), expected);
+  assert.deepEqual(planShards([units[3], units[0], units[4], units[2], units[1]], 3), expected);
 });
 
-test("planShards: count = 1 is one shard of bare paths, no splitting", () => {
+test("planShards: count = 1 is one shard of every path in assignment order", () => {
   // Assignment order = sorted order: bytes desc, then path asc.
   const units = [
     { path: "a.ts", bytes: 10, lines: 4 },
@@ -166,27 +107,12 @@ test("planShards: count = 1 is one shard of bare paths, no splitting", () => {
   assert.deepEqual(planShards(units, 1), [["b.ts", "a.ts", "c.ts"]]);
 });
 
-test("planShards: a unit with lines <= 1 is never split; always exactly count shards", () => {
-  // total 1010, count 2 -> target 505. big.ts 1000 > 505 but has 1 line: stays whole.
-  const oneLine = [
-    { path: "big.ts", bytes: 1000, lines: 1 },
-    { path: "s.ts", bytes: 10, lines: 5 },
-  ];
-  assert.deepEqual(planShards(oneLine, 2), [["big.ts"], ["s.ts"]]);
-
-  // lines = 0 also stays whole.
-  const zero = [
-    { path: "empty.ts", bytes: 1000, lines: 0 },
-    { path: "s.ts", bytes: 10, lines: 5 },
-  ];
-  assert.deepEqual(planShards(zero, 2), [["empty.ts"], ["s.ts"]]);
-
-  // Fewer pieces than shards: the extra shard is an empty array.
+test("planShards: fewer files than shards leaves empty shards; always exactly count", () => {
   const two = [
     { path: "a.ts", bytes: 10, lines: 1 },
-    { path: "b.ts", bytes: 10, lines: 1 },
+    { path: "b.ts", bytes: 20, lines: 0 },
   ];
-  assert.deepEqual(planShards(two, 3), [["a.ts"], ["b.ts"], []]);
+  assert.deepEqual(planShards(two, 4), [["b.ts"], ["a.ts"], [], []]);
 });
 
 test("planShards: rejects bad count and empty units", () => {
@@ -198,7 +124,7 @@ test("planShards: rejects bad count and empty units", () => {
   assert.throws(() => planShards([], 2), Error);
 });
 
-test("planShards: 16 mixed files into 5 shards cover every line and balance load", () => {
+test("planShards: 16 mixed files into 5 shards, hand-computed greedy result", () => {
   const units = [
     { path: "src/filings/annual.ts", bytes: 60000, lines: 1500 },
     { path: "src/filings/quarterly.ts", bytes: 32000, lines: 800 },
@@ -218,25 +144,23 @@ test("planShards: 16 mixed files into 5 shards cover every line and balance load
     { path: "src/util/one.ts", bytes: 300, lines: 1 },
   ];
   const shards = planShards(units, 5);
-  assert.equal(shards.length, 5);
-  assertFullCoverage(units, shards);
-
-  // total 206000 -> target 41200. Only annual.ts (60000) is over: k = 2, 750 + 750 lines.
-  const entries = shards.flat();
-  assert.ok(entries.includes("src/filings/annual.ts:1-750"));
-  assert.ok(entries.includes("src/filings/annual.ts:751-1500"));
-  for (const u of units.slice(1)) assert.ok(entries.includes(u.path), `${u.path} stays whole`);
-  assert.equal(entries.length, 17);
-
+  assertEachPathOnce(units, shards);
+  // Greedy by hand (total 206000, average 41200):
+  //   60000 s0 | 32000 s1 | 24000 s2 | 18000 s3 | 15000 s4
+  //   11000 s4=26000 | 9000 s3=27000 | 8000 s2=32000 | 7000 s4=33000 | 6000 s3=33000
+  //   5000 s1=37000 (tie s1/s2) | 4000 s2=36000 | 3000 s3=36000 (tie s3/s4)
+  //   2500 s4=35500 | 1200 s4=36700 | 300 s2=36300 (tie s2/s3)
+  assert.deepEqual(shards, [
+    ["src/filings/annual.ts"],
+    ["src/filings/quarterly.ts", "src/pay/issue.ts"],
+    ["src/engine/federal.ts", "src/forms/nec.ts", "src/forms/w3.ts", "src/util/one.ts"],
+    ["src/engine/state.ts", "src/engine/fica.ts", "src/engine/futa.ts", "src/money.ts"],
+    ["src/pay/run.ts", "src/forms/w2.ts", "src/pay/approve.ts", "src/dates.ts", "src/rounding.ts"],
+  ]);
   const loads = shards.map((s) => shardLoad(units, s));
-  const avg = loads.reduce((a, b) => a + b, 0) / loads.length;
-  assert.ok(Math.abs(avg - 41200) < 1e-6);
-  assert.ok(Math.max(...loads) <= 1.5 * avg, `max ${Math.max(...loads)} within 1.5x of ${avg}`);
-  // Hand-run greedy: loads 42000, 41500, 42000, 40300, 40200; max 42000.
-  assert.deepEqual(
-    [...loads].sort((a, b) => a - b),
-    [40200, 40300, 41500, 42000, 42000],
-  );
+  assert.deepEqual(loads, [60000, 37000, 36300, 36000, 36700]);
+  // The largest file sets the floor; the max stays within 1.5x of the average.
+  assert.ok(Math.max(...loads) <= 1.5 * 41200);
 });
 
 // ---------------------------------------------------------------- parseShard
@@ -411,10 +335,30 @@ test("changedRanges: ranges are sorted before merging", () => {
 --- a/src/z.ts
 +++ b/src/z.ts
 @@ -50,2 +50,2 @@
+-  r50();
+-  r51();
++  s50();
++  s51();
 @@ -1 +1 @@
+-import { a } from "./a.ts";
++import { b } from "./b.ts";
 @@ -20,5 +20,5 @@
+-  o20();
+-  o21();
+-  o22();
+-  o23();
+-  o24();
++  n20();
++  n21();
++  n22();
++  n23();
++  n24();
 @@ -22,1 +25,1 @@
+-  o25();
++  n25();
 @@ -3 +2 @@
+-  o3();
++  n2();
 `;
   // Raw: [50,51], [1,1], [20,24], [25,25], [2,2]. Sorted + merged: [1,2], [20,25], [50,51].
   assert.deepEqual(
@@ -426,6 +370,77 @@ test("changedRanges: ranges are sorted before merging", () => {
           [1, 2],
           [20, 25],
           [50, 51],
+        ],
+      ],
+    ]),
+  );
+});
+
+test('changedRanges: an added line starting with "++ " is content, not a file header', () => {
+  // The source lines "++ b/src/q.ts" and "++ counter;" appear in the diff as "+++ ...".
+  // Neither follows a "--- " line, so neither resets the file; the later hunk still counts.
+  const diff = `diff --git a/src/p.ts b/src/p.ts
+index 1111111..2222222 100644
+--- a/src/p.ts
++++ b/src/p.ts
+@@ -4,0 +5,3 @@ export function p() {
++++ b/src/q.ts
++++ counter;
++const z = 1;
+@@ -20 +23 @@ export function p() {
+-  a();
++  b();
+diff --git a/src/r.ts b/src/r.ts
+index 3333333..4444444 100644
+--- a/src/r.ts
++++ b/src/r.ts
+@@ -1 +1 @@
+-x
++y
+`;
+  // p.ts: [5,7] and [23,23]. r.ts: [1,1]. No src/q.ts or "counter;" key.
+  assert.deepEqual(
+    changedRanges(diff),
+    new Map([
+      [
+        "src/p.ts",
+        [
+          [5, 7],
+          [23, 23],
+        ],
+      ],
+      ["src/r.ts", [[1, 1]]],
+    ]),
+  );
+});
+
+test('changedRanges: a replaced "-- " / "++ " line pair inside a hunk is body, not a header', () => {
+  // Source line "-- old" replaced by "++ b/src/x.ts": the diff shows "--- old" then
+  // "+++ b/src/x.ts". Both are within the b + d = 2 body lines of "@@ -8 +8 @@", so they
+  // must not switch the file; the next hunk of src/w.ts still counts.
+  const diff = `diff --git a/src/w.ts b/src/w.ts
+index 1111111..2222222 100644
+--- a/src/w.ts
++++ b/src/w.ts
+@@ -8 +8 @@ export const doc = \`
+--- old
++++ b/src/x.ts
+@@ -30,2 +30,3 @@ export function w() {
+-  a();
+-  b();
++  c();
++  d();
++  e();
+`;
+  // w.ts: [8,8] and [30,32]. No src/x.ts key.
+  assert.deepEqual(
+    changedRanges(diff),
+    new Map([
+      [
+        "src/w.ts",
+        [
+          [8, 8],
+          [30, 32],
         ],
       ],
     ]),

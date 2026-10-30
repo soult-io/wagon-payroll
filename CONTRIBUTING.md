@@ -119,10 +119,13 @@ a score below it fails the run. The
 workflow), not on PRs, and uploads the HTML report as an artifact.
 
 A full run splits each server module into `shards` parallel jobs
-(`stryker.targets.mjs`; large files are cut into line ranges), because a whole
+(`stryker.targets.mjs`; whole files, never line ranges, which would drop mutants
+that span a cut), because a whole
 module no longer fits GitHub's 6-hour job limit. A `score (<target>)` job then
 scores the module from all shard reports against its break threshold; a
-missing shard report fails it. To check a branch, run the workflow on that
+missing shard report fails it. Each shard report is first cut down to the files
+that shard owns: Stryker's incremental file carries every mutant of a file the
+shard tested on an earlier run, even after the file moved to another shard. To check a branch, run the workflow on that
 branch with `since` set to `origin/main`: only the changed lines of mutated
 files are tested, each target against its own threshold. A failed scheduled
 run opens (or comments on) the "Weekly mutation run failed" issue.

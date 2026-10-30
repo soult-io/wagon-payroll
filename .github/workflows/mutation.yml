@@ -157,7 +157,7 @@ jobs:
 
   merge:
     needs: [plan, mutation]
-    if: always() && needs.plan.outputs.has-merge == 'true'
+    if: ${{ !cancelled() && needs.plan.outputs.has-merge == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:

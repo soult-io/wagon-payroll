@@ -24,7 +24,9 @@ const ENGINE = {
   incremental: "reports/stryker-incremental.json",
   report: "reports/mutation/",
 };
-const SHARD_TIMEOUT = 150;
+// The first full run of the largest shard (deposits service.ts, ~70% of the
+// module) takes about 2.5 h; later runs are incremental. GitHub's cap is 6 h.
+const SHARD_TIMEOUT = 300;
 
 function server(name) {
   return {
