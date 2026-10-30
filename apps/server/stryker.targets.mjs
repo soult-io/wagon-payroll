@@ -76,8 +76,9 @@ export const TARGETS = {
       "test/qa-seed-ein.test.ts",
     ],
     thresholds: { high: 80, low: 60, break: 65 },
-    // The first full run (2026-10-30) measured ~23 h of mutant testing.
-    shards: 10,
+    // ~23 h of mutant testing at 2026-10-30. At 10 shards one shard (an
+    // annual.ts range with 59 hanging mutants) needed ~5 h 05 m.
+    shards: 12,
   },
 };
 
@@ -152,8 +153,10 @@ export function selection(name, env) {
 
 /**
  * The module's units for `count` shards: whole files, with each file larger
- * than a third of a shard's share cut at top-level statements (splitFile), so
- * no single file outweighs a shard. Small units let the greedy plan balance.
+ * than a sixth of a shard's share cut at top-level statements (splitFile).
+ * Bytes only roughly predict test time (one 13 KB annual.ts range with many
+ * hanging mutants took ~4 h at 2026-10-30), so units are kept small: a slow
+ * range is spread over several shards instead of filling one.
  * @param {keyof typeof TARGETS} name
  * @param {number} count
  */
@@ -170,7 +173,7 @@ function shardUnits(name, count) {
     return { path, bytes: Buffer.byteLength(text), lines: line(text.length), statements };
   });
   const total = files.reduce((sum, f) => sum + f.bytes, 0);
-  const maxBytes = Math.ceil(total / (3 * count));
+  const maxBytes = Math.ceil(total / (6 * count));
   return files.flatMap((f) => splitFile(f, maxBytes));
 }
 
