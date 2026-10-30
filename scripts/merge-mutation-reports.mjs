@@ -4,14 +4,15 @@
 // Usage: node scripts/merge-mutation-reports.mjs <target> <shards> <break> <dir>
 //   <dir> holds one sub-directory per downloaded shard artifact, named
 //   mutation-report-<target>-<i>of<n>, each with a mutation.json. Each report
-//   is cut down to the files its shard owns (stryker.targets.mjs shardFiles;
-//   incremental mode re-emits files a shard owned on an earlier run). Fails
+//   is cut down to the files and line ranges its shard owns (shardFiles,
+//   filterReport; incremental mode re-emits what a shard owned on an earlier
+//   run). Fails
 //   when a shard report is missing (a shard crashed or timed out: no partial
 //   score) or when the module score is below <break>.
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { shardFiles } from "../apps/server/stryker.targets.mjs";
-import { mergeScore } from "./mutation-shards.mjs";
+import { filterReport, mergeScore } from "./mutation-shards.mjs";
 
 const [target, shardsArg, breakArg, dir] = process.argv.slice(2);
 const shards = Number(shardsArg);
@@ -24,7 +25,7 @@ if (!target || !Number.isInteger(shards) || shards < 1 || !Number.isFinite(break
 const moduleName = target.replace(/^server-/, "");
 
 /**
- * Shard i's report, limited to the files shard i owns; null when missing.
+ * Shard i's report, limited to what shard i owns; null when missing.
  * upload-artifact keeps the report folder's contents at the artifact root.
  * @param {number} i
  */
@@ -32,11 +33,7 @@ function shardReport(i) {
   const file = join(dir, `mutation-report-${target}-${i}of${shards}`, "mutation.json");
   if (!existsSync(file)) return null;
   const report = JSON.parse(readFileSync(file, "utf8"));
-  const owned = new Set(shardFiles(/** @type {any} */ (moduleName), i, shards));
-  const files = Object.fromEntries(
-    Object.entries(report.files ?? {}).filter(([path]) => owned.has(path)),
-  );
-  return { ...report, files };
+  return filterReport(report, shardFiles(/** @type {any} */ (moduleName), i, shards));
 }
 
 const problems = [];

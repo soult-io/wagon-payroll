@@ -6,10 +6,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   changedRanges,
+  filterReport,
   mergeScore,
   parseMutateList,
   parseShard,
   planShards,
+  splitFile,
 } from "./mutation-shards.mjs";
 
 /** Assert every unit path appears exactly once, bare, across all shards, and nothing else does. */
@@ -624,4 +626,318 @@ test("mergeScore: Pending or unknown status throws", () => {
   assert.throws(() => mergeScore([unknown]), Error);
   const lowercase = { files: { "src/a.ts": mutants("killed") } };
   assert.throws(() => mergeScore([lowercase]), Error);
+});
+
+// ---------------------------------------------------------------- splitFile
+
+const stmt = (startLine, endLine, bytes) => ({ startLine, endLine, bytes });
+
+test("splitFile: file within maxBytes is one bare whole-file unit with only path/bytes/lines", () => {
+  const file = {
+    path: "src/a.ts",
+    bytes: 100,
+    lines: 10,
+    statements: [stmt(1, 4, 50), stmt(6, 10, 50)],
+  };
+  // bytes == maxBytes -> whole file.
+  assert.deepEqual(splitFile(file, 100), [{ path: "src/a.ts", bytes: 100, lines: 10 }]);
+  assert.deepEqual(splitFile(file, 1000), [{ path: "src/a.ts", bytes: 100, lines: 10 }]);
+});
+
+test("splitFile: fewer than 2 statements is one bare whole-file unit, however large", () => {
+  const one = { path: "src/big.ts", bytes: 5000, lines: 300, statements: [stmt(1, 300, 5000)] };
+  assert.deepEqual(splitFile(one, 100), [{ path: "src/big.ts", bytes: 5000, lines: 300 }]);
+  const none = { path: "src/empty.ts", bytes: 400, lines: 20, statements: [] };
+  assert.deepEqual(splitFile(none, 100), [{ path: "src/empty.ts", bytes: 400, lines: 20 }]);
+});
+
+test("splitFile: cuts when the chunk would exceed maxBytes; ranges cover 1..lines", () => {
+  // Leading lines 1-2 and trailing lines 21-22 hold no statement.
+  // chunk1 = s1 (40) + s2 (90 <= 100); s3: 90 + 30 > 100, 8 < 10 -> cut.
+  // chunk2 = s3 (30) + s4 (90). chunk1 = 1-8, chunk2 = 9-22 (last chunk ends at file.lines).
+  const file = {
+    path: "src/x.ts",
+    bytes: 250,
+    lines: 22,
+    statements: [stmt(3, 4, 40), stmt(5, 8, 50), stmt(10, 12, 30), stmt(14, 20, 60)],
+  };
+  assert.deepEqual(splitFile(file, 100), [
+    { path: "src/x.ts:1-8", bytes: 90, lines: 8 },
+    { path: "src/x.ts:9-22", bytes: 90, lines: 14 },
+  ]);
+});
+
+test("splitFile: reaching exactly maxBytes does not cut (strictly greater cuts)", () => {
+  // chunk1 = 60 + 40 = 100 (not > 100); s3: 100 + 10 > 100 -> cut.
+  const file = {
+    path: "src/x.ts",
+    bytes: 110,
+    lines: 9,
+    statements: [stmt(1, 3, 60), stmt(4, 6, 40), stmt(7, 9, 10)],
+  };
+  assert.deepEqual(splitFile(file, 100), [
+    { path: "src/x.ts:1-6", bytes: 100, lines: 6 },
+    { path: "src/x.ts:7-9", bytes: 10, lines: 3 },
+  ]);
+});
+
+test("splitFile: never cuts between two statements that share a line", () => {
+  // s2 starts on s1's last line (3): no cut even though 60 + 60 > 100.
+  // s3: 120 + 60 > 100, 5 < 7 -> cut. chunk1 = 1-5 (120), chunk2 = 6-10 (60).
+  const file = {
+    path: "src/s.ts",
+    bytes: 180,
+    lines: 10,
+    statements: [stmt(1, 3, 60), stmt(3, 5, 60), stmt(7, 9, 60)],
+  };
+  assert.deepEqual(splitFile(file, 100), [
+    { path: "src/s.ts:1-5", bytes: 120, lines: 5 },
+    { path: "src/s.ts:6-10", bytes: 60, lines: 5 },
+  ]);
+});
+
+test("splitFile: a walk that yields one chunk returns the bare whole-file unit", () => {
+  // Every statement shares a line with the previous one: no cut is allowed.
+  const file = {
+    path: "src/one.ts",
+    bytes: 300,
+    lines: 4,
+    statements: [stmt(1, 1, 100), stmt(1, 2, 100), stmt(2, 4, 100)],
+  };
+  assert.deepEqual(splitFile(file, 50), [{ path: "src/one.ts", bytes: 300, lines: 4 }]);
+});
+
+test("splitFile: a statement larger than maxBytes gets its own chunk; first chunk never empty", () => {
+  // s1 (30); s2: 530 > 100 -> cut; chunk2 = s2 (500); s3: 530 > 100 -> cut.
+  const file = {
+    path: "src/f.ts",
+    bytes: 560,
+    lines: 12,
+    statements: [stmt(1, 2, 30), stmt(3, 10, 500), stmt(11, 12, 30)],
+  };
+  assert.deepEqual(splitFile(file, 100), [
+    { path: "src/f.ts:1-2", bytes: 30, lines: 2 },
+    { path: "src/f.ts:3-10", bytes: 500, lines: 8 },
+    { path: "src/f.ts:11-12", bytes: 30, lines: 2 },
+  ]);
+  // The first statement alone exceeds maxBytes: it still starts chunk 1 (no empty chunk).
+  const first = {
+    path: "src/g.ts",
+    bytes: 510,
+    lines: 8,
+    statements: [stmt(1, 5, 500), stmt(6, 7, 10)],
+  };
+  assert.deepEqual(splitFile(first, 100), [
+    { path: "src/g.ts:1-5", bytes: 500, lines: 5 },
+    { path: "src/g.ts:6-8", bytes: 10, lines: 3 },
+  ]);
+});
+
+test("splitFile: maxBytes <= 0 (or not a number > 0) throws", () => {
+  const small = { path: "src/a.ts", bytes: 10, lines: 2, statements: [stmt(1, 1, 5), stmt(2, 2, 5)] };
+  const big = { path: "src/b.ts", bytes: 500, lines: 4, statements: [stmt(1, 2, 250), stmt(3, 4, 250)] };
+  for (const file of [small, big]) {
+    assert.throws(() => splitFile(file, 0), Error);
+    assert.throws(() => splitFile(file, -1), Error);
+    assert.throws(() => splitFile(file, Number.NaN), Error);
+  }
+});
+
+/** Deterministic LCG so the generated inputs are the same on every run. */
+function lcg(seed) {
+  let s = seed >>> 0;
+  return (n) => {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    return s % n;
+  };
+}
+
+function genFile(seed) {
+  const rnd = lcg(seed);
+  const statements = [];
+  let end = rnd(4); // leading non-statement lines
+  const count = 2 + rnd(25);
+  for (let i = 0; i < count; i++) {
+    const gap = rnd(3); // 0 = starts on the previous statement's last line
+    const startLine = i === 0 ? end + 1 : end + gap;
+    const endLine = startLine + rnd(6);
+    statements.push(stmt(startLine, endLine, 1 + rnd(80)));
+    end = endLine;
+  }
+  const sum = statements.reduce((t, s) => t + s.bytes, 0);
+  return { path: "src/gen.ts", bytes: sum + rnd(50), lines: end + rnd(4), statements };
+}
+
+test("splitFile: generated inputs obey every rule of the contract", () => {
+  for (let seed = 1; seed <= 60; seed++) {
+    const file = genFile(seed);
+    for (const maxBytes of [1, 40, 100, 250, 100000]) {
+      const label = `seed ${seed}, maxBytes ${maxBytes}`;
+      const units = splitFile(file, maxBytes);
+      if (file.bytes <= maxBytes) {
+        assert.deepEqual(units, [{ path: file.path, bytes: file.bytes, lines: file.lines }], label);
+        continue;
+      }
+      // Rebuild the expected chunks by the greedy rule, independent of the output.
+      const chunks = [[file.statements[0]]];
+      let load = file.statements[0].bytes;
+      for (let i = 1; i < file.statements.length; i++) {
+        const s = file.statements[i];
+        const prev = file.statements[i - 1];
+        if (load + s.bytes > maxBytes && prev.endLine < s.startLine) {
+          chunks.push([s]);
+          load = s.bytes;
+        } else {
+          chunks.at(-1).push(s);
+          load += s.bytes;
+        }
+      }
+      if (chunks.length === 1) {
+        assert.deepEqual(units, [{ path: file.path, bytes: file.bytes, lines: file.lines }], label);
+        continue;
+      }
+      assert.equal(units.length, chunks.length, label);
+      // Contiguous coverage 1..lines; unit shape; bytes = its statements' bytes.
+      let nextStart = 1;
+      const ranges = units.map((u, k) => {
+        assert.deepEqual(Object.keys(u).sort(), ["bytes", "lines", "path"], label);
+        const m = /^src\/gen\.ts:(\d+)-(\d+)$/.exec(u.path);
+        assert.ok(m, `${label}: path ${u.path}`);
+        const a = Number(m[1]);
+        const b = Number(m[2]);
+        assert.equal(a, nextStart, `${label}: chunk ${k} starts after the previous`);
+        assert.ok(b >= a, label);
+        assert.equal(u.lines, b - a + 1, label);
+        const last = chunks[k].at(-1);
+        assert.equal(b, k === units.length - 1 ? file.lines : last.endLine, label);
+        assert.equal(
+          u.bytes,
+          chunks[k].reduce((t, s) => t + s.bytes, 0),
+          label,
+        );
+        nextStart = b + 1;
+        return [a, b];
+      });
+      assert.equal(nextStart, file.lines + 1, `${label}: ends at file.lines`);
+      // Every statement lies wholly inside exactly one chunk.
+      for (const s of file.statements) {
+        const inside = ranges.filter(([a, b]) => s.startLine >= a && s.endLine <= b);
+        assert.equal(inside.length, 1, `${label}: statement ${s.startLine}-${s.endLine}`);
+      }
+    }
+  }
+});
+
+// ---------------------------------------------------------------- filterReport
+
+const fm = (id, startLine, endLine, status = "Killed") => ({
+  id: String(id),
+  mutatorName: "ArithmeticOperator",
+  replacement: "a - b",
+  location: { start: { line: startLine, column: 3 }, end: { line: endLine, column: 9 } },
+  status,
+});
+
+function sampleReport() {
+  return {
+    schemaVersion: "1.0",
+    thresholds: { high: 80, low: 60 },
+    projectRoot: "/repo/packages/engine",
+    files: {
+      "src/a.ts": {
+        language: "typescript",
+        source: "// a",
+        mutants: [
+          fm(1, 1, 1),
+          fm(2, 4, 6), // starts before 5
+          fm(3, 5, 6), // starts on the range's first line
+          fm(4, 9, 11), // straddles the range end
+          fm(5, 10, 10), // on the range's last line
+          fm(6, 11, 11),
+          fm(7, 20, 25),
+        ],
+      },
+      "src/ab.ts": { language: "typescript", source: "// ab", mutants: [fm(8, 5, 5)] },
+      "src/b.ts": {
+        language: "typescript",
+        source: "// b",
+        mutants: [fm(9, 1, 1), fm(10, 300, 301, "Survived")],
+      },
+      "src/c.ts": { language: "typescript", source: "// c", mutants: [fm(11, 2, 2)] },
+    },
+  };
+}
+
+test("filterReport: bare path keeps all; range keeps mutants inside, boundaries inclusive", () => {
+  const report = sampleReport();
+  const out = filterReport(report, ["src/a.ts:5-10", "src/b.ts"]);
+  const src = sampleReport();
+  assert.deepEqual(out, {
+    schemaVersion: "1.0",
+    thresholds: { high: 80, low: 60 },
+    projectRoot: "/repo/packages/engine",
+    files: {
+      "src/a.ts": {
+        language: "typescript",
+        source: "// a",
+        mutants: [src.files["src/a.ts"].mutants[2], src.files["src/a.ts"].mutants[4]],
+      },
+      "src/b.ts": src.files["src/b.ts"],
+    },
+  });
+});
+
+test("filterReport: several ranges for one path keep the union", () => {
+  const out = filterReport(sampleReport(), ["src/a.ts:1-1", "src/a.ts:20-25"]);
+  assert.deepEqual(Object.keys(out.files), ["src/a.ts"]);
+  assert.deepEqual(
+    out.files["src/a.ts"].mutants.map((m) => m.id),
+    ["1", "7"],
+  );
+});
+
+test("filterReport: a mutant must lie inside one range, not across two adjacent ranges", () => {
+  // Mutant 4 spans 9-11: neither 1-10 nor 11-30 contains it whole.
+  const out = filterReport(sampleReport(), ["src/a.ts:1-10", "src/a.ts:11-30"]);
+  assert.deepEqual(
+    out.files["src/a.ts"].mutants.map((m) => m.id),
+    ["1", "2", "3", "5", "6", "7"],
+  );
+});
+
+test("filterReport: a bare entry wins over ranges for the same path", () => {
+  const out = filterReport(sampleReport(), ["src/a.ts:5-5", "src/a.ts"]);
+  assert.deepEqual(out.files, { "src/a.ts": sampleReport().files["src/a.ts"] });
+});
+
+test("filterReport: unowned files are dropped; path match is exact", () => {
+  // "src/a.ts" must not select "src/ab.ts"; an owned path absent from the report adds nothing.
+  const out = filterReport(sampleReport(), ["src/a.ts", "src/missing.ts", "src/missing2.ts:1-9"]);
+  assert.deepEqual(Object.keys(out.files), ["src/a.ts"]);
+  assert.equal(out.schemaVersion, "1.0");
+  assert.deepEqual(out.thresholds, { high: 80, low: 60 });
+  assert.equal(out.projectRoot, "/repo/packages/engine");
+});
+
+test("filterReport: files left with zero mutants are dropped", () => {
+  // a.ts has nothing in 30-40; c.ts has nothing in 5-9.
+  assert.deepEqual(filterReport(sampleReport(), ["src/a.ts:30-40", "src/c.ts:5-9"]).files, {});
+  // A file that has no mutants at all is dropped even when owned bare.
+  const report = sampleReport();
+  report.files["src/empty.ts"] = { language: "typescript", source: "", mutants: [] };
+  const out = filterReport(report, ["src/empty.ts", "src/c.ts"]);
+  assert.deepEqual(Object.keys(out.files), ["src/c.ts"]);
+});
+
+test("filterReport: returns a new report and does not modify the input", () => {
+  const report = sampleReport();
+  const before = structuredClone(report);
+  const out = filterReport(report, ["src/a.ts:5-10", "src/b.ts"]);
+  assert.deepEqual(report, before);
+  assert.notEqual(out, report);
+  assert.notEqual(out.files, report.files);
+  assert.notEqual(out.files["src/a.ts"], report.files["src/a.ts"]);
+  // Dropping everything still leaves the input intact.
+  filterReport(report, []);
+  assert.deepEqual(report, before);
 });

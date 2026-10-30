@@ -8,11 +8,53 @@
 // lines it changed.
 
 /**
- * Split a module's files into `count` shards of similar size, by bytes as a
- * proxy for mutant count. Files are never cut into line ranges: Stryker only
- * creates a mutant whose whole node lies inside one range, so a cut would
- * silently drop every mutant spanning it. A shard can be empty when there are
- * fewer files than shards; callers reject that.
+ * Cut a large file into line-range units at top-level statement boundaries.
+ * Stryker only creates a mutant whose whole node lies inside one range, so an
+ * arbitrary cut would silently drop every mutant spanning it; no mutant spans
+ * two top-level statements, so these cuts drop nothing. The ranges cover the
+ * whole file with no gap. One file can need more than a 6-hour job
+ * (annual.ts, ~8 h at 2026-10), so whole files are not enough.
+ * @param {{ path: string, bytes: number, lines: number, statements: { startLine: number, endLine: number, bytes: number }[] }} file
+ * @param {number} maxBytes
+ * @returns {{ path: string, bytes: number, lines: number }[]}
+ */
+export function splitFile(file, maxBytes) {
+  if (!(maxBytes > 0)) throw new Error(`maxBytes must be > 0, got ${maxBytes}`);
+  const whole = [{ path: file.path, bytes: file.bytes, lines: file.lines }];
+  if (file.bytes <= maxBytes || file.statements.length < 2) return whole;
+  /** @type {{ startLine: number, endLine: number, bytes: number }[][]} */
+  const chunks = [[]];
+  let load = 0;
+  for (const [i, s] of file.statements.entries()) {
+    const chunk = chunks[chunks.length - 1];
+    const prev = file.statements[i - 1];
+    if (chunk.length > 0 && load + s.bytes > maxBytes && prev.endLine < s.startLine) {
+      chunks.push([s]);
+      load = s.bytes;
+    } else {
+      chunk.push(s);
+      load += s.bytes;
+    }
+  }
+  if (chunks.length === 1) return whole;
+  let start = 1;
+  return chunks.map((chunk, i) => {
+    const end = i === chunks.length - 1 ? file.lines : chunk[chunk.length - 1].endLine;
+    const unit = {
+      path: `${file.path}:${start}-${end}`,
+      bytes: chunk.reduce((sum, s) => sum + s.bytes, 0),
+      lines: end - start + 1,
+    };
+    start = end + 1;
+    return unit;
+  });
+}
+
+/**
+ * Split a module's units (whole files or splitFile ranges) into `count`
+ * shards of similar size, by bytes as a proxy for test time. A unit's path
+ * is opaque here. A shard can be empty when there are fewer units than
+ * shards; callers reject that.
  * @param {{ path: string, bytes: number, lines: number }[]} units
  * @param {number} count
  * @returns {string[][]}
@@ -131,6 +173,39 @@ function mergeRanges(ranges) {
     else merged.push([start, end]);
   }
   return merged;
+}
+
+/**
+ * A shard's report cut down to what the shard owns: `owned` is its mutate
+ * entries ("path" or "path:a-b"). Stryker's incremental mode carries mutants
+ * of files and ranges the shard tested on an earlier run into the report.
+ * @param {{ files?: Record<string, { mutants?: { location: { start: { line: number }, end: { line: number } } }[] }> }} report
+ * @param {string[]} owned
+ */
+export function filterReport(report, owned) {
+  /** @type {Map<string, [number, number][] | "all">} */
+  const byPath = new Map();
+  for (const entry of owned) {
+    const m = /^(.*):(\d+)-(\d+)$/.exec(entry);
+    if (!m) {
+      byPath.set(entry, "all");
+      continue;
+    }
+    const ranges = byPath.get(m[1]) ?? [];
+    if (ranges !== "all") byPath.set(m[1], [...ranges, [Number(m[2]), Number(m[3])]]);
+  }
+  const files = {};
+  for (const [path, file] of Object.entries(report.files ?? {})) {
+    const ranges = byPath.get(path);
+    if (ranges === undefined) continue;
+    const mutants = (file.mutants ?? []).filter(
+      (m) =>
+        ranges === "all" ||
+        ranges.some(([a, b]) => m.location.start.line >= a && m.location.end.line <= b),
+    );
+    if (mutants.length > 0) files[path] = { ...file, mutants };
+  }
+  return { ...report, files };
 }
 
 const STATUS_KEY = {

@@ -119,13 +119,15 @@ a score below it fails the run. The
 workflow), not on PRs, and uploads the HTML report as an artifact.
 
 A full run splits each server module into `shards` parallel jobs
-(`stryker.targets.mjs`; whole files, never line ranges, which would drop mutants
-that span a cut), because a whole
-module no longer fits GitHub's 6-hour job limit. A `score (<target>)` job then
+(`stryker.targets.mjs`), because a whole module, and even one large file, no
+longer fits GitHub's 6-hour job limit. Large files are cut into line ranges
+only between top-level statements: Stryker skips a mutant that crosses a range
+edge, and no mutant spans two top-level statements, so these cuts drop
+nothing. A `score (<target>)` job then
 scores the module from all shard reports against its break threshold; a
 missing shard report fails it. Each shard report is first cut down to the files
-that shard owns: Stryker's incremental file carries every mutant of a file the
-shard tested on an earlier run, even after the file moved to another shard. To check a branch, run the workflow on that
+and ranges that shard owns: Stryker's incremental file carries mutants the
+shard tested on an earlier run, even after they moved to another shard. To check a branch, run the workflow on that
 branch with `since` set to `origin/main`: only the changed lines of mutated
 files are tested, each target against its own threshold. Stryker mutates a
 node only when it lies wholly inside a changed range, so a one-line edit

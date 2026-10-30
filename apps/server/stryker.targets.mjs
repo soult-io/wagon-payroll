@@ -13,7 +13,8 @@
 // PAY-255: a full run is split into `shards` parallel CI jobs (a whole module
 // no longer fits one 6-hour job); the merge job scores the module from all
 // shard reports against `break`. Two env vars select what one run mutates:
-//   STRYKER_SHARD="2/5"   shard 2 of 5 of the module's files (whole files;
+//   STRYKER_SHARD="2/5"   shard 2 of 5 of the module (whole files, and large
+//                         files cut at top-level statements; see shardUnits;
 //                         no break here, the merge job judges the module)
 //   STRYKER_MUTATE="src/filings/service.ts:120-180,..."
 //                         only these files/line ranges (a PR's changed lines);
@@ -23,7 +24,13 @@
 import { readFileSync, globSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseMutateList, parseShard, planShards } from "../../scripts/mutation-shards.mjs";
+import ts from "typescript";
+import {
+  parseMutateList,
+  parseShard,
+  planShards,
+  splitFile,
+} from "../../scripts/mutation-shards.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -69,7 +76,8 @@ export const TARGETS = {
       "test/qa-seed-ein.test.ts",
     ],
     thresholds: { high: 80, low: 60, break: 65 },
-    shards: 5,
+    // The first full run (2026-10-30) measured ~23 h of mutant testing.
+    shards: 10,
   },
 };
 
@@ -129,11 +137,7 @@ export function selection(name, env) {
   }
   if (env.STRYKER_SHARD) {
     const { index, count } = parseShard(env.STRYKER_SHARD);
-    const units = mutateFiles(name).map((path) => {
-      const text = readFileSync(resolve(HERE, path), "utf8");
-      return { path, bytes: Buffer.byteLength(text), lines: text.split("\n").length };
-    });
-    const mutate = planShards(units, count)[index - 1];
+    const mutate = planShards(shardUnits(name, count), count)[index - 1];
     if (mutate.length === 0)
       throw new Error(`${name}: shard ${index}/${count} has no files; lower shards`);
     return {
@@ -147,10 +151,34 @@ export function selection(name, env) {
 }
 
 /**
- * The files shard `index` of `count` mutates (what selection() gives it).
- * The merge job keeps only these from that shard's report: Stryker's
- * incremental mode carries every mutant of a file it saw last time into the
- * report, even after the file moved to another shard.
+ * The module's units for `count` shards: whole files, with each file larger
+ * than a third of a shard's share cut at top-level statements (splitFile), so
+ * no single file outweighs a shard. Small units let the greedy plan balance.
+ * @param {keyof typeof TARGETS} name
+ * @param {number} count
+ */
+function shardUnits(name, count) {
+  const files = mutateFiles(name).map((path) => {
+    const text = readFileSync(resolve(HERE, path), "utf8");
+    const source = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true);
+    const line = (pos) => source.getLineAndCharacterOfPosition(pos).line + 1;
+    const statements = source.statements.map((s) => ({
+      startLine: line(s.getStart(source)),
+      endLine: line(s.getEnd()),
+      bytes: Buffer.byteLength(text.slice(s.getStart(source), s.getEnd())),
+    }));
+    return { path, bytes: Buffer.byteLength(text), lines: line(text.length), statements };
+  });
+  const total = files.reduce((sum, f) => sum + f.bytes, 0);
+  const maxBytes = Math.ceil(total / (3 * count));
+  return files.flatMap((f) => splitFile(f, maxBytes));
+}
+
+/**
+ * The mutate entries shard `index` of `count` runs (what selection() gives
+ * it). The merge job keeps only these from that shard's report: Stryker's
+ * incremental mode carries mutants it saw last time into the report, even
+ * after their file or range moved to another shard.
  * @param {keyof typeof TARGETS} name
  * @param {number} index
  * @param {number} count

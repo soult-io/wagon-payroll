@@ -13,7 +13,8 @@ name: mutation
 # importing a module matches no glob.
 #
 # PAY-255: a whole server module no longer fits one 6-hour job, so a full run
-# splits each into shards (parallel jobs over parts of the module), and a
+# splits each into shards (parallel jobs over parts of the module; large files
+# are cut at top-level statements, which drops no mutant), and a
 # merge job scores the module from every shard report against its break
 # threshold. A missing shard report (crash, timeout) fails the merge: no
 # partial score. scripts/mutation-plan.mjs builds the job list.
@@ -168,9 +169,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The shard plan parses source files with typescript.
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.17.0
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
 
       - name: Download shard reports
         uses: actions/download-artifact@v7
