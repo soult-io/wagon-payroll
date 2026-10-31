@@ -493,7 +493,13 @@ const worksheetLines = computed<WorksheetLine[]>(() => {
       money(w.line5cTax),
       `${F941.line5cTaxableMedicareWages.label} (${money(w.line5cTaxableMedicareWages)} × 2.9%)`,
     ),
-    row(F941.line5dAdditionalMedicare, money(w.line5dAdditionalMedicare)),
+    w.line5dAdditionalMedicareWages === undefined
+      ? row(F941.line5dAdditionalMedicare, money(w.line5dAdditionalMedicare))
+      : row(
+          F941.line5dAdditionalMedicare,
+          money(w.line5dAdditionalMedicare),
+          `${F941.line5dAdditionalMedicareWages.label} (${money(w.line5dAdditionalMedicareWages)} × 0.9%)`,
+        ),
     row(F941.line5eTotal, money(w.line5eTotal)),
     row(F941.line6TotalTaxes, money(w.line6TotalTaxes)),
     row(

@@ -245,6 +245,7 @@ describe("AcroForm placement — the worksheet, line for line", () => {
     expectMoney(doc, map.line5aTax, worksheet.line5aTax);
     expectMoney(doc, map.line5cWages, worksheet.line5cTaxableMedicareWages);
     expectMoney(doc, map.line5cTax, worksheet.line5cTax);
+    expectMoney(doc, map.line5dWages, worksheet.line5dAdditionalMedicareWages);
     expectMoney(doc, map.line5dTax, worksheet.line5dAdditionalMedicare);
     expectMoney(doc, map.line5eTotal, worksheet.line5eTotal);
     expectMoney(doc, map.line6TotalTaxes, worksheet.line6TotalTaxes);
@@ -260,7 +261,6 @@ describe("AcroForm placement — the worksheet, line for line", () => {
     for (const blank of [
       map.line5bTips,
       map.line5bTax,
-      map.line5dWages,
       map.line5f3121q,
       map.line8SickPay,
       map.line9TipsGtl,
@@ -320,6 +320,21 @@ describe("AcroForm placement — the worksheet, line for line", () => {
     expect(doc.getForm().getCheckBox(map.line16Monthly).isChecked()).toBe(false);
     expect(textOf(doc, map.line16Month1.dollars)).toBeNull();
     expect(textOf(doc, map.line16Total.dollars)).toBeNull();
+  });
+
+  it("fills line 5d column 1 when present and leaves it blank on pre-PAY-98 worksheets", async () => {
+    const map = f941FieldMap(2025);
+    const legacy = await prepareF941(syntheticInput());
+    expect(textOf(legacy, map.line5dWages.dollars)).toBeNull();
+    expect(textOf(legacy, map.line5dWages.cents)).toBeNull();
+    const current = await prepareF941(
+      syntheticInput({
+        line5dAdditionalMedicareWages: "15000.00",
+        line5dAdditionalMedicare: "135.00",
+      }),
+    );
+    expectMoney(current, map.line5dWages, "15000.00");
+    expectMoney(current, map.line5dTax, "135.00");
   });
 
   it("leaves the voucher blank when no balance is due", async () => {
