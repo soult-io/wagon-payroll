@@ -27,6 +27,7 @@ import {
   auditEvents,
   authUser,
   emailOutbox,
+  employees,
   payrollEntries,
   payrollRuns,
   taxAdjustments,
@@ -133,7 +134,10 @@ export interface Worksheet941 {
   form: "941";
   year: number;
   quarter: number;
-  /** Pay period including the 12th of the quarter's first month. */
+  /**
+   * Employees paid for the pay period including the 12th of the quarter's
+   * last month (Mar/Jun/Sep/Dec 12) — i941 line 1, PAY-254.
+   */
   line1Employees: number;
   line2Wages: string;
   line3FederalWithheld: string;
@@ -229,8 +233,39 @@ async function refreshWorksheetOrSkip(db: Db, row: TaxFilingRow): Promise<boolea
 }
 
 /**
+ * Form 941 line 1 (i941 03/2026, PAY-254): W-2 employees on payroll for the
+ * pay period including the 12th of the quarter's last month. Runs are picked
+ * by pay period, not pay date — a period covering Jun 12 that is paid in July
+ * still counts on Q2. Employees in nonpay status for that period (covering
+ * gross pay summing to 0 or less) are not counted.
+ */
+async function line1EmployeeCount(db: Db, year: number, quarter: number): Promise<number> {
+  const keyDay = `${year}-${String(quarter * 3).padStart(2, "0")}-12`; // Mar/Jun/Sep/Dec 12
+  const rows = await db
+    .select({ employeeId: payrollRuns.employeeId })
+    .from(payrollRuns)
+    .innerJoin(employees, eq(payrollRuns.employeeId, employees.id))
+    .innerJoin(
+      payrollEntries,
+      and(eq(payrollEntries.runId, payrollRuns.id), eq(payrollEntries.category, "gross_pay")),
+    )
+    .where(
+      and(
+        eq(payrollRuns.status, "issued"),
+        eq(employees.employmentType, "w2"),
+        sql`${payrollRuns.periodStart} <= ${keyDay}`,
+        sql`${payrollRuns.periodEnd} >= ${keyDay}`,
+      ),
+    )
+    .groupBy(payrollRuns.employeeId)
+    .having(sql`sum(${payrollEntries.amount}) > 0`);
+  return rows.length;
+}
+
+/**
  * Compute the quarterly 941 worksheet from issued-run entry snapshots with
- * pay dates in the quarter. fractionsOfCents defaults to the computed delta
+ * pay dates in the quarter (line 1 uses the pay-period basis instead; see
+ * line1EmployeeCount). fractionsOfCents defaults to the computed delta
  * (D4); pass an override to re-render the totals chain with an admin-set
  * value (the override lives on the tax_filings row).
  */
@@ -245,7 +280,7 @@ export async function computeWorksheet(
   const lastDay = quarterEnd(year, quarter);
 
   const runs = await db
-    .select()
+    .select({ id: payrollRuns.id })
     .from(payrollRuns)
     .where(
       and(
@@ -256,14 +291,7 @@ export async function computeWorksheet(
     );
   const runIds = runs.map((r) => r.id);
 
-  // Line 1 — employees paid in the pay period including the 12th of the
-  // quarter's first month.
-  const periodKeyDay = `${firstDay.slice(0, 8)}12`;
-  const line1 = new Set(
-    runs
-      .filter((r) => r.periodStart <= periodKeyDay && r.periodEnd >= periodKeyDay)
-      .map((r) => r.employeeId),
-  ).size;
+  const line1 = await line1EmployeeCount(db, year, quarter);
 
   const [gross, fed, ssEE, ssER, medEE, medER] = await Promise.all([
     sumCategory(db, runIds, "gross_pay"),

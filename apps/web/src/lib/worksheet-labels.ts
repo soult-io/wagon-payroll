@@ -33,7 +33,11 @@ export const WORKSHEET_941_FIELDS = {
   form: null,
   year: null,
   quarter: null,
-  line1Employees: field("1", "Employees paid (pay period incl. the 12th of month 1)", "count"),
+  line1Employees: field(
+    "1",
+    "Employees paid in the pay period including the 12th of the quarter's last month (Mar/Jun/Sep/Dec 12)",
+    "count",
+  ),
   line2Wages: field("2", "Wages, tips, and other compensation"),
   line3FederalWithheld: field("3", "Federal income tax withheld"),
   line5aTaxableSsWages: field("5a", "Taxable Social Security wages"),
