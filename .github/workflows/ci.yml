@@ -47,6 +47,10 @@ jobs:
       - name: Mutation test globs cover every importing suite
         run: pnpm check:mutation-globs
 
+      # PAY-255: the mutation workflow's shard planning and module scoring.
+      - name: Mutation shard helpers
+        run: pnpm test:mutation-shards
+
       # PAY-112: a workflow with any trigger other than schedule /
       # workflow_dispatch runs only on GitHub-hosted labels — the repo is
       # public and a fork PR must never reach the LAN (qa-e2e) runner.

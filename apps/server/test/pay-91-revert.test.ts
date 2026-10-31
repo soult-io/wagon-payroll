@@ -8,11 +8,12 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { company, employees, seedDatabase, type SeedDb } from "@payroll/db";
 import { syncDeposits } from "../src/deposits/service.js";
-import { createTestApp, type TestContext } from "./helpers.js";
+import { createTestApp, type TestContext, workspaceRoot } from "./helpers.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+// From the workspace root, so it also resolves inside a Stryker sandbox.
 const REVERT = readFileSync(
-  resolve(HERE, "../../../packages/db/scripts/pay-91-revert.sql"),
+  resolve(workspaceRoot(HERE), "packages/db/scripts/pay-91-revert.sql"),
   "utf8",
 );
 

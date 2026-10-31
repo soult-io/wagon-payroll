@@ -76,6 +76,7 @@ import { drainOutbox } from "../src/notify/outbox.js";
 import { encryptField } from "../src/crypto/field-encryption.js";
 import { cents, monthPeriod, gen, runRow, snap } from "./pay-date-helpers.js";
 import { oracleRun2026, oracleYear } from "./pay-193-oracle.js";
+import { workspaceRoot } from "./helpers.js";
 import {
   approve,
   audits,
@@ -818,7 +819,8 @@ describe("LI-14 latePayment on a run that is not late is ignored", () => {
 describe("LI-15 past_pay_date_other_year is gone", () => {
   it("no match in apps/server/src or apps/web/src", () => {
     const here = dirname(fileURLToPath(import.meta.url));
-    const roots = [resolve(here, "../src"), resolve(here, "../../web/src")];
+    // apps/web is not copied into a Stryker sandbox; find it from the workspace root.
+    const roots = [resolve(here, "../src"), resolve(workspaceRoot(here), "apps/web/src")];
     const hits: string[] = [];
     const walk = (dir: string) => {
       for (const name of readdirSync(dir)) {
