@@ -207,18 +207,10 @@ async function quarterFicaWagesCents(
   year: number,
   firstDay: string,
   lastDay: string,
-): Promise<{
-  ssWagesCents: number;
-  medWagesCents: number;
-  addlMedWagesCents: number;
-  addlMedRate5: number;
-}> {
-  const config = await federalConfigRow(db, year);
-  const addlMedRate5 = parseRate5(config.medicareAdditionalRate);
+): Promise<{ ssWagesCents: number; medWagesCents: number; addlMedWagesCents: number }> {
   const quarterGross = await grossCentsByEmployee(db, firstDay, addDays(lastDay, 1));
-  if (quarterGross.size === 0) {
-    return { ssWagesCents: 0, medWagesCents: 0, addlMedWagesCents: 0, addlMedRate5 };
-  }
+  if (quarterGross.size === 0) return { ssWagesCents: 0, medWagesCents: 0, addlMedWagesCents: 0 };
+  const config = await federalConfigRow(db, year);
   const capCents = sumCents(config.socialSecurityWageCap);
   const thresholdCents = sumCents(config.medicareAdditionalThreshold);
   const priorGross = await grossCentsByEmployee(db, `${year}-01-01`, firstDay);
@@ -232,7 +224,7 @@ async function quarterFicaWagesCents(
     addlMedWagesCents +=
       Math.max(0, prior + gross - thresholdCents) - Math.max(0, prior - thresholdCents);
   }
-  return { ssWagesCents, medWagesCents, addlMedWagesCents, addlMedRate5 };
+  return { ssWagesCents, medWagesCents, addlMedWagesCents };
 }
 
 /**
@@ -331,13 +323,25 @@ export async function computeWorksheet(
   // (fractions of cents), never in the wages.
   const ssTotal = round2(ssEE + ssER);
   const medTotal = round2(medEE + medER);
-  const { ssWagesCents, medWagesCents, addlMedWagesCents, addlMedRate5 } =
-    await quarterFicaWagesCents(db, year, firstDay, lastDay);
+  const { ssWagesCents, medWagesCents, addlMedWagesCents } = await quarterFicaWagesCents(
+    db,
+    year,
+    firstDay,
+    lastDay,
+  );
   const ssWages = ssWagesCents / 100;
   const medWages = medWagesCents / 100;
   const line5aTax = Math.round((ssWagesCents * SS_COMBINED_PER_MILLE) / 1000) / 100;
   const line5cTax = Math.round((medWagesCents * MEDICARE_COMBINED_PER_MILLE) / 1000) / 100;
-  const line5d = applyRate(addlMedWagesCents, addlMedRate5) / 100;
+  // No Additional Medicare wages → no config read (a quarter with no runs
+  // must not fail on a missing tax_config row).
+  const line5d =
+    addlMedWagesCents === 0
+      ? 0
+      : applyRate(
+          addlMedWagesCents,
+          parseRate5((await federalConfigRow(db, year)).medicareAdditionalRate),
+        ) / 100;
   const line5e = round2(line5aTax + line5cTax + line5d);
   const line6 = round2(fed + line5e);
 

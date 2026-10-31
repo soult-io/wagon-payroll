@@ -135,7 +135,8 @@ export async function prepareF941(input: F941Input): Promise<PDFDocument> {
   form.getCheckBox(map.quarterCheckboxes[input.quarter - 1]!).check();
 
   // Part 1 — the worksheet, line for line. Lines the worksheet does not
-  // carry stay blank: 4 (wages ARE subject), 5b (tips), 5d col 1, 5f, 8, 9.
+  // carry stay blank: 4 (wages ARE subject), 5b (tips), 5f, 8, 9; 5d col 1 on
+  // worksheets saved before PAY-98.
   fillText(form, map.line1Employees, String(input.line1Employees));
   fillMoney(form, map.line2Wages, input.line2Wages);
   fillMoney(form, map.line3FederalWithheld, input.line3FederalWithheld);

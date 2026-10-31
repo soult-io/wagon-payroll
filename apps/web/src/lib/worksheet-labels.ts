@@ -44,7 +44,10 @@ export const WORKSHEET_941_FIELDS = {
   line5aTax: field("5a", "Social Security tax"),
   line5cTaxableMedicareWages: field("5c", "Taxable Medicare wages"),
   line5cTax: field("5c", "Medicare tax"),
-  line5dAdditionalMedicareWages: field("5d", "Wages subject to Additional Medicare Tax"),
+  line5dAdditionalMedicareWages: field(
+    "5d",
+    "Taxable wages subject to Additional Medicare Tax withholding",
+  ),
   line5dAdditionalMedicare: field("5d", "Additional Medicare Tax"),
   line5eTotal: field("5e", "Total Social Security and Medicare taxes"),
   line6TotalTaxes: field("6", "Total taxes before adjustments (lines 3 + 5e + 5f)"),
