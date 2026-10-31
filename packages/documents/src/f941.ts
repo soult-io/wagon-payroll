@@ -46,6 +46,8 @@ export interface F941Input {
   line5aTax: string;
   line5cTaxableMedicareWages: string;
   line5cTax: string;
+  /** Line 5d column 1; absent on worksheets saved before PAY-98 (left blank). */
+  line5dAdditionalMedicareWages?: string;
   line5dAdditionalMedicare: string;
   line5eTotal: string;
   line6TotalTaxes: string;
@@ -133,7 +135,8 @@ export async function prepareF941(input: F941Input): Promise<PDFDocument> {
   form.getCheckBox(map.quarterCheckboxes[input.quarter - 1]!).check();
 
   // Part 1 — the worksheet, line for line. Lines the worksheet does not
-  // carry stay blank: 4 (wages ARE subject), 5b (tips), 5d col 1, 5f, 8, 9.
+  // carry stay blank: 4 (wages ARE subject), 5b (tips), 5f, 8, 9; 5d col 1 on
+  // worksheets saved before PAY-98.
   fillText(form, map.line1Employees, String(input.line1Employees));
   fillMoney(form, map.line2Wages, input.line2Wages);
   fillMoney(form, map.line3FederalWithheld, input.line3FederalWithheld);
@@ -141,6 +144,7 @@ export async function prepareF941(input: F941Input): Promise<PDFDocument> {
   fillMoney(form, map.line5aTax, input.line5aTax);
   fillMoney(form, map.line5cWages, input.line5cTaxableMedicareWages);
   fillMoney(form, map.line5cTax, input.line5cTax);
+  fillMoney(form, map.line5dWages, input.line5dAdditionalMedicareWages ?? null);
   fillMoney(form, map.line5dTax, input.line5dAdditionalMedicare);
   fillMoney(form, map.line5eTotal, input.line5eTotal);
   fillMoney(form, map.line6TotalTaxes, input.line6TotalTaxes);
