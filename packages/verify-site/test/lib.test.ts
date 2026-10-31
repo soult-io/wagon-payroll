@@ -617,16 +617,19 @@ const NIGHTLY_RUN = nightly({
   ],
 });
 
+/** Two hours after CI_RUN: ci is fresh, so only the nightly can be quiet. */
+const SPEC19_NOW = new Date("2026-09-24T14:00:00Z");
+
 describe("sourceViews (spec 19)", () => {
   it("represents every expected source, even one that has never reported", () => {
-    const views = sourceViews([CI_RUN], new Date("2026-09-24T14:00:00Z"));
+    const views = sourceViews([CI_RUN], SPEC19_NOW);
     expect(views.map((v) => v.source)).toEqual(["ci", "nightly"]);
     expect(views.find((v) => v.source === "nightly")?.latest).toBeUndefined();
   });
 
   it("picks the newest summary per source, not the newest overall", () => {
     const older = summary({ generatedAt: "2026-09-20T12:00:00.000Z" });
-    const views = sourceViews([older, CI_RUN, NIGHTLY_RUN], new Date("2026-09-24T14:00:00Z"));
+    const views = sourceViews([older, CI_RUN, NIGHTLY_RUN], SPEC19_NOW);
     expect(views.find((v) => v.source === "ci")?.latest?.generatedAt).toBe(CI_RUN.generatedAt);
     expect(views.find((v) => v.source === "nightly")?.latest?.generatedAt).toBe(
       NIGHTLY_RUN.generatedAt,
@@ -652,23 +655,24 @@ describe("worstOutcome (spec 19)", () => {
 
 describe("renderPage per-source (spec 19)", () => {
   it("keeps the ci suites and counts when the NEWEST summary is a nightly", () => {
-    const html = renderPage([CI_RUN, NIGHTLY_RUN]);
+    const html = renderPage([CI_RUN, NIGHTLY_RUN], { now: SPEC19_NOW });
     expect(html).toContain("Engine unit tests");
     expect(html).toContain("Server integration tests");
     expect(html).toMatch(/560/); // the ci pass count survives
   });
 
   it("takes the worst outcome across sources for the headline", () => {
-    expect(renderPage([CI_RUN, NIGHTLY_RUN])).toContain("FAILED");
+    expect(renderPage([CI_RUN, NIGHTLY_RUN], { now: SPEC19_NOW })).toContain("FAILED");
   });
 
   it("says so, loudly, when an expected source has never reported", () => {
-    const html = renderPage([CI_RUN]);
+    const html = renderPage([CI_RUN], { now: SPEC19_NOW });
     expect(html).toContain("NEVER REPORTED");
     // Headline only: the ci source card SHOULD still show its own green badge.
     const headline = html.slice(0, html.indexOf("<h2>Sources</h2>"));
     expect(headline).not.toMatch(/badge pass">PASSED</);
-    expect(headline).toContain("SOURCE QUIET");
+    // Only the never-reported nightly; ci reported two hours earlier.
+    expect(headline).toContain("1 SOURCE QUIET");
   });
 
   it("reports a quiet nightly with its age and refuses a plain green badge", () => {
@@ -687,7 +691,7 @@ describe("renderPage per-source (spec 19)", () => {
   });
 
   it("shows a nightly-only journey's real result rather than NEVER RUN", () => {
-    const html = renderPage([CI_RUN, NIGHTLY_RUN]);
+    const html = renderPage([CI_RUN, NIGHTLY_RUN], { now: SPEC19_NOW });
     expect(html).toContain("tax deposits (PAY-9)");
     // It never ran in ci, but the nightly executed it — so it is not never-run.
     const card = html.slice(html.indexOf("tax deposits (PAY-9)") - 400);
@@ -704,7 +708,7 @@ describe("renderPage per-source (spec 19)", () => {
         ]),
       ],
     });
-    expect(renderPage([withGhost])).toContain("NEVER RUN");
+    expect(renderPage([withGhost], { now: SPEC19_NOW })).toContain("NEVER RUN");
   });
 });
 
