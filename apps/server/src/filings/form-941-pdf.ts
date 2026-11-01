@@ -53,6 +53,7 @@ export async function f941PdfInputFor(deps: Deps, filingId: number): Promise<F94
     line5aTax: w.line5aTax,
     line5cTaxableMedicareWages: w.line5cTaxableMedicareWages,
     line5cTax: w.line5cTax,
+    line5dAdditionalMedicareWages: w.line5dAdditionalMedicareWages,
     line5dAdditionalMedicare: w.line5dAdditionalMedicare,
     line5eTotal: w.line5eTotal,
     line6TotalTaxes: w.line6TotalTaxes,

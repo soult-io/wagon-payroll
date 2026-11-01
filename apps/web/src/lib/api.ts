@@ -1353,6 +1353,8 @@ export interface Worksheet941 {
   line5aTax: string;
   line5cTaxableMedicareWages: string;
   line5cTax: string;
+  /** Absent on worksheets saved before PAY-98. */
+  line5dAdditionalMedicareWages?: string;
   line5dAdditionalMedicare: string;
   line5eTotal: string;
   line6TotalTaxes: string;

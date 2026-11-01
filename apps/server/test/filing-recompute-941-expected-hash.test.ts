@@ -88,6 +88,7 @@ function expectedQ2(over: Partial<Worksheet941> = {}): Worksheet941 {
     line5aTax: "2407.51",
     line5cTaxableMedicareWages: "19415.40",
     line5cTax: "563.05",
+    line5dAdditionalMedicareWages: "0.00", // both employees far under $200,000 YTD
     line5dAdditionalMedicare: "0.00",
     line5eTotal: "2970.56",
     line6TotalTaxes: "4191.56",

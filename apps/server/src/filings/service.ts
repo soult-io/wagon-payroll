@@ -51,7 +51,7 @@ import {
   yearW2BlockCodes,
 } from "./annual.js";
 import { closingFilings } from "./closing-filings.js";
-import { AnnualFiguresDefectError, sumCents } from "./w2-boxes.js";
+import { AnnualFiguresDefectError, applyRate, parseRate5, sumCents } from "./w2-boxes.js";
 import {
   addDays,
   DATE_RE,
@@ -145,6 +145,9 @@ export interface Worksheet941 {
   line5aTax: string;
   line5cTaxableMedicareWages: string;
   line5cTax: string;
+  /** Line 5d column 1: Medicare wages paid over the $200,000 threshold (PAY-98). */
+  line5dAdditionalMedicareWages: string;
+  /** Line 5d column 2: column 1 × 0.9%, the employee-only tax required to be withheld. */
   line5dAdditionalMedicare: string;
   line5eTotal: string;
   line6TotalTaxes: string;
@@ -191,28 +194,37 @@ async function grossCentsByEmployee(
 }
 
 /**
- * Lines 5a/5c column 1 in integer cents. Medicare wages = quarter gross.
+ * Lines 5a/5c/5d column 1 in integer cents. Medicare wages = quarter gross.
  * SS wages = per employee, quarter gross limited to what remains of the
  * year's wage base after issued runs paid earlier in the calendar year.
+ * Additional Medicare wages (line 5d, i941 03/2026; Pub 15 §9) = per
+ * employee, the part of the quarter's Medicare wages that takes calendar-
+ * year-to-date pay over the year's threshold (wages at exactly the
+ * threshold are not "in excess").
  */
 async function quarterFicaWagesCents(
   db: Db,
   year: number,
   firstDay: string,
   lastDay: string,
-): Promise<{ ssWagesCents: number; medWagesCents: number }> {
+): Promise<{ ssWagesCents: number; medWagesCents: number; addlMedWagesCents: number }> {
   const quarterGross = await grossCentsByEmployee(db, firstDay, addDays(lastDay, 1));
-  if (quarterGross.size === 0) return { ssWagesCents: 0, medWagesCents: 0 };
-  const capCents = sumCents((await federalConfigRow(db, year)).socialSecurityWageCap);
+  if (quarterGross.size === 0) return { ssWagesCents: 0, medWagesCents: 0, addlMedWagesCents: 0 };
+  const config = await federalConfigRow(db, year);
+  const capCents = sumCents(config.socialSecurityWageCap);
+  const thresholdCents = sumCents(config.medicareAdditionalThreshold);
   const priorGross = await grossCentsByEmployee(db, `${year}-01-01`, firstDay);
   let ssWagesCents = 0;
   let medWagesCents = 0;
+  let addlMedWagesCents = 0;
   for (const [emp, gross] of quarterGross) {
+    const prior = priorGross.get(emp) ?? 0;
     medWagesCents += gross;
-    const remaining = Math.max(0, capCents - (priorGross.get(emp) ?? 0));
-    ssWagesCents += Math.min(gross, remaining);
+    ssWagesCents += Math.min(gross, Math.max(0, capCents - prior));
+    addlMedWagesCents +=
+      Math.max(0, prior + gross - thresholdCents) - Math.max(0, prior - thresholdCents);
   }
-  return { ssWagesCents, medWagesCents };
+  return { ssWagesCents, medWagesCents, addlMedWagesCents };
 }
 
 /**
@@ -302,20 +314,34 @@ export async function computeWorksheet(
     sumCategory(db, runIds, "employer_medicare"),
   ]);
 
-  // Lines 5a/5c — column 1 is the taxable wages actually paid (2026 Form 941
-  // instructions, lines 5a/5c): Medicare wages = gross, uncapped; SS wages =
-  // gross capped per employee at the year's wage base by year-to-date pay.
-  // Column 2 = column 1 × the combined rate. Per-paycheck rounding of the tax
-  // withheld vs that product lands in line 7 (fractions of cents), never in
-  // the wages.
+  // Lines 5a/5c/5d — column 1 is the taxable wages actually paid (2026 Form
+  // 941 instructions, lines 5a-5d): Medicare wages = gross, uncapped; SS
+  // wages = gross capped per employee at the year's wage base by year-to-date
+  // pay; Additional Medicare wages = the part over the year's threshold.
+  // Column 2 = column 1 × the combined rate (5d: 0.9%, employee only). Per-
+  // paycheck rounding of the tax withheld vs that product lands in line 7
+  // (fractions of cents), never in the wages.
   const ssTotal = round2(ssEE + ssER);
   const medTotal = round2(medEE + medER);
-  const { ssWagesCents, medWagesCents } = await quarterFicaWagesCents(db, year, firstDay, lastDay);
+  const { ssWagesCents, medWagesCents, addlMedWagesCents } = await quarterFicaWagesCents(
+    db,
+    year,
+    firstDay,
+    lastDay,
+  );
   const ssWages = ssWagesCents / 100;
   const medWages = medWagesCents / 100;
   const line5aTax = Math.round((ssWagesCents * SS_COMBINED_PER_MILLE) / 1000) / 100;
   const line5cTax = Math.round((medWagesCents * MEDICARE_COMBINED_PER_MILLE) / 1000) / 100;
-  const line5d = 0; // Additional Medicare — zero at current salaries
+  // No Additional Medicare wages → no config read (a quarter with no runs
+  // must not fail on a missing tax_config row).
+  const line5d =
+    addlMedWagesCents === 0
+      ? 0
+      : applyRate(
+          addlMedWagesCents,
+          parseRate5((await federalConfigRow(db, year)).medicareAdditionalRate),
+        ) / 100;
   const line5e = round2(line5aTax + line5cTax + line5d);
   const line6 = round2(fed + line5e);
 
@@ -378,6 +404,7 @@ export async function computeWorksheet(
     line5aTax: toMoney(line5aTax),
     line5cTaxableMedicareWages: toMoney(medWages),
     line5cTax: toMoney(line5cTax),
+    line5dAdditionalMedicareWages: toMoney(addlMedWagesCents / 100),
     line5dAdditionalMedicare: toMoney(line5d),
     line5eTotal: toMoney(line5e),
     line6TotalTaxes: toMoney(line6),

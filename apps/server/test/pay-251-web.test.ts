@@ -586,7 +586,7 @@ describe("PAY-251 review additions", () => {
       l15: "Line 15a — Overpayment",
       l6: "Line 6 — Total taxes before adjustments (lines 3 + 5e + 5f)",
       l13: "Line 13 — Total deposits for the quarter (incl. overpayments applied)",
-      l5d: "Line 5d — Additional Medicare Tax withheld",
+      l5d: "Line 5d — Additional Medicare Tax",
       frozen: "FUTA tax recorded in issued pay runs",
       rounding: "Rounding difference (pay runs vs. line 12)",
     });
