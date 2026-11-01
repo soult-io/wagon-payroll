@@ -82,14 +82,21 @@ export async function inviteUser(
   }
 
   const ctx = await auth.$context;
-  const user = await ctx.internalAdapter.createUser({
-    name: input.name.trim(),
-    email,
-    emailVerified: true, // email ownership is proven by acting on the invite link
-    role: input.role,
-    banned: true,
-    banReason: "pending_enrollment",
-  });
+  const user = await ctx.internalAdapter.createUser(
+    {
+      name: input.name.trim(),
+      email,
+      emailVerified: true, // email ownership is proven by acting on the invite link
+      role: input.role,
+      banned: true,
+      banReason: "pending_enrollment",
+    },
+    // better-auth 1.7 provisioning source, the same one the admin plugin's
+    // createUser passes. Only read when user.validateUserInfo is configured
+    // (it is not); that gate would also need an endpoint context, which
+    // inviteUser does not run in.
+    { method: "admin" },
+  );
 
   await revokeOutstandingSetupTokens(db, user.id);
   const { token } = await createSetupToken(db, user.id, "invite");
