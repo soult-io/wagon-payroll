@@ -82,14 +82,19 @@ export async function inviteUser(
   }
 
   const ctx = await auth.$context;
-  const user = await ctx.internalAdapter.createUser({
-    name: input.name.trim(),
-    email,
-    emailVerified: true, // email ownership is proven by acting on the invite link
-    role: input.role,
-    banned: true,
-    banReason: "pending_enrollment",
-  });
+  const user = await ctx.internalAdapter.createUser(
+    {
+      name: input.name.trim(),
+      email,
+      emailVerified: true, // email ownership is proven by acting on the invite link
+      role: input.role,
+      banned: true,
+      banReason: "pending_enrollment",
+    },
+    // better-auth 1.7: provisioning source for the validateUserInfo gate;
+    // invites are admin-provisioned, same as the admin plugin's createUser.
+    { method: "admin" },
+  );
 
   await revokeOutstandingSetupTokens(db, user.id);
   const { token } = await createSetupToken(db, user.id, "invite");

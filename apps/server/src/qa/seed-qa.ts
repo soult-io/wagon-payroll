@@ -183,13 +183,16 @@ async function ensureQaUser(deps: QaDeps, user: QaUser): Promise<{ id: string; c
   if (existing[0]) return { id: existing[0].id, created: false };
 
   const ctx = await auth.$context;
-  const created = await ctx.internalAdapter.createUser({
-    name: user.name,
-    email: user.email,
-    emailVerified: true,
-    role: user.role,
-    banned: false,
-  });
+  const created = await ctx.internalAdapter.createUser(
+    {
+      name: user.name,
+      email: user.email,
+      emailVerified: true,
+      role: user.role,
+      banned: false,
+    },
+    { method: "admin" },
+  );
   const hashed = await hashPassword(user.password);
   await ctx.internalAdapter.createAccount({
     userId: created.id,
