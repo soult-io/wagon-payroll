@@ -91,8 +91,10 @@ export async function inviteUser(
       banned: true,
       banReason: "pending_enrollment",
     },
-    // better-auth 1.7: provisioning source for the validateUserInfo gate;
-    // invites are admin-provisioned, same as the admin plugin's createUser.
+    // better-auth 1.7 provisioning source, the same one the admin plugin's
+    // createUser passes. Only read when user.validateUserInfo is configured
+    // (it is not); that gate would also need an endpoint context, which
+    // inviteUser does not run in.
     { method: "admin" },
   );
 
