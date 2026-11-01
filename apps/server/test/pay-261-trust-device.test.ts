@@ -114,7 +114,8 @@ describe("PAY-261 a valid trust_device cookie does not skip TOTP", () => {
     const res = await passwordStep(email, freshIp(), `payroll.trust_device=${trust}`);
     expect(res.statusCode).toBe(200);
     expect((res.json() as { twoFactorRedirect?: boolean }).twoFactorRedirect).toBe(true);
-    expect(cookieValue(res.headers["set-cookie"], "payroll.session_token")).toBeNull();
+    // twoFactor deletes the password-only session and expires its cookie (empty value).
+    expect(cookieValue(res.headers["set-cookie"], "payroll.session_token") ?? "").toBe("");
     expect(cookieValue(res.headers["set-cookie"], "payroll.two_factor")).toBeTruthy();
   });
 
