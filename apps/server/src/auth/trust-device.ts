@@ -18,7 +18,9 @@ export function withoutTrustDeviceCookie(cookie: string | undefined): string | u
   const kept = cookie
     .split(";")
     .map((part) => part.trim())
-    .filter((part) => part.length > 0 && !TRUST_DEVICE_COOKIE.test(part.split("=")[0]!.trim()));
+    .filter(
+      (part) => part.length > 0 && !TRUST_DEVICE_COOKIE.test((part.split("=")[0] ?? "").trim()),
+    );
   return kept.length > 0 ? kept.join("; ") : undefined;
 }
 
