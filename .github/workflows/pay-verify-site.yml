@@ -181,7 +181,7 @@ jobs:
         # qa-e2e runner asleep) or an expired artifact legitimately has none.
         # The Ingest step warns and rebuilds the site from existing history.
         continue-on-error: true
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: ${{ github.event.workflow_run.name == 'e2e-nightly' && 'pay-verify-summary-nightly' || 'pay-verify-summary' }}
           run-id: ${{ github.event.workflow_run.id }}
@@ -194,7 +194,7 @@ jobs:
       - name: Download journey evidence
         if: github.event_name == 'workflow_run' && github.event.workflow_run.name == 'ci'
         continue-on-error: true
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: pay-verify-evidence
           run-id: ${{ github.event.workflow_run.id }}
@@ -206,7 +206,7 @@ jobs:
       - name: Download walkthrough
         if: github.event_name == 'workflow_run' && github.event.workflow_run.name == 'walkthrough'
         continue-on-error: true
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: pay-verify-walkthrough
           run-id: ${{ github.event.workflow_run.id }}
