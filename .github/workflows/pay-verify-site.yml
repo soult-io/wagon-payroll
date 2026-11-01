@@ -121,7 +121,7 @@ jobs:
       # commit's evidence.
       - name: Resolve triggering run
         if: github.event_name == 'workflow_run'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const t = context.payload.workflow_run;
@@ -508,7 +508,7 @@ jobs:
       - name: Check whether this commit is main's tip
         id: tip
         if: steps.wt.outputs.publish == 'true'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const { data } = await github.rest.repos.getBranch({
