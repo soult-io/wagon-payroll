@@ -19,6 +19,7 @@ import type { Auth } from "../auth/auth.js";
 import type { AppConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { formerEmployeeAccess } from "./former-employee.js";
+import { withoutTrustDevice } from "./trust-device.js";
 import { type SessionUser, toHeaders } from "../plugins/guards.js";
 import { localDate } from "../payroll/run-dates.js";
 
@@ -43,40 +44,9 @@ function authPathKey(req: FastifyRequest): string {
   return `${req.method} ${path}`;
 }
 
-/** better-auth's two-factor "trust device" cookie, with or without the cookie prefix / __Secure-. */
-const TRUST_DEVICE_COOKIE = /^(?:__Secure-|__Host-)?(?:[^=]+\.)?trust_device$/;
-
-/**
- * PAY-261: the Cookie header without any trust_device cookie (undefined
- * when nothing is left). With it, twoFactor keeps a password-only sign-in
- * session for 30 days, so it never reaches Better Auth.
- */
-export function withoutTrustDeviceCookie(cookie: string | undefined): string | undefined {
-  if (cookie === undefined) return undefined;
-  const kept = cookie
-    .split(";")
-    .map((part) => part.trim())
-    .filter((part) => part.length > 0 && !TRUST_DEVICE_COOKIE.test(part.split("=")[0]!.trim()));
-  return kept.length > 0 ? kept.join("; ") : undefined;
-}
-
-/** PAY-261: drop `trustDevice` so verify-totp never mints a trust_device cookie. */
-function withoutTrustDevice(body: unknown): unknown {
-  if (body === null || typeof body !== "object" || !("trustDevice" in body)) return body;
-  const { trustDevice: _dropped, ...rest } = body as Record<string, unknown>;
-  return rest;
-}
-
 function toFetchRequest(req: FastifyRequest, config: AppConfig): Request {
   const url = new URL(req.raw.url ?? "/", config.baseUrl);
-  const headers = new Headers();
-  for (const [key, value] of Object.entries(req.headers)) {
-    if (typeof value === "string") headers.set(key, value);
-    else if (Array.isArray(value)) headers.set(key, value.join(","));
-  }
-  const cookie = withoutTrustDeviceCookie(headers.get("cookie") ?? undefined);
-  if (cookie === undefined) headers.delete("cookie");
-  else headers.set("cookie", cookie);
+  const headers = toHeaders(req);
   const init: RequestInit = { method: req.method, headers };
   if (req.method !== "GET" && req.method !== "HEAD" && req.body !== undefined) {
     init.body = JSON.stringify(withoutTrustDevice(req.body));

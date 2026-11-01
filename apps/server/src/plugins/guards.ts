@@ -25,6 +25,7 @@ import type { AppConfig } from "../config.js";
 import { writeAuthEvent, AUTH_EVENT, requestContext } from "../auth/audit.js";
 import { type FormerEmployeeAccess, formerEmployeeAccess } from "../auth/former-employee.js";
 import { localDate } from "../payroll/run-dates.js";
+import { withoutTrustDeviceCookie } from "../auth/trust-device.js";
 
 type Employee = typeof employees.$inferSelect;
 
@@ -69,12 +70,16 @@ declare module "fastify" {
   }
 }
 
+/** Request headers for Better Auth, without any trust_device cookie (PAY-261). */
 function toHeaders(req: FastifyRequest): Headers {
   const headers = new Headers();
   for (const [key, value] of Object.entries(req.headers)) {
     if (typeof value === "string") headers.set(key, value);
     else if (Array.isArray(value)) headers.set(key, value.join(","));
   }
+  const cookie = withoutTrustDeviceCookie(headers.get("cookie") ?? undefined);
+  if (cookie === undefined) headers.delete("cookie");
+  else headers.set("cookie", cookie);
   return headers;
 }
 

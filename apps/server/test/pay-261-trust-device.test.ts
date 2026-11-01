@@ -28,7 +28,7 @@ import {
   TEST_PASSWORD,
   userIdByEmail,
 } from "./flow-helpers.js";
-import { withoutTrustDeviceCookie } from "../src/auth/fastify-mount.js";
+import { withoutTrustDeviceCookie } from "../src/auth/trust-device.js";
 
 let t: TestContext;
 beforeAll(async () => {
@@ -119,11 +119,41 @@ describe("PAY-261 a valid trust_device cookie does not skip TOTP", () => {
     expect(cookieValue(res.headers["set-cookie"], "payroll.two_factor")).toBeTruthy();
   });
 
-  it("the TOTP step after it still completes the sign-in (regression)", async () => {
+  it("with the trust cookie still sent, the TOTP step completes the sign-in", async () => {
     const { email } = await inviteAndOnboard(t, { email: "pay261-c@example.com" });
-    await mintTrustCookie(email);
+    const trust = await mintTrustCookie(email);
+    const ip = freshIp();
+    const signIn = await passwordStep(email, ip, `payroll.trust_device=${trust}`);
+    const challenge = cookieValue(signIn.headers["set-cookie"], "payroll.two_factor");
+    expect(challenge).toBeTruthy();
+    const code = await currentTotp(t, await userIdByEmail(t, email));
+    const verify = await t.app.inject({
+      method: "POST",
+      url: "/api/auth/two-factor/verify-totp",
+      headers: {
+        ...ipHeaders(ip),
+        cookie: `payroll.trust_device=${trust}; payroll.two_factor=${challenge}`,
+      },
+      remoteAddress: ip,
+      payload: { code },
+    });
+    expect(verify.statusCode).toBe(200);
+    expect(cookieValue(verify.headers["set-cookie"], "payroll.session_token")).toBeTruthy();
+  });
+
+  it("a session cookie sent next to a trust cookie still authenticates (regression)", async () => {
+    const { email } = await inviteAndOnboard(t, { email: "pay261-d@example.com" });
+    const trust = await mintTrustCookie(email);
     const { sessionCookie } = await login(t, email, TEST_PASSWORD, { remoteAddress: freshIp() });
-    expect(sessionCookie).toBeTruthy();
+    const me = await t.app.inject({
+      method: "GET",
+      url: "/api/me",
+      headers: {
+        ...ORIGIN,
+        cookie: `payroll.trust_device=${trust}; payroll.session_token=${sessionCookie}`,
+      },
+    });
+    expect(me.statusCode).toBe(200);
   });
 });
 
