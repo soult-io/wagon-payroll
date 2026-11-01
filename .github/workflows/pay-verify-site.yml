@@ -550,6 +550,11 @@ jobs:
           # refusing a key another job holds) must not fail a publish — the
           # image is already built; only the next build's speed is at stake.
           cache-to: type=gha,mode=max,ignore-error=true
+          # Never reuse the runtime stage from cache: its `apk upgrade` layer is
+          # keyed on the base digest + command text, so a cached copy would keep
+          # missing Alpine fixes published after it was built (PAY-257). The
+          # stage is one apk run and two COPYs.
+          no-cache-filters: runtime
 
       # Image vulnerability gate: fail on fixed CRITICAL findings (same posture
       # as the app image). nginx-unprivileged:alpine base, static content only.

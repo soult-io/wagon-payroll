@@ -15,6 +15,14 @@
 # 1.30 is the maintained stable line; 1.27 stopped receiving rebuilds in
 # 2025-06 (Alpine 3.21.3) and its OpenSSL failed the Trivy gate (CVE-2026-31789).
 FROM nginxinc/nginx-unprivileged:1.30-alpine AS runtime
+# Upstream rebuilds the tag only every few weeks, so a fixed Alpine CVE can sit
+# in the base for days (brotli-libs CVE-2026-111497, fixed in 1.2.1-r0, failed
+# the Trivy gate on 2026-10-31). Take Alpine's security fixes at build time;
+# Trivy still scans the exact image before it is pushed. Back to the base
+# image's non-root user (uid 101) afterwards.
+USER root
+RUN apk upgrade --no-cache
+USER 101
 COPY packages/verify-site/nginx.conf /etc/nginx/conf.d/default.conf
 # dist/site is the generated document set only (index.html + report/); the
 # compiled generator JS lives at dist/ root and is deliberately not served.
