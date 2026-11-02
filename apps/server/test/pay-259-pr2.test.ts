@@ -604,13 +604,12 @@ describe("web: the SPA treats 403 mfa_required like an expired session", () => {
 
   it("api.ts: both uploadAttachment raw-fetch sites route through notifySessionRefusal (no bare 401 check)", () => {
     const api = webSrc("apps/web/src/lib/api.ts");
-    for (const path of ["/api/admin/tax-deposits", "/api/admin/tax-filings"]) {
-      expect(api, `${path} upload routes through notifySessionRefusal`).toMatch(
-        new RegExp(
-          `notifySessionRefusal\\(\\s*res\\.status\\s*,\\s*["']${path.replace(/\//g, "\\/")}["']`,
-        ),
-      );
-    }
+    expect(api, "tax-deposits upload routes through notifySessionRefusal").toMatch(
+      /notifySessionRefusal\(\s*res\.status\s*,\s*["']\/api\/admin\/tax-deposits["']/,
+    );
+    expect(api, "tax-filings upload routes through notifySessionRefusal").toMatch(
+      /notifySessionRefusal\(\s*res\.status\s*,\s*["']\/api\/admin\/tax-filings["']/,
+    );
     expect(api).not.toMatch(/res\.status\s*===\s*401\s*\)\s*notifySessionExpired\(\)/);
     // Every raw fetch in the client is followed by a notifySessionRefusal call.
     const fetches = (api.match(/await fetch\(/g) ?? []).length;
