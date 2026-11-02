@@ -7,16 +7,9 @@
  * when `isMfaSession` holds: default-deny for every other session path.
  */
 
-export const AUTH_METHOD = {
-  passwordTotp: "password_totp",
-  passwordBackupCode: "password_backup_code",
-  passkey: "passkey",
-  /** Sessions of TOTP-enrolled users alive when migration 0030 ran. */
-  legacyMfa: "legacy_mfa",
-  none: "none",
-} as const;
+import { AUTH_METHOD, type AuthMethod } from "@payroll/shared";
 
-export type AuthMethod = (typeof AUTH_METHOD)[keyof typeof AUTH_METHOD];
+export { AUTH_METHOD, type AuthMethod };
 
 /** Sign-in methods that passed a second factor (or a user-verified passkey). */
 export const MFA_METHODS: ReadonlySet<string> = new Set<AuthMethod>([

@@ -5,10 +5,11 @@
 
 import { createAuthClient } from "better-auth/vue";
 import { twoFactorClient, adminClient } from "better-auth/client/plugins";
+import { passkeyClient } from "@better-auth/passkey/client";
 import { isMfaRequired, notifySessionExpired } from "./session-expired";
 
 export const authClient = createAuthClient({
-  plugins: [twoFactorClient(), adminClient()],
+  plugins: [twoFactorClient(), adminClient(), passkeyClient()],
   fetchOptions: {
     // PAY-6: an unexpected 401 from /api/auth (e.g. list-sessions after the
     // session expired) gets the same redirect treatment as the typed client.

@@ -6,3 +6,4 @@ export * from "./localities.js";
 export * from "./state-ids.js";
 export * from "./ui-labels.js";
 export * from "./w2-access.js";
+export * from "./passkeys.js";

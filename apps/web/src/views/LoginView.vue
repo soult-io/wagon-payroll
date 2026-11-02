@@ -27,7 +27,13 @@ const busy = ref(false);
 
 function destination(): string {
   const redirect = route.query.redirect;
-  return typeof redirect === "string" && redirect.startsWith("/") ? redirect : "/";
+  // Same-origin paths only: "//host" and "/\host" are protocol-relative.
+  return typeof redirect === "string" &&
+    redirect.startsWith("/") &&
+    !redirect.startsWith("//") &&
+    !redirect.startsWith("/\\")
+    ? redirect
+    : "/";
 }
 
 async function finish() {

@@ -51,19 +51,18 @@ export async function totp(secret: string): Promise<string> {
   return createOTP(secret, { digits: 6, period: 30 }).totp();
 }
 
-/** Fill the login TOTP challenge and submit, retrying once on a period boundary. */
+/**
+ * Fill the login TOTP challenge and submit. A throttled verify (429) is waited
+ * out and retried; a rejected code is retried once (period boundary).
+ */
 async function submitLoginTotp(page: Page, secret: string): Promise<void> {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    await page.locator("#totp").fill(await totp(secret));
-    await page.getByRole("button", { name: "Verify", exact: true }).click();
-    // Admins now land on /admin/dashboard (PAY-31), employees on /my/dashboard.
-    const landed = await page
-      .waitForURL(/\/(my|admin)\/dashboard/, { timeout: 8_000 })
-      .then(() => true)
-      .catch(() => false);
-    if (landed) return;
-    if (attempt === 1) throw new Error("login TOTP failed twice");
+  let status = 0;
+  for (let attempt = 0; attempt < 2 && status !== 200; attempt++) {
+    ({ status } = await retryOnRateLimit(page, () => submitTotp(page, secret)));
   }
+  if (status !== 200) throw new Error(`login TOTP failed twice (verify answered ${status})`);
+  // Admins now land on /admin/dashboard (PAY-31), employees on /my/dashboard.
+  await page.waitForURL(/\/(my|admin)\/dashboard/, { timeout: 8_000 });
 }
 
 /**
@@ -87,42 +86,99 @@ export function extendedTimeoutMs(currentMs: number, backoffMs: number): number 
   return currentMs + backoffMs + LOGIN_BACKOFF_SLACK_MS;
 }
 
-/** Full browser login: password step → TOTP challenge → dashboard. */
+/** Times a throttled credential request is retried after waiting out the window. */
+const MAX_RATE_LIMIT_BACKOFFS = 2;
+
+const SIGN_IN_PATH = "/api/auth/sign-in/email";
+const VERIFY_TOTP_PATH = "/api/auth/two-factor/verify-totp";
+
+/** Resolves with the next response to POST `path` (pathname match, query ignored). */
+function nextPost(page: Page, path: string) {
+  return page.waitForResponse(
+    (res) => res.request().method() === "POST" && new URL(res.url()).pathname === path,
+  );
+}
+
+/**
+ * Sleep out the credential rate-limit window, extending THIS test's budget
+ * first. The backoff is longer than the default 60s timeout, so without the
+ * extension a throttled sign-in can never recover: it times out instead, and
+ * the retry reports the spec as merely "flaky" (spec 18, PAY-55).
+ */
+async function waitOutCredentialRateLimit(page: Page): Promise<void> {
+  test.setTimeout(extendedTimeoutMs(test.info().timeout, LOGIN_RATE_LIMIT_BACKOFF_MS));
+  await page.waitForTimeout(LOGIN_RATE_LIMIT_BACKOFF_MS);
+}
+
+/**
+ * Run a credential request, waiting out the rate limit and retrying while the
+ * server answers 429 (at most MAX_RATE_LIMIT_BACKOFFS times). Returns the last
+ * attempt, so a caller still sees a 429 that never cleared.
+ *
+ * Credential endpoints allow 10 requests/min/IP and the login UI renders a 429
+ * as "Invalid email or password", so only the HTTP status tells a throttle
+ * apart from a real refusal.
+ */
+export async function retryOnRateLimit<T extends { status: number }>(
+  page: Page,
+  attempt: () => Promise<T>,
+): Promise<T> {
+  let result = await attempt();
+  for (let i = 0; i < MAX_RATE_LIMIT_BACKOFFS && result.status === 429; i++) {
+    await waitOutCredentialRateLimit(page);
+    result = await attempt();
+  }
+  return result;
+}
+
+/**
+ * Submit the password form once. `status` is the sign-in response's HTTP
+ * status; `challenged` is true when the TOTP challenge then appears.
+ */
+export async function submitPassword(
+  page: Page,
+  user: { email: string; password: string },
+): Promise<{ status: number; challenged: boolean }> {
+  await page.goto("/login");
+  await page.locator("#email").fill(user.email);
+  await page.locator("#password input").fill(user.password);
+  const response = nextPost(page, SIGN_IN_PATH);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  const status = (await response).status();
+  if (status !== 200) return { status, challenged: false };
+  const challenged = await page
+    .locator("#totp")
+    .waitFor({ timeout: 5_000 })
+    .then(() => true)
+    .catch(() => false);
+  return { status, challenged };
+}
+
+/** Fill the TOTP challenge once and submit; the verify response's HTTP status. */
+export async function submitTotp(page: Page, secret: string): Promise<{ status: number }> {
+  await page.locator("#totp").fill(await totp(secret));
+  const response = nextPost(page, VERIFY_TOTP_PATH);
+  await page.getByRole("button", { name: "Verify", exact: true }).click();
+  return { status: (await response).status() };
+}
+
+/**
+ * Full browser login: password step → TOTP challenge → dashboard. A throttled
+ * password step (429) is waited out and retried (2026-08-07 + 2026-08-21
+ * nightlies); any other failure throws at once with the server's status.
+ */
 export async function loginAs(
   page: Page,
   user: { email: string; password: string; totpSecret: string },
 ): Promise<void> {
-  // The live-QA server rate-limits credential endpoints to 10 req/min and the
-  // UI renders a 429 as "Invalid email or password" — so a throttled sign-in
-  // looks exactly like wrong credentials (#totp never appears). With several
-  // seeded users logging in per suite run, the first login past the limit
-  // fails flakily (2026-08-07 + 2026-08-21 nightlies). Wait out the window
-  // and retry instead of failing the test.
-  for (let attempt = 0; attempt < 3; attempt++) {
-    await page.goto("/login");
-    await page.locator("#email").fill(user.email);
-    await page.locator("#password input").fill(user.password);
-    await page.getByRole("button", { name: "Sign in", exact: true }).click();
-    const challenged = await page
-      .locator("#totp")
-      .waitFor({ timeout: 5_000 })
-      .then(() => true)
-      .catch(() => false);
-    if (challenged) {
-      await submitLoginTotp(page, user.totpSecret);
-      await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
-      return;
-    }
-    if (attempt < 2) {
-      // Extend THIS test's budget before sleeping. The backoff is longer than
-      // the default 60s timeout, so without this the retry path can never
-      // complete: every throttled login times out, and the retry that follows
-      // reports the spec as merely "flaky" (spec 18, PAY-55).
-      test.setTimeout(extendedTimeoutMs(test.info().timeout, LOGIN_RATE_LIMIT_BACKOFF_MS));
-      await page.waitForTimeout(LOGIN_RATE_LIMIT_BACKOFF_MS);
-    }
+  const signIn = await retryOnRateLimit(page, () => submitPassword(page, user));
+  if (!signIn.challenged) {
+    throw new Error(
+      `login as ${user.email} failed — sign-in answered ${signIn.status}, no TOTP challenge`,
+    );
   }
-  throw new Error(`login as ${user.email} failed — #totp never appeared (credential rate limit?)`);
+  await submitLoginTotp(page, user.totpSecret);
+  await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
 }
 
 // ---------------------------------------------------------------------------

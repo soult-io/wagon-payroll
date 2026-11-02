@@ -20,14 +20,14 @@
 import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
 import { count, eq } from "drizzle-orm";
 import { authPasskey } from "@payroll/db";
+import { MAX_PASSKEY_NAME_LENGTH, MAX_PASSKEYS_PER_USER } from "@payroll/shared";
 import type { Db } from "../db.js";
 import { AUTH_EVENT, type AuthEventContext, writeAuthEvent } from "./audit.js";
 import { AUTH_METHOD } from "./session-method.js";
 
 /** Step-up window for adding or removing a passkey (S1). */
 export const PASSKEY_STEP_UP_MS = 5 * 60 * 1000;
-export const MAX_PASSKEYS_PER_USER = 10;
-export const MAX_PASSKEY_NAME_LENGTH = 64;
+export { MAX_PASSKEYS_PER_USER, MAX_PASSKEY_NAME_LENGTH };
 /** WebAuthn L3 §7.1 steps 25–26: credential IDs longer than this are refused. */
 export const MAX_CREDENTIAL_ID_BYTES = 1023;
 

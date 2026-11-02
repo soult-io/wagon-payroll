@@ -1,9 +1,10 @@
 <script setup lang="ts">
 /**
- * My settings (frontend spec): notification toggles, password change,
- * TOTP management (status + backup codes), active sessions list.
+ * My settings (frontend spec): notification toggles, then "Sign-in and
+ * security" (PAY-259): passkeys, password change, TOTP status + backup codes,
+ * active sessions with how each one signed in.
  */
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import Button from "primevue/button";
 import ToggleSwitch from "primevue/toggleswitch";
 import Password from "primevue/password";
@@ -13,8 +14,11 @@ import Column from "primevue/column";
 import { useConfirm } from "primevue/useconfirm";
 import PageHeader from "../../components/PageHeader.vue";
 import StatusChip from "../../components/StatusChip.vue";
+import PasskeysCard from "../../components/PasskeysCard.vue";
 import { myApi, type NotificationSetting } from "../../lib/api";
 import { authClient } from "../../lib/auth-client";
+import { AUTH_METHOD } from "@payroll/shared";
+import { authMethodLabel, LEGACY_SIGN_IN_HINT } from "../../lib/passkeys";
 import { useNotify } from "../../composables/useNotify";
 import { useDates } from "../../composables/useDates";
 
@@ -114,6 +118,11 @@ async function changePassword() {
 // ------------------------------------------------------- TOTP management
 const security = ref<{ twoFactorEnabled: boolean; backupCodesRemaining: number } | null>(null);
 const codesDialog = ref(false);
+const backupCodesLine = computed(() => {
+  const n = security.value?.backupCodesRemaining;
+  if (n === undefined) return "… backup codes remaining";
+  return n === 1 ? "1 backup code remaining" : `${n} backup codes remaining`;
+});
 const newCodes = ref<string[]>([]);
 
 async function loadSecurity() {
@@ -159,13 +168,27 @@ interface SessionRow {
   expiresAt: string;
   ipAddress?: string | null;
   userAgent?: string | null;
+  authMethod?: string | null;
   current?: boolean;
 }
 const sessions = ref<SessionRow[]>([]);
+/** How this session signed in: the Passkeys card disables add/remove for a backup code. */
+const currentAuthMethod = ref<string | null>(null);
+
+const hasLegacySession = computed(() =>
+  sessions.value.some((s) => s.authMethod === AUTH_METHOD.legacyMfa),
+);
 
 async function loadSessions() {
   const { data } = await authClient.listSessions();
   sessions.value = ((data as SessionRow[] | null) ?? []) as SessionRow[];
+}
+
+/** Read once: a session's sign-in method never changes. */
+async function loadCurrentAuthMethod() {
+  const { data } = await authClient.getSession();
+  const method = (data?.session as { authMethod?: unknown } | undefined)?.authMethod;
+  currentAuthMethod.value = typeof method === "string" ? method : null;
 }
 
 function revokeOthers() {
@@ -187,6 +210,7 @@ onMounted(() => {
   void loadSettings();
   void loadSecurity();
   void loadSessions();
+  void loadCurrentAuthMethod();
 });
 </script>
 
@@ -207,6 +231,10 @@ onMounted(() => {
         </div>
       </div>
     </section>
+
+    <h2 class="section-heading">Sign-in and security</h2>
+
+    <PasskeysCard :current-auth-method="currentAuthMethod" @sessions-changed="loadSessions" />
 
     <div class="grid-2">
       <section class="card">
@@ -230,16 +258,15 @@ onMounted(() => {
       </section>
 
       <section class="card">
-        <h3>Two-factor authentication</h3>
+        <h3>Authenticator app &amp; backup codes</h3>
         <div class="row" style="margin-bottom: 0.75rem">
           <StatusChip :status="security?.twoFactorEnabled ? 'active' : 'pending'" />
-          <span class="muted small">
-            {{ security?.backupCodesRemaining ?? "…" }} backup codes remaining
-          </span>
+          <span class="muted small">{{ backupCodesLine }}</span>
         </div>
         <p class="muted small">
-          Re-enrolling your authenticator app happens through an admin-initiated reset (it wipes the old
-          enrollment). You can regenerate backup codes yourself at any time.
+          Your authenticator app gives you a 6-digit code when you sign in. Backup codes get you in if
+          you don't have your phone. Each one works once. Got a new phone? Ask your admin to reset your
+          authenticator app.
         </p>
         <Button label="Regenerate backup codes" severity="secondary" icon="pi pi-refresh" @click="regenerateCodes" />
       </section>
@@ -258,6 +285,12 @@ onMounted(() => {
           <Column header="Expires">
             <template #body="{ data }">{{ dateTime(data.expiresAt) }}</template>
           </Column>
+          <Column header="Signed in with">
+            <template #body="{ data }">
+              <span v-if="authMethodLabel(data.authMethod)">{{ authMethodLabel(data.authMethod) }}</span>
+              <span v-else role="img" aria-label="Not recorded">—</span>
+            </template>
+          </Column>
           <Column header="IP">
             <template #body="{ data }">{{ data.ipAddress ?? "—" }}</template>
           </Column>
@@ -268,6 +301,7 @@ onMounted(() => {
           </Column>
         </DataTable>
       </div>
+      <p v-if="hasLegacySession" class="muted small">{{ LEGACY_SIGN_IN_HINT }}</p>
     </section>
 
     <Dialog v-model:visible="codesDialog" modal header="Your new backup codes" :style="{ width: '32rem' }">
@@ -284,6 +318,10 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.section-heading {
+  margin: 0.5rem 0 0;
+  font-size: 1.15rem;
+}
 .settings-list {
   display: flex;
   flex-direction: column;
