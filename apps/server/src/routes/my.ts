@@ -9,9 +9,9 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import { count, desc, eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { z } from "zod";
-import { authPasskey, authTwoFactor, notificationSettings, w4Elections } from "@payroll/db";
+import { authTwoFactor, notificationSettings, w4Elections } from "@payroll/db";
 import { WORKFLOW_EVENTS, workflowEventsFor } from "@payroll/notifications";
 import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
@@ -20,6 +20,7 @@ import { employeeForUser } from "../change-requests/service.js";
 import { maskLast4 } from "../crypto/field-encryption.js";
 import { decryptAddress } from "../crypto/address-encryption.js";
 import { decodeCodeHashes, encodeCodeHashes, generateBackupCodes } from "../auth/backup-codes.js";
+import { passkeyCount } from "../auth/passkey-policy.js";
 
 interface Deps {
   db: Db;
@@ -96,14 +97,10 @@ export function registerMyRoutes(app: FastifyInstance, deps: Deps): void {
       .where(eq(authTwoFactor.userId, req.authUser!.id))
       .limit(1);
     const twoFactor = rows[0];
-    const passkeys = await db
-      .select({ n: count() })
-      .from(authPasskey)
-      .where(eq(authPasskey.userId, req.authUser!.id));
     return {
       twoFactorEnabled: Boolean(req.authUser!.twoFactorEnabled),
       backupCodesRemaining: twoFactor ? decodeCodeHashes(twoFactor.backupCodes).length : 0,
-      passkeyCount: passkeys[0]?.n ?? 0,
+      passkeyCount: await passkeyCount(db, req.authUser!.id),
     };
   });
 

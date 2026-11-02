@@ -11,11 +11,7 @@ import { writeAuthEvent, AUTH_EVENT, requestContext } from "./audit.js";
 import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
 import { trackDevice } from "../notify/device.js";
-import {
-  assertionSignCount,
-  passkeyByCredential,
-  withRequiredUserVerification,
-} from "./passkey-policy.js";
+import { passkeyOwner, passkeyResponseOverride } from "./passkey-policy.js";
 
 export const LOCKOUT_THRESHOLD = 10;
 
@@ -41,6 +37,11 @@ async function consecutiveFailures(db: Db, userId: string): Promise<number> {
     else break;
   }
   return count;
+}
+
+/** The user a sign-in endpoint returned ({ user: { id } }), if any. */
+function returnedUserId(returned: unknown): string | null {
+  return (returned as { user?: { id?: string } } | undefined)?.user?.id ?? null;
 }
 
 async function findUserIdByEmail(db: Db, email: string): Promise<string | null> {
@@ -96,6 +97,10 @@ export function createAuditHook(deps: {
     } | null;
     const body = (ctx.body ?? {}) as Record<string, unknown>;
 
+    // PAY-259: the one response this hook changes (sign-in options ask for UV).
+    const override = isFailure ? null : passkeyResponseOverride(ctx.path, returned);
+    if (override) return ctx.json(override);
+
     switch (ctx.path) {
       case "/sign-in/email": {
         const email = typeof body.email === "string" ? body.email : null;
@@ -115,8 +120,7 @@ export function createAuditHook(deps: {
         break;
       }
       case "/two-factor/verify-totp": {
-        const returnedUser = (returned as { user?: { id?: string } } | undefined)?.user;
-        const userId = sessionUser?.id ?? returnedUser?.id ?? null;
+        const userId = sessionUser?.id ?? returnedUserId(returned);
         await writeAuthEvent(
           db,
           isFailure ? AUTH_EVENT.mfaFail : AUTH_EVENT.mfaPass,
@@ -129,33 +133,19 @@ export function createAuditHook(deps: {
       case "/backup-code/verify": {
         // The backup-code plugin writes its own mfa_pass/mfa_fail events;
         // here we only track the device on a completed sign-in.
-        const returnedUser = (returned as { user?: { id?: string } } | undefined)?.user;
-        if (!isFailure) await trackNewDevice(sessionUser?.id ?? returnedUser?.id ?? null, auditCtx);
-        break;
-      }
-      case "/passkey/generate-authenticate-options": {
-        // PAY-259: ask the authenticator for a PIN or biometric.
-        const options = isFailure ? null : withRequiredUserVerification(returned);
-        if (options) return ctx.json(options);
+        if (!isFailure) await trackNewDevice(sessionUser?.id ?? returnedUserId(returned), auditCtx);
         break;
       }
       case "/passkey/verify-authentication": {
-        if (!isFailure) {
-          const returnedUser = (returned as { user?: { id?: string } } | undefined)?.user;
-          const userId = returnedUser?.id ?? null;
-          await writeAuthEvent(db, AUTH_EVENT.passkeyLoginSuccess, userId, auditCtx);
-          await trackNewDevice(userId, auditCtx);
+        if (isFailure) {
+          const response = body.response as { id?: unknown } | undefined;
+          const ownerId = await passkeyOwner(db, response?.id);
+          await writeAuthEvent(db, AUTH_EVENT.passkeyLoginFailure, ownerId, auditCtx);
           break;
         }
-        const response = body.response as { id?: unknown } | undefined;
-        const owner = await passkeyByCredential(db, response?.id);
-        await writeAuthEvent(db, AUTH_EVENT.passkeyLoginFailure, owner?.userId ?? null, auditCtx);
-        // A counter that did not move forward may mean a cloned authenticator.
-        // Synced passkeys report 0, so the passkey stays usable (S6).
-        const signCount = assertionSignCount(response);
-        if (owner && owner.counter > 0 && signCount !== null && signCount <= owner.counter) {
-          await writeAuthEvent(db, AUTH_EVENT.passkeyCounterRegression, owner.userId, auditCtx);
-        }
+        const userId = returnedUserId(returned);
+        await writeAuthEvent(db, AUTH_EVENT.passkeyLoginSuccess, userId, auditCtx);
+        await trackNewDevice(userId, auditCtx);
         break;
       }
       case "/passkey/verify-registration": {

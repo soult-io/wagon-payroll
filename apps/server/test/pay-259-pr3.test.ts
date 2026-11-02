@@ -527,7 +527,7 @@ describe("E audit events", () => {
     expect((await h.events(null, "passkey_login_failure")).length).toBe(before + 1);
   });
 
-  it("counter regression → failure, passkey_login_failure + passkey_counter_regression to the owner; passkey kept, counter unchanged", async () => {
+  it("counter regression → failure, passkey_login_failure to the owner, no passkey_counter_regression row (S6 removed: forgeable); passkey kept, counter unchanged", async () => {
     const { userId } = await h.onboard("pr3-e-counter@example.com");
     const a = newAuthenticator();
     await h.seedPasskey(userId, a, { counter: 5 });
@@ -536,7 +536,12 @@ describe("E audit events", () => {
       expect([400, 401], `signCount ${signCount}`).toContain(res.statusCode);
       expect(session).toBeNull();
     }
-    expect((await h.events(userId, "passkey_counter_regression")).length).toBe(2);
+    // The library checks the counter before the signature, so the event would be
+    // forgeable by anyone who knows a credential id: none is written.
+    const regressionRows = await t.pglite.query<{ n: number }>(
+      `select count(*)::int as n from auth_events where event = 'passkey_counter_regression'`,
+    );
+    expect(regressionRows.rows[0]!.n).toBe(0);
     expect((await h.events(userId, "passkey_login_failure")).length).toBe(2);
     const rows = await h.passkeys(userId);
     expect(rows.length).toBe(1);

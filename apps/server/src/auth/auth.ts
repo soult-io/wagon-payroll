@@ -28,7 +28,12 @@ import { hashPassword, verifyPassword } from "./password.js";
 import { payrollBackupCodes } from "./backup-codes.js";
 import { createAuditHook, lockoutUser } from "./hooks.js";
 import { setAuthMethod } from "./session-method.js";
-import { passkeyOrigins, passkeyRpId, passkeysAvailable } from "./passkey-config.js";
+import {
+  DEV_VITE_ORIGIN,
+  passkeyOrigins,
+  passkeyRpId,
+  passkeysAvailable,
+} from "./passkey-config.js";
 import {
   createPasskeyPolicyHook,
   requireAuthenticationUV,
@@ -139,7 +144,7 @@ export function buildAuthOptions(deps: AuthDeps): BetterAuthOptions {
       config.nodeEnv === "production"
         ? [config.baseUrl]
         : // Dev convenience: the Vite dev server proxies /api but keeps its own Origin.
-          [config.baseUrl, "http://localhost:5173"],
+          [config.baseUrl, DEV_VITE_ORIGIN],
     disabledPaths: passkeys ? DISABLED_PATHS : [...DISABLED_PATHS, ...PASSKEY_PATHS],
     plugins: [
       twoFactor({

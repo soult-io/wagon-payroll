@@ -16,6 +16,7 @@
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { normalizeIP } from "@fastify/rate-limit";
 import type { Auth } from "../auth/auth.js";
 import type { AppConfig } from "../config.js";
 import type { Db } from "../db.js";
@@ -44,25 +45,45 @@ const FORMER_EMPLOYEE_AUTH_PATHS: ReadonlySet<string> = new Set([
 ]);
 
 /** PAY-259: passkey sign-in options, limited in their own bucket (one per login page load). */
-const PASSKEY_OPTIONS_URL = "/api/auth/passkey/generate-authenticate-options";
+const PASSKEY_OPTIONS_PATH = "/api/auth/passkey/generate-authenticate-options";
 
 /** Credential / MFA endpoints: 10 per minute per address (spec 3). */
-function isCredentialUrl(url: string): boolean {
-  return (
-    url.includes("/api/auth/sign-in") ||
-    url.includes("/api/auth/forget-password") ||
-    url.includes("/api/auth/reset-password") ||
-    url.includes("/api/auth/two-factor") ||
-    url.includes("/api/auth/backup-code") ||
-    url.includes("/api/auth/passkey/verify-authentication")
-  );
+const CREDENTIAL_PATH_PREFIXES = [
+  "/api/auth/sign-in",
+  "/api/auth/forget-password",
+  "/api/auth/reset-password",
+  "/api/auth/two-factor",
+  "/api/auth/backup-code",
+  "/api/auth/passkey/verify-authentication",
+];
+
+/** The request path without the query string, exactly as sent. */
+function rawPath(req: FastifyRequest): string {
+  return (req.raw.url ?? "").split("?")[0] ?? "";
+}
+
+/**
+ * PAY-259: true when the path is already in normal form. Better Auth
+ * resolves "." / ".." segments (new URL), so "/api/auth/./sign-in/email"
+ * would reach sign-in while matching none of the rules below; such a path
+ * is refused (400) and never reaches Better Auth.
+ */
+function isNormalPath(path: string): boolean {
+  return new URL(path, "http://localhost").pathname === path;
+}
+
+function isPasskeyOptionsPath(path: string): boolean {
+  return path === PASSKEY_OPTIONS_PATH;
+}
+
+/** Rate limited: credential endpoints, and any path not in normal form (fail closed). */
+function isCredentialPath(path: string): boolean {
+  return !isNormalPath(path) || CREDENTIAL_PATH_PREFIXES.some((prefix) => path.startsWith(prefix));
 }
 
 /** "METHOD /path" of a request under /api/auth, without the query string. */
 function authPathKey(req: FastifyRequest): string {
-  const url = req.raw.url ?? "";
-  const path = url.split("?")[0]!.slice("/api/auth".length);
-  return `${req.method} ${path}`;
+  return `${req.method} ${rawPath(req).slice("/api/auth".length)}`;
 }
 
 function toFetchRequest(req: FastifyRequest, config: AppConfig): Request {
@@ -123,18 +144,22 @@ export function mountBetterAuth(
         // Rate limit applies to credential/MFA endpoints only (spec 3:
         // login + reset + invite-accept). Session reads stay unlimited.
         // PAY-259: passkey sign-in options (each writes a verification row)
-        // get 30 per minute in a bucket of their own.
-        max: (req) => ((req.raw.url ?? "").includes(PASSKEY_OPTIONS_URL) ? 30 : 10),
+        // get 30 per minute in a bucket of their own. Keys keep the
+        // plugin's default grouping (IPv6 by /64).
+        max: (req) => (isPasskeyOptionsPath(rawPath(req)) ? 30 : 10),
         timeWindow: "1 minute",
-        keyGenerator: (req) =>
-          (req.raw.url ?? "").includes(PASSKEY_OPTIONS_URL) ? `${req.ip}:passkey-options` : req.ip,
+        keyGenerator: (req) => {
+          const ip = normalizeIP(req.ip);
+          return isPasskeyOptionsPath(rawPath(req)) ? `${ip}:passkey-options` : ip;
+        },
         allowList: (req) => {
-          const url = req.raw.url ?? "";
-          return !(isCredentialUrl(url) || url.includes(PASSKEY_OPTIONS_URL));
+          const path = rawPath(req);
+          return !(isCredentialPath(path) || isPasskeyOptionsPath(path));
         },
       },
     },
     handler: async (req, reply) => {
+      if (!isNormalPath(rawPath(req))) return reply.code(400).send({ error: "invalid_path" });
       const pathKey = authPathKey(req);
       // Paths open to every session (no TOTP and former employees alike) skip the lookup.
       if (!NO_MFA_SESSION_AUTH_PATHS.has(pathKey)) {

@@ -13,7 +13,8 @@
  *   means every user re-enrolls their passkeys.
  */
 
-const DEV_VITE_ORIGIN = "http://localhost:5173";
+/** The Vite dev server's origin, trusted outside production only (auth.ts trustedOrigins too). */
+export const DEV_VITE_ORIGIN = "http://localhost:5173";
 
 function isIpLiteral(hostname: string): boolean {
   // URL keeps IPv6 hosts in brackets ("[::1]").

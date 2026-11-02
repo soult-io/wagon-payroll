@@ -27,7 +27,6 @@ export const AUTH_EVENT = {
   passkeyRemoved: "passkey_removed",
   passkeyLoginSuccess: "passkey_login_success",
   passkeyLoginFailure: "passkey_login_failure",
-  passkeyCounterRegression: "passkey_counter_regression",
   passkeysReset: "passkeys_reset",
 } as const;
 
