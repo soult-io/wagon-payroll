@@ -25,9 +25,16 @@
  * paper", result "Handed".
  */
 
-import { expect, type Page, test } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { step } from "./support/journey.js";
-import { LIVE_QA, loadEphemeralState, newAuthedPage, totp } from "./qa.js";
+import {
+  LIVE_QA,
+  loadEphemeralState,
+  newAuthedPage,
+  retryOnRateLimit,
+  submitPassword,
+  submitTotp,
+} from "./qa.js";
 
 interface Persona {
   email: string;
@@ -39,19 +46,6 @@ interface Persona {
 
 function personas(): { former?: Persona; formerClosed?: Persona } {
   return (loadEphemeralState() ?? {}) as unknown as { former?: Persona; formerClosed?: Persona };
-}
-
-/** Password step; true when the TOTP challenge appears. */
-async function passwordStep(page: Page, p: Persona): Promise<boolean> {
-  await page.goto("/login");
-  await page.locator("#email").fill(p.email);
-  await page.locator("#password input").fill(p.password);
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  return page
-    .locator("#totp")
-    .waitFor({ timeout: 5_000 })
-    .then(() => true)
-    .catch(() => false);
 }
 
 /** Session routes a former employee must never be sent to on load (they answer 403 w2_access_only). */
@@ -94,9 +88,14 @@ test("PAY-217 T-27 former employee: TOTP sign-in lands on the W-2 card only, dow
       page,
       "Former employee signs in with password + TOTP and lands on /my/w2",
       async () => {
-        expect(await passwordStep(page, former)).toBe(true);
-        await page.locator("#totp").fill(await totp(former.totpSecret));
-        await page.getByRole("button", { name: "Verify", exact: true }).click();
+        // A throttled request (429) is waited out and retried; anything else counts.
+        const signIn = await retryOnRateLimit(page, () => submitPassword(page, former));
+        expect(signIn, "password step: 200 and the TOTP challenge").toEqual({
+          status: 200,
+          challenged: true,
+        });
+        const verify = await retryOnRateLimit(page, () => submitTotp(page, former.totpSecret));
+        expect(verify.status, "verify-totp").toBe(200);
         await page.waitForURL(/\/my\/w2$/);
         await expect(page.getByRole("heading", { name: /Your W-2s from/ })).toBeVisible();
         await expect(page.getByText(/Your job with .+ has ended/)).toBeVisible();
@@ -140,7 +139,13 @@ test("PAY-217 T-27 former employee: TOTP sign-in lands on the W-2 card only, dow
   const closedPage = await closedCtx.newPage();
   try {
     await step(closedPage, "A former employee whose window closed cannot sign in", async () => {
-      expect(await passwordStep(closedPage, formerClosed)).toBe(false);
+      // The refusal must be the server's own (403 banned), never a throttle:
+      // a 429 also leaves no TOTP challenge, so the status is what proves it.
+      const signIn = await retryOnRateLimit(closedPage, () =>
+        submitPassword(closedPage, formerClosed),
+      );
+      expect(signIn.status, "closed window: sign-in refused (403), not throttled (429)").toBe(403);
+      expect(signIn.challenged).toBe(false);
       await expect(closedPage).toHaveURL(/\/login/);
     });
   } finally {

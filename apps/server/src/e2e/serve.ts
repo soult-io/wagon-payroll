@@ -67,7 +67,10 @@ const STATE_FILE = resolve(REPO_ROOT, "e2e/.state/state.json");
 
 const HOST = "127.0.0.1";
 const PORT = 9898;
-const BASE_URL = `http://${HOST}:${PORT}`;
+// PAY-259: a passkey's RP ID must be a domain name, never an IP address, so
+// the app is reached as localhost (a secure context over plain http). The
+// socket stays on the IPv4 loopback.
+const BASE_URL = `http://localhost:${PORT}`;
 const ORIGIN = { origin: BASE_URL };
 
 const ADMIN = { name: "E2E Admin", email: "e2e-admin@example.com" };

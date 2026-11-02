@@ -91,7 +91,8 @@ export default defineConfig({
       ]
     : [["list"]],
   use: {
-    baseURL: liveBaseUrl ?? "http://127.0.0.1:9898",
+    // PAY-259: localhost, not 127.0.0.1: passkeys need a domain name.
+    baseURL: liveBaseUrl ?? "http://localhost:9898",
     trace: "on-first-retry",
     screenshot: "only-on-failure",
   },
@@ -101,7 +102,7 @@ export default defineConfig({
     : {
         webServer: {
           command: "pnpm --filter @payroll/server e2e:serve",
-          url: "http://127.0.0.1:9898/health",
+          url: "http://localhost:9898/health",
           reuseExistingServer: !process.env.CI,
           timeout: 120_000,
           // Playwright ignores webServer stdout by default. The boot logs the

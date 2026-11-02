@@ -11,6 +11,7 @@
     "typecheck": "vue-tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@better-auth/passkey": "~1.7.14",
     "@payroll/shared": "workspace:*",
     "@primeuix/themes": "~2.0.3",
     "@vee-validate/zod": "^4.15.1",
