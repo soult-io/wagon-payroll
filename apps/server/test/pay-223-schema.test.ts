@@ -226,7 +226,7 @@ function migration0029(): { tag: string | undefined; files: string[]; sql: strin
 }
 
 describe("T15 migration 0029 on a v1.29.0 database (0028) holding w2_furnishings rows", () => {
-  it("T15a 0029_w2_furnished_figures exists, is journaled once (the last entry), and is additive only", () => {
+  it("T15a 0029_w2_furnished_figures exists, is journaled once (directly after 0028_w2_contact), and is additive only", () => {
     const { tag, files, sql } = migration0029();
     const tags = journal().entries.map((e) => e.tag);
     const stmts = sql
@@ -257,7 +257,10 @@ describe("T15 migration 0029 on a v1.29.0 database (0028) holding w2_furnishings
       .replace(/ON (DELETE|UPDATE) (no action|restrict|cascade|set null|set default)/gi, "");
     expect({
       tag,
-      last: tags[tags.length - 1],
+      afterW2Contact: {
+        prev: tags[tags.indexOf("0029_w2_furnished_figures") - 1],
+        idx: journal().entries.find((e) => e.tag === "0029_w2_furnished_figures")?.idx,
+      },
       journaled: tags.filter((t) => t.startsWith("0029")).length,
       files: files.length,
       notAdditive,
@@ -268,7 +271,7 @@ describe("T15 migration 0029 on a v1.29.0 database (0028) holding w2_furnishings
       appendOnlyMessage: sql.includes("w2_furnished_figures is append-only"),
     }).toEqual({
       tag: "0029_w2_furnished_figures",
-      last: "0029_w2_furnished_figures",
+      afterW2Contact: { prev: "0028_w2_contact", idx: 29 },
       journaled: 1,
       files: 1,
       notAdditive: [],

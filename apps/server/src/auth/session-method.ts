@@ -11,7 +11,7 @@ export const AUTH_METHOD = {
   passwordTotp: "password_totp",
   passwordBackupCode: "password_backup_code",
   passkey: "passkey",
-  /** Sessions alive when migration 0030 ran (all came from TOTP or a backup code). */
+  /** Sessions of TOTP-enrolled users alive when migration 0030 ran. */
   legacyMfa: "legacy_mfa",
   none: "none",
 } as const;

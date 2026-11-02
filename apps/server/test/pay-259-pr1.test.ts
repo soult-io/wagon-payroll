@@ -12,7 +12,9 @@
  * - T20: passkey table constraints (unique credentialID, cascade on user delete).
  * - T21: no drift between the checked-in Better Auth SQL and the runtime options.
  * - T22: migration 0030 applies on a pre-0030 database holding a live session
- *   (backfilled to 'legacy_mfa') and touches no app table.
+ *   (backfilled to 'legacy_mfa' for a TOTP-enrolled user, else 'none') and
+ *   touches no app table.
+ * - update-session cannot set authMethod (input:false).
  *
  * Test author: fail-first against 42d2ed9; the coder may not edit this file.
  * Synthetic data only (example.com users).
@@ -382,6 +384,27 @@ describe("T10 /change-password carries the method to the replacement session", (
   });
 });
 
+// ---------------------------------------------------------------- update-session
+
+describe("authMethod is not client-settable", () => {
+  it("POST /update-session {authMethod:'passkey'} from a password_totp session → 4xx; row unchanged", async () => {
+    const { email } = await inviteAndOnboard(t, { email: "pay259-updsess@example.com" });
+    const { sessionCookie } = await login(t, email, TEST_PASSWORD, { remoteAddress: freshIp() });
+    expect(await sessionMethodByCookie(t, sessionCookie)).toBe("password_totp");
+    const ip = freshIp();
+    const res = await t.app.inject({
+      method: "POST",
+      url: "/api/auth/update-session",
+      headers: { ...sessionHeader(sessionCookie), "x-forwarded-for": ip },
+      remoteAddress: ip,
+      payload: { authMethod: "passkey" },
+    });
+    expect(await sessionMethodByCookie(t, sessionCookie)).toBe("password_totp");
+    expect(res.statusCode, res.body).toBeGreaterThanOrEqual(400);
+    expect(res.statusCode, res.body).toBeLessThan(500);
+  });
+});
+
 // ---------------------------------------------------------------- T16
 
 describe("T16 passkey plugin is registered but inert", () => {
@@ -543,7 +566,7 @@ describe("T22 migration 0030 on a pre-0030 database", () => {
   it("0030 touches only the Better Auth session/passkey tables", () => {
     const allowed = [
       /^alter table "session" add column "authMethod" text;?$/i,
-      /^update "session" set "authMethod" = 'legacy_mfa' where "authMethod" is null;?$/i,
+      /^update "session" set "authMethod" = case when "userId" in \(select "id" from "user" where "twoFactorEnabled" = true\) then 'legacy_mfa' else 'none' end where "authMethod" is null;?$/i,
       /^create table "passkey" \(/i,
       /^create (unique )?index "passkey_[A-Za-z]+_idx" on "passkey" \(/i,
     ];
@@ -563,7 +586,7 @@ describe("T22 migration 0030 on a pre-0030 database", () => {
     expect(refs).toEqual(["user"]);
   });
 
-  it("a live session from before 0030 is backfilled to 'legacy_mfa'; passkey table created empty", async () => {
+  it("live sessions from before 0030 are backfilled: TOTP user 'legacy_mfa', twoFactorEnabled false/NULL 'none'; passkey table created empty", async () => {
     const pg = new PGlite("memory://");
     try {
       const entries = journal().entries;
@@ -575,21 +598,42 @@ describe("T22 migration 0030 on a pre-0030 database", () => {
       expect(await outcome(pg, `select "authMethod" from "session"`)).toMatch(/authMethod/);
       expect(await outcome(pg, `select 1 from "passkey"`)).toMatch(/passkey/);
 
-      await pg.query(
-        `insert into "user" ("id", "name", "email", "emailVerified", "createdAt", "updatedAt", "twoFactorEnabled")
-         values ('pay259-t22-user', 'T22 Synthetic', 'pay259-t22@example.com', true, now(), now(), true)`,
-      );
-      await pg.query(
-        `insert into "session" ("id", "expiresAt", "token", "createdAt", "updatedAt", "userId")
-         values ('pay259-t22-sess', now() + interval '7 days', 'pay259-t22-token', now(), now(), 'pay259-t22-user')`,
-      );
+      // Three prior-release users, one live session each: TOTP on, TOTP off, flag NULL.
+      const priorUsers: [string, boolean | null][] = [
+        ["pay259-t22-user", true],
+        ["pay259-t22-nomfa", false],
+        ["pay259-t22-nullmfa", null],
+      ];
+      for (const [id, twoFactorEnabled] of priorUsers) {
+        await pg.query(
+          `insert into "user" ("id", "name", "email", "emailVerified", "createdAt", "updatedAt", "twoFactorEnabled")
+           values ($1, 'T22 Synthetic', $2, true, now(), now(), $3)`,
+          [id, `${id}@example.com`, twoFactorEnabled],
+        );
+      }
+      const priorSessions: [string, string][] = [
+        ["pay259-t22-sess", "pay259-t22-user"],
+        ["pay259-t22-sess-nomfa", "pay259-t22-nomfa"],
+        ["pay259-t22-sess-nullmfa", "pay259-t22-nullmfa"],
+      ];
+      for (const [id, userId] of priorSessions) {
+        await pg.query(
+          `insert into "session" ("id", "expiresAt", "token", "createdAt", "updatedAt", "userId")
+           values ($1, now() + interval '7 days', $2, now(), now(), $3)`,
+          [id, `${id}-token`, userId],
+        );
+      }
 
       await applyTag(pg, "0030_passkey");
 
-      const s = await pg.query<{ authMethod: string | null }>(
-        `select "authMethod" from "session" where "id" = 'pay259-t22-sess'`,
+      const s = await pg.query<{ id: string; authMethod: string | null }>(
+        `select "id", "authMethod" from "session" where "id" like 'pay259-t22-sess%' order by "id"`,
       );
-      expect(s.rows[0]?.authMethod).toBe("legacy_mfa");
+      expect(Object.fromEntries(s.rows.map((r) => [r.id, r.authMethod]))).toEqual({
+        "pay259-t22-sess": "legacy_mfa",
+        "pay259-t22-sess-nomfa": "none",
+        "pay259-t22-sess-nullmfa": "none",
+      });
       const p = await pg.query<{ n: number }>(`select count(*)::int as n from "passkey"`);
       expect(p.rows[0]!.n).toBe(0);
       // The column is nullable (no default): a row inserted afterwards without it stays null

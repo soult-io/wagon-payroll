@@ -4,9 +4,10 @@
 -- then reviewed. Hand edits: (1) credentialID index is UNIQUE (generated: plain
 -- index; same name so Better Auth sees no drift); (2) the backfill UPDATE.
 alter table "session" add column "authMethod" text;--> statement-breakpoint
--- Every session alive at migration time came from verify-totp or backup-code/verify
--- (PAY-240); they expire within 7 days (absolute lifetime).
-update "session" set "authMethod" = 'legacy_mfa' where "authMethod" is null;--> statement-breakpoint
+-- Live sessions of TOTP-enrolled users came from verify-totp or backup-code/verify
+-- (PAY-240): legacy_mfa. A user without TOTP keeps a password-only session: none.
+-- Both expire within 7 days (absolute lifetime).
+update "session" set "authMethod" = case when "userId" in (select "id" from "user" where "twoFactorEnabled" = true) then 'legacy_mfa' else 'none' end where "authMethod" is null;--> statement-breakpoint
 create table "passkey" ("id" text not null primary key, "name" text, "publicKey" text not null, "userId" text not null references "user" ("id") on delete cascade, "credentialID" text not null, "counter" integer not null, "deviceType" text not null, "backedUp" boolean not null, "transports" text, "createdAt" timestamptz, "aaguid" text);--> statement-breakpoint
 create index "passkey_userId_idx" on "passkey" ("userId");--> statement-breakpoint
 create unique index "passkey_credentialID_idx" on "passkey" ("credentialID");
