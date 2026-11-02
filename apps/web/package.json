@@ -14,7 +14,7 @@
     "@payroll/shared": "workspace:*",
     "@primeuix/themes": "~2.0.3",
     "@vee-validate/zod": "^4.15.1",
-    "better-auth": "~1.7.7",
+    "better-auth": "~1.7.14",
     "pinia": "~4.0.3",
     "primeicons": "^8.0.0",
     "primevue": "~4.5.5",
