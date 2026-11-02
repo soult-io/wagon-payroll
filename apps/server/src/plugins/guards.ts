@@ -1,7 +1,8 @@
 /**
  * RBAC guards (spec 3 "RBAC") — Fastify preHandlers.
  *
- * - requireAuth: valid BA session + not banned + TOTP enrolled (PAY-240:
+ * - requireAuth: valid BA session + not banned + MFA session (PAY-240 TOTP
+ *   enrolled + PAY-259 session signed in with an MFA method;
  *   403 mfa_required otherwise) + absolute/idle enforcement.
  *   Absolute 7d is fixed in the session row (BA refresh disabled); idle 12h is
  *   enforced here by touching session.updatedAt (throttled) and revoking when
@@ -26,6 +27,7 @@ import { writeAuthEvent, AUTH_EVENT, requestContext } from "../auth/audit.js";
 import { type FormerEmployeeAccess, formerEmployeeAccess } from "../auth/former-employee.js";
 import { localDate } from "../payroll/run-dates.js";
 import { withoutTrustDeviceCookie } from "../auth/trust-device.js";
+import { isMfaSession } from "../auth/session-method.js";
 
 type Employee = typeof employees.$inferSelect;
 
@@ -50,6 +52,8 @@ export interface SessionInfo {
   createdAt: Date | string;
   updatedAt: Date | string;
   expiresAt: Date | string;
+  /** PAY-259: how the session was signed in (auth/session-method.ts). */
+  authMethod?: string | null;
 }
 
 declare module "fastify" {
@@ -149,10 +153,11 @@ export function createGuards(deps: {
       await reply.code(401).send({ error: "session_expired" });
       return;
     }
-    // PAY-240: every session must belong to a user with TOTP on (spec 3:
-    // password then TOTP). Checked after idle so a stale session is still
-    // revoked, and before the touch so a refused session never stays alive.
-    if (user.twoFactorEnabled !== true) {
+    // PAY-240 + PAY-259: every session must belong to a user with TOTP on
+    // and be signed in with an MFA method (spec 3: password then TOTP).
+    // Checked after idle so a stale session is still revoked, and before the
+    // touch so a refused session never stays alive.
+    if (!isMfaSession(user, session)) {
       await reply.code(403).send({ error: "mfa_required" });
       return;
     }

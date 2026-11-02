@@ -587,7 +587,7 @@ export interface Paged<T> {
 // Fetch core
 // ---------------------------------------------------------------------------
 
-import { notifySessionExpired } from "./session-expired";
+import { isMfaRequired, notifySessionExpired } from "./session-expired";
 import { isW2AccessOnly, notifyW2AccessOnly } from "./former-access";
 
 export class ApiError extends Error {
@@ -603,6 +603,22 @@ export class ApiError extends Error {
   }
 }
 
+/** Route a refused session to the screen that resolves it. */
+function notifySessionRefusal(status: number, path: string, body: unknown): void {
+  // PAY-6: a 401 on a session-gated endpoint means the session expired
+  // (idle 12h / absolute 7d, or revoked) — redirect to login instead of
+  // letting every in-flight call toast an error. Onboarding endpoints are
+  // token-based (no session), so their 401s stay local.
+  // PAY-259: a 403 mfa_required (session not signed in with an MFA method)
+  // also means "sign in again".
+  if ((status === 401 && !path.startsWith("/api/onboarding/")) || isMfaRequired(status, body)) {
+    notifySessionExpired();
+  }
+  // PAY-217: a former employee reached a screen they no longer have
+  // (403 w2_access_only) — send them to the W-2 screen.
+  if (isW2AccessOnly(status, body)) notifyW2AccessOnly();
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const init: RequestInit = { method };
   if (body !== undefined) {
@@ -611,13 +627,6 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   }
   const res = await fetch(path, init);
   if (!res.ok) {
-    // PAY-6: a 401 on a session-gated endpoint means the session expired
-    // (idle 12h / absolute 7d, or revoked) — redirect to login instead of
-    // letting every in-flight call toast an error. Onboarding endpoints are
-    // token-based (no session), so their 401s stay local.
-    if (res.status === 401 && !path.startsWith("/api/onboarding/")) {
-      notifySessionExpired();
-    }
     let code = "request_failed";
     let message = `Request failed (${res.status})`;
     let details: unknown;
@@ -631,9 +640,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     } catch {
       // non-JSON error body — keep defaults
     }
-    // PAY-217: a former employee reached a screen they no longer have
-    // (403 w2_access_only) — send them to the W-2 screen.
-    if (isW2AccessOnly(res.status, body)) notifyW2AccessOnly();
+    notifySessionRefusal(res.status, path, body);
     throw new ApiError(res.status, code, message, details, body);
   }
   // 204 No Content (e.g. DELETE of a state ID) has no body to parse.
