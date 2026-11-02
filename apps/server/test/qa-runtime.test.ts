@@ -26,14 +26,22 @@ describe("GET /api/runtime-config", () => {
     const res = await ctx.app.inject({ method: "GET", url: "/api/runtime-config" });
     expect(res.statusCode).toBe(200);
     // Exact key set (spec 22 D2): the env label and the display name, nothing else.
-    expect(res.json()).toEqual({ appEnv: "production", brandName: "Wagon Payroll" });
+    expect(res.json()).toEqual({
+      appEnv: "production",
+      brandName: "Wagon Payroll",
+      passkeysAvailable: true,
+    });
   });
 
   it("reports APP_ENV=qa when configured", async () => {
     qaCtx = await createTestApp({ appEnv: "qa" });
     const res = await qaCtx.app.inject({ method: "GET", url: "/api/runtime-config" });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ appEnv: "qa", brandName: "Wagon Payroll" });
+    expect(res.json()).toEqual({
+      appEnv: "qa",
+      brandName: "Wagon Payroll",
+      passkeysAvailable: true,
+    });
   });
 
   it("reports an operator-set brand name (spec 22 D2)", async () => {
@@ -41,7 +49,11 @@ describe("GET /api/runtime-config", () => {
     try {
       const res = await brandCtx.app.inject({ method: "GET", url: "/api/runtime-config" });
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ appEnv: "production", brandName: "Acme Payroll" });
+      expect(res.json()).toEqual({
+        appEnv: "production",
+        brandName: "Acme Payroll",
+        passkeysAvailable: true,
+      });
     } finally {
       await brandCtx.close();
     }

@@ -11,6 +11,7 @@ import { writeAuthEvent, AUTH_EVENT, requestContext } from "./audit.js";
 import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
 import { trackDevice } from "../notify/device.js";
+import { passkeyOwner, passkeyResponseOverride } from "./passkey-policy.js";
 
 export const LOCKOUT_THRESHOLD = 10;
 
@@ -38,6 +39,11 @@ async function consecutiveFailures(db: Db, userId: string): Promise<number> {
   return count;
 }
 
+/** The user a sign-in endpoint returned ({ user: { id } }), if any. */
+function returnedUserId(returned: unknown): string | null {
+  return (returned as { user?: { id?: string } } | undefined)?.user?.id ?? null;
+}
+
 async function findUserIdByEmail(db: Db, email: string): Promise<string | null> {
   const rows = await db
     .select({ id: authUser.id })
@@ -49,6 +55,8 @@ async function findUserIdByEmail(db: Db, email: string): Promise<string | null> 
 
 /**
  * after-hook: writes audit events for BA-owned flows and applies lockout.
+ * Passkey events never touch the password lockout counter (PAY-259):
+ * consecutiveFailures reads only login_success / login_failure.
  * Failure detection: BA's dispatcher catches endpoint APIErrors into
  * `ctx.context.returned` and still runs after-hooks (see dispatch.mjs).
  */
@@ -89,6 +97,10 @@ export function createAuditHook(deps: {
     } | null;
     const body = (ctx.body ?? {}) as Record<string, unknown>;
 
+    // PAY-259: the one response this hook changes (sign-in options ask for UV).
+    const override = isFailure ? null : passkeyResponseOverride(ctx.path, returned);
+    if (override) return ctx.json(override);
+
     switch (ctx.path) {
       case "/sign-in/email": {
         const email = typeof body.email === "string" ? body.email : null;
@@ -108,8 +120,7 @@ export function createAuditHook(deps: {
         break;
       }
       case "/two-factor/verify-totp": {
-        const returnedUser = (returned as { user?: { id?: string } } | undefined)?.user;
-        const userId = sessionUser?.id ?? returnedUser?.id ?? null;
+        const userId = sessionUser?.id ?? returnedUserId(returned);
         await writeAuthEvent(
           db,
           isFailure ? AUTH_EVENT.mfaFail : AUTH_EVENT.mfaPass,
@@ -122,8 +133,36 @@ export function createAuditHook(deps: {
       case "/backup-code/verify": {
         // The backup-code plugin writes its own mfa_pass/mfa_fail events;
         // here we only track the device on a completed sign-in.
-        const returnedUser = (returned as { user?: { id?: string } } | undefined)?.user;
-        if (!isFailure) await trackNewDevice(sessionUser?.id ?? returnedUser?.id ?? null, auditCtx);
+        if (!isFailure) await trackNewDevice(sessionUser?.id ?? returnedUserId(returned), auditCtx);
+        break;
+      }
+      case "/passkey/verify-authentication": {
+        if (isFailure) {
+          const response = body.response as { id?: unknown } | undefined;
+          const ownerId = await passkeyOwner(db, response?.id);
+          await writeAuthEvent(db, AUTH_EVENT.passkeyLoginFailure, ownerId, auditCtx);
+          break;
+        }
+        const userId = returnedUserId(returned);
+        await writeAuthEvent(db, AUTH_EVENT.passkeyLoginSuccess, userId, auditCtx);
+        await trackNewDevice(userId, auditCtx);
+        break;
+      }
+      case "/passkey/verify-registration": {
+        const event = isFailure ? AUTH_EVENT.passkeyAddFailed : AUTH_EVENT.passkeyAdded;
+        await writeAuthEvent(db, event, sessionUser?.id ?? null, auditCtx);
+        break;
+      }
+      case "/passkey/update-passkey": {
+        if (!isFailure) {
+          await writeAuthEvent(db, AUTH_EVENT.passkeyRenamed, sessionUser?.id ?? null, auditCtx);
+        }
+        break;
+      }
+      case "/passkey/delete-passkey": {
+        if (!isFailure) {
+          await writeAuthEvent(db, AUTH_EVENT.passkeyRemoved, sessionUser?.id ?? null, auditCtx);
+        }
         break;
       }
       case "/change-password": {

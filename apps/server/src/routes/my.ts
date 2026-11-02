@@ -20,6 +20,7 @@ import { employeeForUser } from "../change-requests/service.js";
 import { maskLast4 } from "../crypto/field-encryption.js";
 import { decryptAddress } from "../crypto/address-encryption.js";
 import { decodeCodeHashes, encodeCodeHashes, generateBackupCodes } from "../auth/backup-codes.js";
+import { passkeyCount } from "../auth/passkey-policy.js";
 
 interface Deps {
   db: Db;
@@ -99,6 +100,7 @@ export function registerMyRoutes(app: FastifyInstance, deps: Deps): void {
     return {
       twoFactorEnabled: Boolean(req.authUser!.twoFactorEnabled),
       backupCodesRemaining: twoFactor ? decodeCodeHashes(twoFactor.backupCodes).length : 0,
+      passkeyCount: await passkeyCount(db, req.authUser!.id),
     };
   });
 

@@ -67,15 +67,24 @@ interface SessionCreateContext {
   context?: { session?: { session?: Record<string, unknown> } | null };
 }
 
-/** databaseHooks.session.create.before: stamp the sign-in method on the new session. */
+/**
+ * databaseHooks.session.create.before: stamp the sign-in method on the new
+ * session. A session rotated by /change-password also keeps the sign-in
+ * time (createdAt) of the one it replaces: the password alone is no new
+ * sign-in, so freshness and the passkey step-up still count from the
+ * second factor.
+ */
 export async function setAuthMethod(
   _session: unknown,
   ctx: SessionCreateContext | null | undefined,
-): Promise<{ data: { authMethod: string } }> {
-  const current = ctx?.context?.session?.session?.authMethod;
-  return {
-    data: {
-      authMethod: authMethodForPath(ctx?.path, typeof current === "string" ? current : null),
-    },
-  };
+): Promise<{ data: { authMethod: string; createdAt?: Date } }> {
+  const replaced = ctx?.context?.session?.session;
+  const current = replaced?.authMethod;
+  const authMethod = authMethodForPath(ctx?.path, typeof current === "string" ? current : null);
+  const signedInAt = replaced?.createdAt;
+  if (ctx?.path === "/change-password" && signedInAt !== undefined) {
+    const createdAt = new Date(signedInAt as Date | string);
+    if (Number.isFinite(createdAt.getTime())) return { data: { authMethod, createdAt } };
+  }
+  return { data: { authMethod } };
 }

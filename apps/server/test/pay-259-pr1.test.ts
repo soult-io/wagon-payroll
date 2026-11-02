@@ -6,7 +6,8 @@
  *   change-password carries the current session's method forward, anything
  *   else "none". The marker is written, not enforced: sign-in still reaches
  *   GET /api/me.
- * - T16: the @better-auth/passkey plugin is registered but every one of its
+ * - T16: the @better-auth/passkey plugin is registered; on an IP-literal
+ *   BASE_URL (passkeys unavailable, PAY-259 PR 3) every one of its
  *   seven paths is disabled (404 through /api/auth, nothing written), and the
  *   Better Auth endpoint inventory is pinned.
  * - T20: passkey table constraints (unique credentialID, cascade on user delete).
@@ -29,7 +30,15 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as dbSchema from "@payroll/db";
 import { authTwoFactor, authUser } from "@payroll/db";
 import { createTestApp, cookieValue, ORIGIN, workspaceRoot, type TestContext } from "./helpers.js";
-import { inviteAndOnboard, login, sessionHeader, TEST_PASSWORD } from "./flow-helpers.js";
+import {
+  currentTotp,
+  inviteAndOnboard,
+  login,
+  sessionHeader,
+  TEST_PASSWORD,
+  tokenFromLink,
+} from "./flow-helpers.js";
+import { inviteUser } from "../src/auth/users.js";
 
 const ROOT = workspaceRoot(dirname(fileURLToPath(import.meta.url)));
 const DRIZZLE_DIR = resolve(ROOT, "packages/db/drizzle");
@@ -60,9 +69,9 @@ const PASSKEY_ENDPOINTS: { method: "GET" | "POST"; path: string }[] = [
 
 /**
  * Enabled Better Auth endpoint paths (auth.api paths minus disabledPaths),
- * computed from origin/main 42d2ed9. A new plugin path, or a disabled path
- * coming back, must change this list on purpose. The passkey paths are
- * absent: they are registered but disabled in this PR.
+ * computed from origin/main 42d2ed9, plus the seven passkey paths PAY-259
+ * PR 3 enables on http://localhost. A new plugin path, or a disabled path
+ * coming back, must change this list on purpose.
  */
 const ENABLED_AUTH_PATHS = [
   "/account-info",
@@ -92,6 +101,13 @@ const ENABLED_AUTH_PATHS = [
   "/list-accounts",
   "/list-sessions",
   "/ok",
+  "/passkey/delete-passkey",
+  "/passkey/generate-authenticate-options",
+  "/passkey/generate-register-options",
+  "/passkey/list-user-passkeys",
+  "/passkey/update-passkey",
+  "/passkey/verify-authentication",
+  "/passkey/verify-registration",
   "/refresh-token",
   "/request-password-reset",
   "/reset-password",
@@ -407,16 +423,73 @@ describe("authMethod is not client-settable", () => {
 
 // ---------------------------------------------------------------- T16
 
-describe("T16 passkey plugin is registered but inert", () => {
+describe("T16 passkey plugin is registered but inert where passkeys are unavailable", () => {
+  // PAY-259 PR 3: passkeys open only on an https host or localhost. On an IP
+  // literal BASE_URL the seven paths stay disabled.
+  const IP_BASE = "http://127.0.0.1:8927";
+  const IP_ORIGIN = { origin: IP_BASE };
+  let u: TestContext;
+  beforeAll(async () => {
+    u = await createTestApp({ baseUrl: IP_BASE });
+  });
+  afterAll(async () => {
+    await u.close();
+  });
+
+  function post(url: string, payload: unknown, cookie?: string) {
+    const ip = freshIp();
+    return u.app.inject({
+      method: "POST",
+      url,
+      headers: { ...IP_ORIGIN, "x-forwarded-for": ip, ...(cookie ? { cookie } : {}) },
+      remoteAddress: ip,
+      payload: payload as object,
+    });
+  }
+
+  /** Invite + onboarding + password/TOTP sign-in on the IP-literal app. */
+  async function ipSession(email: string): Promise<string> {
+    const invite = await inviteUser(
+      { auth: u.auth, db: u.db, config: u.config },
+      { name: email.split("@")[0]!, email, role: "employee" },
+      null,
+    );
+    const token = tokenFromLink(invite.setupLink);
+    for (const [url, payload] of [
+      ["/api/onboarding/verify-token", { token }],
+      ["/api/onboarding/set-password", { token, password: TEST_PASSWORD }],
+      ["/api/onboarding/totp-enable", { token }],
+    ] as const) {
+      const res = await post(url, payload);
+      if (res.statusCode !== 200) throw new Error(`${url} ${res.statusCode}: ${res.body}`);
+    }
+    const enrol = await post("/api/onboarding/totp-verify", {
+      token,
+      code: await currentTotp(u, invite.userId),
+    });
+    if (enrol.statusCode !== 200) throw new Error(`totp-verify ${enrol.statusCode}`);
+    const signIn = await post("/api/auth/sign-in/email", { email, password: TEST_PASSWORD });
+    const twoFactor = cookieValue(signIn.headers["set-cookie"], "payroll.two_factor");
+    if (!twoFactor) throw new Error(`no 2FA challenge: ${signIn.statusCode} ${signIn.body}`);
+    const verify = await post(
+      "/api/auth/two-factor/verify-totp",
+      { code: await currentTotp(u, invite.userId) },
+      `payroll.two_factor=${twoFactor}`,
+    );
+    const cookie = cookieValue(verify.headers["set-cookie"], "payroll.session_token");
+    if (!cookie) throw new Error(`verify-totp ${verify.statusCode}: ${verify.body}`);
+    return cookie;
+  }
+
   it("the plugin is registered and all seven paths are in disabledPaths", () => {
-    const api = t.auth.api as unknown as Record<string, { path?: unknown }>;
+    const api = u.auth.api as unknown as Record<string, { path?: unknown }>;
     const registered = new Set(
       Object.values(api)
         .map((e) => e?.path)
         .filter((p): p is string => typeof p === "string"),
     );
-    const disabled = new Set(t.auth.options.disabledPaths ?? []);
-    const pluginIds = (t.auth.options.plugins ?? []).map((p) => p.id);
+    const disabled = new Set(u.auth.options.disabledPaths ?? []);
+    const pluginIds = (u.auth.options.plugins ?? []).map((p) => p.id);
     expect(pluginIds).toContain("passkey");
     for (const { path } of PASSKEY_ENDPOINTS) {
       expect(registered.has(path), `registered ${path}`).toBe(true);
@@ -425,18 +498,21 @@ describe("T16 passkey plugin is registered but inert", () => {
   });
 
   it("each passkey path answers 404 through /api/auth, with and without a session, and writes nothing", async () => {
-    const { email } = await inviteAndOnboard(t, { email: "pay259-passkey@example.com" });
-    const { sessionCookie } = await login(t, email, TEST_PASSWORD, { remoteAddress: freshIp() });
-    const passkeyBefore = await outcome(t.pglite, `select 1 from "passkey" limit 1`);
-    const verificationBefore = await countRows(t, "verification");
+    const sessionCookie = await ipSession("pay259-passkey@example.com");
+    const passkeyBefore = await outcome(u.pglite, `select 1 from "passkey" limit 1`);
+    const verificationBefore = await countRows(u, "verification");
 
     for (const withSession of [false, true]) {
       for (const { method, path } of PASSKEY_ENDPOINTS) {
         const ip = freshIp();
         const headers = withSession
-          ? { ...sessionHeader(sessionCookie), "x-forwarded-for": ip }
-          : { ...ORIGIN, "x-forwarded-for": ip };
-        const res = await t.app.inject({
+          ? {
+              ...IP_ORIGIN,
+              cookie: `payroll.session_token=${sessionCookie}`,
+              "x-forwarded-for": ip,
+            }
+          : { ...IP_ORIGIN, "x-forwarded-for": ip };
+        const res = await u.app.inject({
           method,
           url: `/api/auth${path}`,
           headers,
@@ -456,12 +532,19 @@ describe("T16 passkey plugin is registered but inert", () => {
     }
 
     expect(passkeyBefore).toBe("ok"); // table exists (migration 0030)
-    expect(await countRows(t, "passkey")).toBe(0);
-    expect(await countRows(t, "verification")).toBe(verificationBefore);
-    // The session survives and still works (marker not enforced).
-    expect((await me(t, sessionCookie)).statusCode).toBe(200);
+    expect(await countRows(u, "passkey")).toBe(0);
+    expect(await countRows(u, "verification")).toBe(verificationBefore);
+    // The session survives and still works.
+    const meRes = await u.app.inject({
+      method: "GET",
+      url: "/api/me",
+      headers: { ...IP_ORIGIN, cookie: `payroll.session_token=${sessionCookie}` },
+    });
+    expect(meRes.statusCode).toBe(200);
   });
+});
 
+describe("T16 Better Auth endpoint inventory (passkeys available on http://localhost)", () => {
   it("endpoint inventory: enabled Better Auth paths equal the checked-in allowlist", () => {
     const api = t.auth.api as unknown as Record<string, { path?: unknown }>;
     const disabled = new Set(t.auth.options.disabledPaths ?? []);
@@ -475,7 +558,7 @@ describe("T16 passkey plugin is registered but inert", () => {
       .filter((p) => !disabled.has(p))
       .sort();
     expect(enabled).toEqual(ENABLED_AUTH_PATHS);
-    for (const { path } of PASSKEY_ENDPOINTS) expect(enabled).not.toContain(path);
+    for (const { path } of PASSKEY_ENDPOINTS) expect(enabled).toContain(path);
   });
 });
 
