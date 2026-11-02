@@ -19,6 +19,7 @@ import type { Auth } from "../auth/auth.js";
 import type { AppConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { formerEmployeeAccess } from "./former-employee.js";
+import { withoutTrustDevice } from "./trust-device.js";
 import { type SessionUser, toHeaders } from "../plugins/guards.js";
 import { localDate } from "../payroll/run-dates.js";
 
@@ -45,14 +46,10 @@ function authPathKey(req: FastifyRequest): string {
 
 function toFetchRequest(req: FastifyRequest, config: AppConfig): Request {
   const url = new URL(req.raw.url ?? "/", config.baseUrl);
-  const headers = new Headers();
-  for (const [key, value] of Object.entries(req.headers)) {
-    if (typeof value === "string") headers.set(key, value);
-    else if (Array.isArray(value)) headers.set(key, value.join(","));
-  }
+  const headers = toHeaders(req);
   const init: RequestInit = { method: req.method, headers };
   if (req.method !== "GET" && req.method !== "HEAD" && req.body !== undefined) {
-    init.body = JSON.stringify(req.body);
+    init.body = JSON.stringify(withoutTrustDevice(req.body));
     if (!headers.has("content-type")) headers.set("content-type", "application/json");
   }
   return new Request(url, init);
