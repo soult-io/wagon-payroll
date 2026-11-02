@@ -87,7 +87,7 @@ export function extendedTimeoutMs(currentMs: number, backoffMs: number): number 
 }
 
 /** Times a throttled credential request is retried after waiting out the window. */
-export const MAX_RATE_LIMIT_BACKOFFS = 2;
+const MAX_RATE_LIMIT_BACKOFFS = 2;
 
 const SIGN_IN_PATH = "/api/auth/sign-in/email";
 const VERIFY_TOTP_PATH = "/api/auth/two-factor/verify-totp";
@@ -105,7 +105,7 @@ function nextPost(page: Page, path: string) {
  * extension a throttled sign-in can never recover: it times out instead, and
  * the retry reports the spec as merely "flaky" (spec 18, PAY-55).
  */
-export async function waitOutCredentialRateLimit(page: Page): Promise<void> {
+async function waitOutCredentialRateLimit(page: Page): Promise<void> {
   test.setTimeout(extendedTimeoutMs(test.info().timeout, LOGIN_RATE_LIMIT_BACKOFF_MS));
   await page.waitForTimeout(LOGIN_RATE_LIMIT_BACKOFF_MS);
 }

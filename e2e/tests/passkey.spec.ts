@@ -7,9 +7,12 @@
  * so every test shares the one fresh session and runs straight after it.
  *
  * Runs in both modes. Ephemeral boot and live QA (E2E_BASE_URL) both carry the
- * seeded QA employee. The file cleans up after itself: before adding, it
- * removes passkeys an earlier crashed run left behind ("CI key*"), and
+ * seeded QA employee. The file cleans up after itself: right after sign-in
+ * (inside the step-up window) it removes passkeys an earlier run left behind
+ * (named "CI key*", or unnamed: an add that succeeded before its rename), and
  * afterAll removes every passkey this run added, inside the same session.
+ * Any other passkey on the account is kept and recorded as the baseline;
+ * assertions compare against it rather than requiring an empty account.
  *
  * The Passkeys card is hidden when /api/runtime-config says
  * `passkeysAvailable: false`. That is a FAILURE here, never a skip: the e2e
@@ -26,12 +29,17 @@ import { newContext } from "./support/walkthrough.js";
 import { addVirtualAuthenticator, type VirtualAuthenticator } from "./support/webauthn.js";
 
 test.describe.configure({ mode: "serial" });
+// S11: a retry trace would carry the attestation and credential data (request
+// bodies) into a public CI artifact. No traces for this file.
+test.use({ trace: "off" });
 
-const KEY_NAME = "CI key";
-const RENAMED = "CI key renamed";
 /** Names this file gives its passkeys; leftovers with these come from an earlier run. */
 const OWN_NAME_PREFIX = "CI key";
-/** Server step-up window (PASSKEY_STEP_UP_MS) minus headroom for the last request. */
+const KEY_NAME = OWN_NAME_PREFIX;
+const RENAMED = `${OWN_NAME_PREFIX} renamed`;
+/** Server step-up window (PASSKEY_STEP_UP_MS in apps/server/src/auth/passkey-policy.ts). */
+const STEP_UP_WINDOW_MS = 5 * 60 * 1000;
+/** The window minus headroom for the last request. */
 const STEP_UP_BUDGET_MS = 4.5 * 60 * 1000;
 
 interface PasskeyRecord {
@@ -74,6 +82,17 @@ async function deleteAll(p: Page, records: PasskeyRecord[]): Promise<number> {
   return refused;
 }
 
+/** A passkey an earlier run of this file left behind: its own name, or no name. */
+function isOwnLeftover(record: PasskeyRecord): boolean {
+  const name = (record.name ?? "").trim();
+  return name === "" || name.startsWith(OWN_NAME_PREFIX);
+}
+
+/** Row ids, sorted. Compare these, never whole records: a record also carries credentialID and publicKey (S11). */
+function sortedIds(records: PasskeyRecord[]): string[] {
+  return records.map((r) => r.id).sort();
+}
+
 function passkeyRows(p: Page) {
   return p.getByTestId("passkey-row");
 }
@@ -96,14 +115,31 @@ test.beforeAll(async ({ browser }) => {
   authenticator = await addVirtualAuthenticator(page);
 });
 
+/**
+ * Delete what this run added. Past the step-up window the server refuses, and
+ * that is reported (count only, S11) without failing: the next run's leftover
+ * step removes them in its own fresh session. A refusal inside the window is a
+ * real failure and throws.
+ */
+async function cleanUpCreated(): Promise<void> {
+  if (baseline === null) return;
+  const known = baseline;
+  const created = (await listPasskeys(page)).filter((r) => !known.has(r.id));
+  const refused = await deleteAll(page, created);
+  if (refused === 0) return;
+  const message = `passkey.spec cleanup: the server refused ${refused} of ${created.length} delete(s)`;
+  if (Date.now() - signedInAt > STEP_UP_WINDOW_MS) {
+    console.warn(
+      `${message}; the 5-minute step-up window had expired, so the next run's leftover step deletes them`,
+    );
+    return;
+  }
+  throw new Error(`${message} inside the step-up window`);
+}
+
 test.afterAll(async () => {
   try {
-    if (baseline !== null) {
-      const known = baseline;
-      const created = (await listPasskeys(page)).filter((r) => !known.has(r.id));
-      const refused = await deleteAll(page, created);
-      expect(refused, "afterAll: passkeys this run added are all deleted").toBe(0);
-    }
+    await cleanUpCreated();
   } finally {
     await authenticator?.remove();
     await context?.close();
@@ -116,14 +152,10 @@ test("J1: add a passkey from My settings; it is listed", async () => {
     signedInAt = Date.now();
   });
 
-  await step(page, "Start with no passkeys (clear an earlier run's leftovers)", async () => {
-    const leftovers = (await listPasskeys(page)).filter((r) =>
-      (r.name ?? "").startsWith(OWN_NAME_PREFIX),
-    );
+  await step(page, "Clear an earlier run's leftovers; record the baseline", async () => {
+    const leftovers = (await listPasskeys(page)).filter(isOwnLeftover);
     expect(await deleteAll(page, leftovers), "leftover CI passkeys deleted").toBe(0);
-    const remaining = await listPasskeys(page);
-    baseline = new Set(remaining.map((r) => r.id));
-    expect(remaining.length, "the QA employee starts with no passkeys").toBe(0);
+    baseline = new Set((await listPasskeys(page)).map((r) => r.id));
   });
 
   await step(page, "Passkeys are available on this address", async () => {
@@ -149,13 +181,14 @@ test("J1: add a passkey from My settings; it is listed", async () => {
   });
 
   await step(page, `"${KEY_NAME}" is listed; the authenticator holds one passkey`, async () => {
+    const known = baseline ?? new Set<string>();
     await expect(rowNamed(page, KEY_NAME)).toHaveCount(1);
-    await expect(passkeyRows(page)).toHaveCount(1);
+    await expect(passkeyRows(page)).toHaveCount(known.size + 1);
     // Count only: printing the credentials would log key material (S11).
     const held = await authenticator?.credentials();
     expect(held?.length, "virtual authenticator credential count").toBe(1);
-    const listed = await listPasskeys(page);
-    expect(listed.map((r) => r.name)).toEqual([KEY_NAME]);
+    const added = (await listPasskeys(page)).filter((r) => !known.has(r.id));
+    expect(added.map((r) => r.name)).toEqual([KEY_NAME]);
   });
 });
 
@@ -183,10 +216,14 @@ test("J3: rename the passkey, then remove it; the list is empty", async () => {
     await expect(dialog).toBeHidden();
   });
 
-  await step(page, "Empty state shows; the server lists no passkeys", async () => {
-    await expect(page.getByText("You have no passkeys yet.")).toBeVisible();
-    await expect(passkeyRows(page)).toHaveCount(0);
-    expect(await listPasskeys(page)).toEqual([]);
+  await step(page, "Back to the baseline (empty state when it was empty)", async () => {
+    const known = [...(baseline ?? [])].sort();
+    if (known.length === 0) {
+      await expect(page.getByText("You have no passkeys yet.")).toBeVisible();
+    }
+    await expect(passkeyRows(page)).toHaveCount(known.length);
+    // On the ephemeral boot and a clean QA account the baseline is empty: [].
+    expect(sortedIds(await listPasskeys(page)), "server list equals the baseline").toEqual(known);
   });
 });
 

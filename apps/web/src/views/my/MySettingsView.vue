@@ -17,7 +17,8 @@ import StatusChip from "../../components/StatusChip.vue";
 import PasskeysCard from "../../components/PasskeysCard.vue";
 import { myApi, type NotificationSetting } from "../../lib/api";
 import { authClient } from "../../lib/auth-client";
-import { authMethodLabel } from "../../lib/passkeys";
+import { AUTH_METHOD } from "@payroll/shared";
+import { authMethodLabel, LEGACY_SIGN_IN_HINT } from "../../lib/passkeys";
 import { useNotify } from "../../composables/useNotify";
 import { useDates } from "../../composables/useDates";
 
@@ -174,13 +175,19 @@ const sessions = ref<SessionRow[]>([]);
 /** How this session signed in: the Passkeys card disables add/remove for a backup code. */
 const currentAuthMethod = ref<string | null>(null);
 
+const hasLegacySession = computed(() =>
+  sessions.value.some((s) => s.authMethod === AUTH_METHOD.legacyMfa),
+);
+
 async function loadSessions() {
-  const [{ data }, { data: current }] = await Promise.all([
-    authClient.listSessions(),
-    authClient.getSession(),
-  ]);
+  const { data } = await authClient.listSessions();
   sessions.value = ((data as SessionRow[] | null) ?? []) as SessionRow[];
-  const method = (current?.session as { authMethod?: unknown } | undefined)?.authMethod;
+}
+
+/** Read once: a session's sign-in method never changes. */
+async function loadCurrentAuthMethod() {
+  const { data } = await authClient.getSession();
+  const method = (data?.session as { authMethod?: unknown } | undefined)?.authMethod;
   currentAuthMethod.value = typeof method === "string" ? method : null;
 }
 
@@ -203,6 +210,7 @@ onMounted(() => {
   void loadSettings();
   void loadSecurity();
   void loadSessions();
+  void loadCurrentAuthMethod();
 });
 </script>
 
@@ -279,10 +287,7 @@ onMounted(() => {
           </Column>
           <Column header="Signed in with">
             <template #body="{ data }">
-              <span v-if="data.authMethod === 'legacy_mfa'" title="Signed in before passkeys were added.">
-                {{ authMethodLabel(data.authMethod) }}
-              </span>
-              <span v-else-if="authMethodLabel(data.authMethod)">{{ authMethodLabel(data.authMethod) }}</span>
+              <span v-if="authMethodLabel(data.authMethod)">{{ authMethodLabel(data.authMethod) }}</span>
               <span v-else role="img" aria-label="Not recorded">—</span>
             </template>
           </Column>
@@ -296,6 +301,7 @@ onMounted(() => {
           </Column>
         </DataTable>
       </div>
+      <p v-if="hasLegacySession" class="muted small">{{ LEGACY_SIGN_IN_HINT }}</p>
     </section>
 
     <Dialog v-model:visible="codesDialog" modal header="Your new backup codes" :style="{ width: '32rem' }">

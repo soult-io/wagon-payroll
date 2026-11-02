@@ -15,6 +15,7 @@ import Checkbox from "primevue/checkbox";
 import Dialog from "primevue/dialog";
 import InputText from "primevue/inputtext";
 import Message from "primevue/message";
+import { AUTH_METHOD, MAX_PASSKEYS_PER_USER } from "@payroll/shared";
 import { authClient } from "../lib/auth-client";
 import {
   addErrorText,
@@ -22,9 +23,9 @@ import {
   isCancelled,
   isNotFresh,
   listPasskeys,
-  MAX_PASSKEY_NAME_LENGTH,
-  MAX_PASSKEYS,
+  NAME_NOT_SAVED,
   passkeyLabel,
+  passkeyNameError,
   type PasskeyError,
   type PasskeyRow,
   REMOVE_ERROR,
@@ -32,7 +33,7 @@ import {
   renameErrorText,
   renamePasskey,
 } from "../lib/passkeys";
-import { canUsePasskeys } from "../composables/useRuntimeConfig";
+import { canUsePasskeys, useRuntimeConfig } from "../composables/useRuntimeConfig";
 import { useNotify } from "../composables/useNotify";
 import { useDates } from "../composables/useDates";
 import { useAuthStore } from "../stores/auth";
@@ -51,33 +52,44 @@ const { date } = useDates();
 const DEVICE_DETAIL =
   "It may still appear on your device. You can delete it there in your password manager or settings.";
 
+// Neither the controls nor the "not available" line until the runtime config is in.
+const configReady = ref(false);
+void useRuntimeConfig().loaded.then(() => {
+  configReady.value = true;
+});
 const available = computed(() => canUsePasskeys());
-const backupCodeSession = computed(() => props.currentAuthMethod === "password_backup_code");
+const backupCodeSession = computed(
+  () => props.currentAuthMethod === AUTH_METHOD.passwordBackupCode,
+);
 
 const passkeys = ref<PasskeyRow[]>([]);
 const loading = ref(true);
 const loadFailed = ref(false);
-const atLimit = computed(() => passkeys.value.length >= MAX_PASSKEYS);
+const atLimit = computed(() => passkeys.value.length >= MAX_PASSKEYS_PER_USER);
+
+type CardRow = PasskeyRow & { label: string; a11y: string };
 
 /** Accessible name per row; the date is added only where two names collide. */
-const rows = computed(() => {
+const rows = computed<CardRow[]>(() => {
+  const labelled = passkeys.value.map((p) => ({ ...p, label: passkeyLabel(p) }));
   const counts = new Map<string, number>();
-  for (const p of passkeys.value) {
-    const label = passkeyLabel(p);
-    counts.set(label, (counts.get(label) ?? 0) + 1);
-  }
-  return passkeys.value.map((p) => {
-    const label = passkeyLabel(p);
-    const a11y = (counts.get(label) ?? 0) > 1 ? `${label}, added ${date(p.createdAt)}` : label;
-    return { ...p, label, a11y };
-  });
+  for (const p of labelled) counts.set(p.label, (counts.get(p.label) ?? 0) + 1);
+  return labelled.map((p) => ({
+    ...p,
+    a11y: (counts.get(p.label) ?? 0) > 1 ? `${p.label}, added ${date(p.createdAt)}` : p.label,
+  }));
 });
 
 async function load() {
-  const { data, error } = await listPasskeys();
-  loadFailed.value = error !== null;
-  passkeys.value = data;
-  loading.value = false;
+  try {
+    const { data, error } = await listPasskeys();
+    loadFailed.value = error !== null;
+    passkeys.value = data;
+  } catch {
+    loadFailed.value = true;
+  } finally {
+    loading.value = false;
+  }
 }
 
 // ---------------------------------------------------- sign in again
@@ -97,19 +109,13 @@ function handledNotFresh(error: PasskeyError): boolean {
   return true;
 }
 
-function nameError(name: string, required: boolean): string | null {
-  if (name.length > MAX_PASSKEY_NAME_LENGTH) return "Use 64 characters or fewer.";
-  if (required && name === "") return "Enter a name.";
-  return null;
-}
-
 // ---------------------------------------------------- add
 const addOpen = ref(false);
 const addName = ref("");
 const addBusy = ref(false);
 const addInfo = ref<string | null>(null);
 const addError = ref<string | null>(null);
-const addNameError = computed(() => nameError(addName.value.trim(), false));
+const addNameError = computed(() => passkeyNameError(addName.value.trim(), false));
 
 function openAdd() {
   addName.value = "";
@@ -124,7 +130,7 @@ async function submitAdd() {
   addInfo.value = null;
   addError.value = null;
   try {
-    const { error, renameError } = await addPasskey(addName.value.trim());
+    const { error, nameSaveError } = await addPasskey(addName.value.trim());
     if (error) {
       if (isCancelled(error)) {
         addInfo.value = "No passkey was added. You can try again whenever you're ready.";
@@ -135,7 +141,7 @@ async function submitAdd() {
     }
     addOpen.value = false;
     notify.success("Passkey added. You can use it next time you sign in.");
-    if (renameError) notify.error(new Error(renameErrorText(renameError)), "Name not saved");
+    if (nameSaveError) notify.error(new Error(NAME_NOT_SAVED), "Name not saved");
     await load();
   } finally {
     addBusy.value = false;
@@ -144,15 +150,15 @@ async function submitAdd() {
 
 // ---------------------------------------------------- rename
 const renameOpen = ref(false);
-const renameTarget = ref<PasskeyRow | null>(null);
+const renameTarget = ref<CardRow | null>(null);
 const renameName = ref("");
 const renameBusy = ref(false);
 const renameError = ref<string | null>(null);
-const renameNameError = computed(() => nameError(renameName.value.trim(), true));
+const renameNameError = computed(() => passkeyNameError(renameName.value.trim(), true));
 
-function openRename(row: PasskeyRow) {
+function openRename(row: CardRow) {
   renameTarget.value = row;
-  renameName.value = passkeyLabel(row);
+  renameName.value = row.label;
   renameError.value = null;
   renameOpen.value = true;
 }
@@ -168,7 +174,7 @@ async function submitRename() {
       return;
     }
     renameOpen.value = false;
-    notify.success("Passkey renamed");
+    notify.success("Passkey renamed.");
     await load();
   } finally {
     renameBusy.value = false;
@@ -177,12 +183,12 @@ async function submitRename() {
 
 // ---------------------------------------------------- remove
 const removeOpen = ref(false);
-const removeTarget = ref<(PasskeyRow & { label: string }) | null>(null);
+const removeTarget = ref<CardRow | null>(null);
 const signOutOthers = ref(false);
 const removeBusy = ref(false);
 const removeError = ref<string | null>(null);
 
-function openRemove(row: PasskeyRow & { label: string }) {
+function openRemove(row: CardRow) {
   removeTarget.value = row;
   signOutOthers.value = false;
   removeError.value = null;
@@ -202,7 +208,7 @@ async function submitRemove() {
     removeOpen.value = false;
     await load();
     if (!signOutOthers.value) {
-      notify.success("Passkey removed.", DEVICE_DETAIL);
+      notify.success("Passkey removed.");
       return;
     }
     const { error: revokeError } = await authClient.revokeOtherSessions();
@@ -216,7 +222,7 @@ async function submitRemove() {
       );
       return;
     }
-    notify.success("Passkey removed. You're signed out on all other devices.", DEVICE_DETAIL);
+    notify.success("Passkey removed. You're signed out on all other devices.");
   } finally {
     removeBusy.value = false;
   }
@@ -288,16 +294,16 @@ watch(
         </li>
       </ul>
       <p v-if="atLimit" class="muted small">
-        You've added the most passkeys allowed ({{ MAX_PASSKEYS }}). Remove one you no longer use to
+        You've added the most passkeys allowed ({{ MAX_PASSKEYS_PER_USER }}). Remove one you no longer use to
         add another.
       </p>
     </template>
-    <p v-else class="muted small">
+    <p v-else-if="configReady" class="muted small">
       Passkeys aren't available here. They need an up-to-date browser and a secure (https) web
       address.
     </p>
 
-    <Dialog v-model:visible="addOpen" modal header="Add a passkey" :style="{ width: '30rem' }">
+    <Dialog v-model:visible="addOpen" modal header="Add a passkey" :style="{ width: '30rem' }" :breakpoints="{ '575px': '92vw' }">
       <form class="stack" @submit.prevent="submitAdd">
         <p class="small">
           Your device will ask for your fingerprint, face, or device PIN. That's all you'll need to
@@ -305,11 +311,17 @@ watch(
         </p>
         <div class="field">
           <label for="passkeyName">Name (optional)</label>
-          <InputText id="passkeyName" v-model="addName" :invalid="addNameError !== null" autocomplete="off" />
-          <small class="muted">
+          <InputText
+            id="passkeyName"
+            v-model="addName"
+            :invalid="addNameError !== null"
+            :aria-describedby="addNameError ? 'passkeyNameHelp passkeyNameError' : 'passkeyNameHelp'"
+            autocomplete="off"
+          />
+          <small id="passkeyNameHelp" class="muted">
             For example "Work laptop" or "My phone". Leave it blank and we'll name it for you.
           </small>
-          <small v-if="addNameError" class="error-text">{{ addNameError }}</small>
+          <small v-if="addNameError" id="passkeyNameError" class="error-text">{{ addNameError }}</small>
         </div>
         <Message v-if="addInfo" severity="info" :closable="false">{{ addInfo }}</Message>
         <Message v-if="addError" severity="error" :closable="false">{{ addError }}</Message>
@@ -320,13 +332,19 @@ watch(
       </form>
     </Dialog>
 
-    <Dialog v-model:visible="renameOpen" modal header="Rename passkey" :style="{ width: '30rem' }">
+    <Dialog v-model:visible="renameOpen" modal header="Rename passkey" :style="{ width: '30rem' }" :breakpoints="{ '575px': '92vw' }">
       <form class="stack" @submit.prevent="submitRename">
         <div class="field">
           <label for="passkeyRename">Name</label>
-          <InputText id="passkeyRename" v-model="renameName" :invalid="renameNameError !== null" autocomplete="off" />
-          <small class="muted">Pick a name that tells you which device this is.</small>
-          <small v-if="renameNameError" class="error-text">{{ renameNameError }}</small>
+          <InputText
+            id="passkeyRename"
+            v-model="renameName"
+            :invalid="renameNameError !== null"
+            :aria-describedby="renameNameError ? 'passkeyRenameHelp passkeyRenameError' : 'passkeyRenameHelp'"
+            autocomplete="off"
+          />
+          <small id="passkeyRenameHelp" class="muted">Pick a name that tells you which device this is.</small>
+          <small v-if="renameNameError" id="passkeyRenameError" class="error-text">{{ renameNameError }}</small>
         </div>
         <Message v-if="renameError" severity="error" :closable="false">{{ renameError }}</Message>
         <div class="row">
@@ -336,12 +354,13 @@ watch(
       </form>
     </Dialog>
 
-    <Dialog v-model:visible="removeOpen" modal header="Remove passkey" :style="{ width: '30rem' }">
+    <Dialog v-model:visible="removeOpen" modal header="Remove passkey" :style="{ width: '30rem' }" :breakpoints="{ '575px': '92vw' }">
       <div class="stack">
         <p class="small">
           You won't be able to sign in with "{{ removeTarget?.label }}" anymore. You can still sign in
           with your password and authenticator code.
         </p>
+        <p class="muted small">{{ DEVICE_DETAIL }}</p>
         <div class="checkbox-field">
           <Checkbox v-model="signOutOthers" input-id="signOutOthers" binary />
           <div>
@@ -357,7 +376,7 @@ watch(
       </div>
     </Dialog>
 
-    <Dialog v-model:visible="signInAgain" modal header="Sign in again to continue" :style="{ width: '30rem' }">
+    <Dialog v-model:visible="signInAgain" modal header="Sign in again to continue" :style="{ width: '30rem' }" :breakpoints="{ '575px': '92vw' }">
       <p class="small">
         To keep your account safe, adding or removing a passkey needs a sign-in from the last few
         minutes. Sign in with your password and authenticator code, or with a passkey. You'll come
@@ -385,6 +404,10 @@ watch(
   justify-content: space-between;
   align-items: center;
   gap: 1rem;
+}
+.passkey-row > div:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .passkey-row p {
   margin: 0.15rem 0 0;
