@@ -1316,7 +1316,6 @@ export const adminDepositsApi = {
       { method: "POST", headers: { "content-type": "application/pdf" }, body: file },
     );
     if (!res.ok) {
-      if (res.status === 401) notifySessionExpired();
       let code = "request_failed";
       let message = `Request failed (${res.status})`;
       try {
@@ -1326,6 +1325,7 @@ export const adminDepositsApi = {
       } catch {
         // non-JSON error body — keep defaults
       }
+      notifySessionRefusal(res.status, "/api/admin/tax-deposits", { error: code });
       throw new ApiError(res.status, code, message);
     }
     return (await res.json()) as { attachment: DepositAttachment };
@@ -1737,7 +1737,6 @@ export const adminFilingsApi = {
       { method: "POST", headers: { "content-type": "application/pdf" }, body: file },
     );
     if (!res.ok) {
-      if (res.status === 401) notifySessionExpired();
       let code = "request_failed";
       let message = `Request failed (${res.status})`;
       try {
@@ -1747,6 +1746,7 @@ export const adminFilingsApi = {
       } catch {
         // non-JSON error body — keep defaults
       }
+      notifySessionRefusal(res.status, "/api/admin/tax-filings", { error: code });
       throw new ApiError(res.status, code, message);
     }
     return (await res.json()) as { attachment: FilingAttachment };

@@ -329,6 +329,112 @@ describe("T8 a session without an MFA marker is refused (user has TOTP on)", () 
   });
 });
 
+// ---------------------------------------------------------------- recovery
+
+/** The Set-Cookie entry for `name`, or null. */
+function setCookieFor(setCookies: string | string[] | undefined, name: string): string | null {
+  const list =
+    setCookies === undefined ? [] : Array.isArray(setCookies) ? setCookies : [setCookies];
+  return list.find((c) => c.split("=")[0]!.trim() === name) ?? null;
+}
+
+/** True when a Set-Cookie entry clears the cookie (empty value, Max-Age=0 or an expiry in the past). */
+function clearsCookie(entry: string | null): boolean {
+  if (entry === null) return false;
+  const [pair, ...attrs] = entry.split(";").map((p) => p.trim());
+  const value = pair!.slice(pair!.indexOf("=") + 1);
+  const maxAge = attrs.find((a) => /^max-age=/i.test(a));
+  const expires = attrs.find((a) => /^expires=/i.test(a));
+  const expired =
+    (maxAge !== undefined && Number(maxAge.split("=")[1]) <= 0) ||
+    (expires !== undefined && new Date(expires.slice("expires=".length)).getTime() <= Date.now());
+  return value === "" || expired;
+}
+
+/** Password step sent WITH the stale session cookie (no sign-out first). */
+async function signInOverStale(email: string, staleCookie: string) {
+  const ip = freshIp();
+  return t.app.inject({
+    method: "POST",
+    url: "/api/auth/sign-in/email",
+    headers: {
+      ...ORIGIN,
+      "x-forwarded-for": ip,
+      cookie: `payroll.session_token=${staleCookie}`,
+    },
+    remoteAddress: ip,
+    payload: { email, password: TEST_PASSWORD },
+  });
+}
+
+async function verifyTotp(userId: string, cookieHeader: string) {
+  const ip = freshIp();
+  return t.app.inject({
+    method: "POST",
+    url: "/api/auth/two-factor/verify-totp",
+    headers: { ...ORIGIN, "x-forwarded-for": ip, cookie: cookieHeader },
+    remoteAddress: ip,
+    payload: { code: await currentTotp(t, userId) },
+  });
+}
+
+/**
+ * Observed on the PR 2 tree: the mount still sees the stale 'none' session on
+ * POST /two-factor/verify-totp (not in NO_MFA_SESSION_AUTH_PATHS) and refuses
+ * it. A client that ignores the session_token clearing cannot finish the
+ * sign-in until it drops that cookie (a browser honours the clearing).
+ */
+const RECOVERY_IGNORED_CLEARING: [number, unknown] = [403, "mfa_required"];
+
+describe("recovery: a refused session signs in again without signing out first", () => {
+  for (const marker of ["none", null] as const) {
+    const tag = marker === null ? "NULL" : `'${marker}'`;
+    it(`stale ${tag} cookie: sign-in → 2FA challenge clears session_token; verify-totp with the browser jar → 200, new 'password_totp' row, /api/me 200`, async () => {
+      const email = `pay259pr2-recover-${marker ?? "null"}@example.com`;
+      const { userId, cookie: stale } = await totpSession(email);
+      await setMethod(stale, marker);
+      expect((await get("/api/me", stale)).statusCode).toBe(403);
+
+      const signIn = await signInOverStale(email, stale);
+      expect(signIn.statusCode, signIn.body).toBe(200);
+      expect((signIn.json() as { twoFactorRedirect?: boolean }).twoFactorRedirect).toBe(true);
+      const twoFactor = cookieValue(signIn.headers["set-cookie"], "payroll.two_factor");
+      expect(twoFactor).toBeTruthy();
+      const sessionSet = setCookieFor(signIn.headers["set-cookie"], "payroll.session_token");
+      expect(clearsCookie(sessionSet), `session_token Set-Cookie: ${sessionSet}`).toBe(true);
+
+      // The browser jar now holds only the two_factor cookie.
+      const verify = await verifyTotp(userId, `payroll.two_factor=${twoFactor}`);
+      expect(verify.statusCode, verify.body).toBe(200);
+      const fresh = cookieValue(verify.headers["set-cookie"], "payroll.session_token");
+      expect(fresh).toBeTruthy();
+      expect(tokenOf(fresh!)).not.toBe(tokenOf(stale));
+      expect((await sessionRow(fresh!))!.authMethod).toBe("password_totp");
+      expect((await get("/api/me", fresh!)).statusCode).toBe(200);
+    });
+  }
+
+  it("a client that ignores the clearing and sends the stale session_token at verify-totp: recorded behaviour", async () => {
+    const email = "pay259pr2-recover-ignore@example.com";
+    const { userId, cookie: stale } = await totpSession(email);
+    await setMethod(stale, "none");
+
+    const signIn = await signInOverStale(email, stale);
+    expect(signIn.statusCode, signIn.body).toBe(200);
+    const twoFactor = cookieValue(signIn.headers["set-cookie"], "payroll.two_factor");
+    expect(twoFactor).toBeTruthy();
+
+    const verify = await verifyTotp(
+      userId,
+      `payroll.two_factor=${twoFactor}; payroll.session_token=${stale}`,
+    );
+    // Recorded behaviour (see RECOVERY_IGNORED_CLEARING below).
+    expect([verify.statusCode, errorOf(verify)]).toEqual(RECOVERY_IGNORED_CLEARING);
+    // No session was issued by the refused verify.
+    expect(cookieValue(verify.headers["set-cookie"], "payroll.session_token")).toBeNull();
+  });
+});
+
 // ---------------------------------------------------------------- allowed markers
 
 describe("MFA markers are accepted", () => {
@@ -494,6 +600,22 @@ describe("web: the SPA treats 403 mfa_required like an expired session", () => {
     );
     // w2_access_only still goes to the W-2 screen.
     expect(api).toMatch(/if\s*\(\s*isW2AccessOnly\([^)]*\)\s*\)\s*\{?\s*notifyW2AccessOnly\(\)/);
+  });
+
+  it("api.ts: both uploadAttachment raw-fetch sites route through notifySessionRefusal (no bare 401 check)", () => {
+    const api = webSrc("apps/web/src/lib/api.ts");
+    for (const path of ["/api/admin/tax-deposits", "/api/admin/tax-filings"]) {
+      expect(api, `${path} upload routes through notifySessionRefusal`).toMatch(
+        new RegExp(
+          `notifySessionRefusal\\(\\s*res\\.status\\s*,\\s*["']${path.replace(/\//g, "\\/")}["']`,
+        ),
+      );
+    }
+    expect(api).not.toMatch(/res\.status\s*===\s*401\s*\)\s*notifySessionExpired\(\)/);
+    // Every raw fetch in the client is followed by a notifySessionRefusal call.
+    const fetches = (api.match(/await fetch\(/g) ?? []).length;
+    const refusals = (api.match(/notifySessionRefusal\(res\.status/g) ?? []).length;
+    expect({ fetches, refusals }).toEqual({ fetches: 3, refusals: 3 });
   });
 
   it("auth-client.ts onError calls notifySessionExpired for 401 or isMfaRequired(status, ctx.error)", () => {
