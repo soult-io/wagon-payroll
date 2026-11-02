@@ -54,7 +54,7 @@ const DEVICE_DETAIL =
 
 // Neither the controls nor the "not available" line until the runtime config is in.
 const configReady = ref(false);
-void useRuntimeConfig().loaded.then(() => {
+void useRuntimeConfig().loaded.finally(() => {
   configReady.value = true;
 });
 const available = computed(() => canUsePasskeys());

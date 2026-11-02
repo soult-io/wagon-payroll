@@ -94,6 +94,9 @@ export function isNotFresh(error: PasskeyError): boolean {
 const NO_SCREEN_LOCK =
   "Your device didn't ask for your fingerprint, face, or device PIN, so the passkey wasn't added. Turn on a screen lock on this device, then try again.";
 
+const CANNOT_STORE_PASSKEY =
+  "This device or security key can't store a passkey, so it wasn't added. Try your phone or computer's built-in passkey, or a newer security key.";
+
 const ADD_ERRORS: Record<string, string> = {
   ERROR_AUTHENTICATOR_PREVIOUSLY_REGISTERED:
     "This device already has a passkey for your account. You don't need to add another one here.",
@@ -101,7 +104,7 @@ const ADD_ERRORS: Record<string, string> = {
   PASSKEY_USER_VERIFICATION_REQUIRED: NO_SCREEN_LOCK,
   // SimpleWebAuthn: the device cannot do what the server requires.
   ERROR_AUTHENTICATOR_MISSING_USER_VERIFICATION_SUPPORT: NO_SCREEN_LOCK,
-  ERROR_AUTHENTICATOR_MISSING_DISCOVERABLE_CREDENTIAL_SUPPORT: NO_SCREEN_LOCK,
+  ERROR_AUTHENTICATOR_MISSING_DISCOVERABLE_CREDENTIAL_SUPPORT: CANNOT_STORE_PASSKEY,
 };
 const NAME_INVALID = `Use a name between 1 and ${MAX_PASSKEY_NAME_LENGTH} characters.`;
 
@@ -144,7 +147,9 @@ const AUTH_METHOD_LABELS: Record<AuthMethod, string | null> = {
 
 /** The label, or null when the method is not recorded (shown as "—"). */
 export function authMethodLabel(method: string | null | undefined): string | null {
-  return (method && AUTH_METHOD_LABELS[method as AuthMethod]) || null;
+  return method && Object.hasOwn(AUTH_METHOD_LABELS, method)
+    ? AUTH_METHOD_LABELS[method as AuthMethod]
+    : null;
 }
 
 export const LEGACY_SIGN_IN_HINT = "Earlier sign-in: signed in before passkeys were added.";
