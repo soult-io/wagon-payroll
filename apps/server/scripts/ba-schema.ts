@@ -6,7 +6,8 @@
  * returns what Better Auth's own migration compiler still wants for the
  * runtime options: "" when the migrations match the configuration. A plugin,
  * option or better-auth upgrade that needs DDL then shows up here (and in
- * test/better-auth-schema-drift) instead of at runtime.
+ * test/pay-259-pr1.test.ts, "T21 Better Auth schema drift") instead of at
+ * runtime.
  */
 
 import { readFileSync } from "node:fs";
