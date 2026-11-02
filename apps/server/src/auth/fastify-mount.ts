@@ -9,7 +9,8 @@
  * /admin/*, any future plugin path — answers 403 w2_access_only. A request
  * without a session passes unchanged (sign-in must keep working).
  *
- * PAY-240: a session whose user has no TOTP reaches only sign-in,
+ * PAY-240 + PAY-259: a session that is not an MFA session (user without
+ * TOTP, or a session not signed in with an MFA method) reaches only sign-in,
  * get-session and sign-out (not the TOTP / backup-code steps, which could
  * enroll TOTP outside onboarding); every other path answers 403 mfa_required.
  */
@@ -20,7 +21,8 @@ import type { AppConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { formerEmployeeAccess } from "./former-employee.js";
 import { withoutTrustDevice } from "./trust-device.js";
-import { type SessionUser, toHeaders } from "../plugins/guards.js";
+import { type SessionInfo, type SessionUser, toHeaders } from "../plugins/guards.js";
+import { isMfaSession } from "./session-method.js";
 import { localDate } from "../payroll/run-dates.js";
 
 /** PAY-240: the Better Auth calls a session without TOTP may make (method + exact path). */
@@ -85,7 +87,9 @@ export function mountBetterAuth(
     const session = await auth.api.getSession({ headers: toHeaders(req) });
     if (!session) return null;
     // Auth's static type omits plugin fields; guards.ts reads the same shape.
-    if ((session.user as SessionUser).twoFactorEnabled !== true) return "mfa_required";
+    if (!isMfaSession(session.user as SessionUser, session.session as SessionInfo)) {
+      return "mfa_required";
+    }
     // verify-totp and backup-code/verify (the rest of the set is skipped by the caller).
     if (FORMER_EMPLOYEE_AUTH_PATHS.has(pathKey)) return null;
     const today = localDate(clock(), config.appTz);

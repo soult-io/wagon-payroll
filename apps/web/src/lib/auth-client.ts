@@ -5,7 +5,7 @@
 
 import { createAuthClient } from "better-auth/vue";
 import { twoFactorClient, adminClient } from "better-auth/client/plugins";
-import { notifySessionExpired } from "./session-expired";
+import { isMfaRequired, notifySessionExpired } from "./session-expired";
 
 export const authClient = createAuthClient({
   plugins: [twoFactorClient(), adminClient()],
@@ -14,8 +14,11 @@ export const authClient = createAuthClient({
     // session expired) gets the same redirect treatment as the typed client.
     // Pre-auth 401s (wrong password/TOTP) are no-ops — the handler registered
     // in main.ts only acts when a session is actually loaded.
+    // PAY-259: 403 mfa_required (session not signed in with an MFA method) too.
     onError: (ctx) => {
-      if (ctx.response.status === 401) notifySessionExpired();
+      if (ctx.response.status === 401 || isMfaRequired(ctx.response.status, ctx.error)) {
+        notifySessionExpired();
+      }
     },
   },
 });

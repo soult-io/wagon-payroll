@@ -2,9 +2,9 @@
  * PAY-259: how a session was signed in, stored on session."authMethod".
  *
  * Better Auth runs `setAuthMethod` (databaseHooks.session.create.before) for
- * every new session and records the endpoint that created it. PR 1 writes
- * the marker only; the guards still check user.twoFactorEnabled. A later PR
- * makes them accept only the MFA methods.
+ * every new session and records the endpoint that created it. Both guards
+ * (plugins/guards.ts requireAuth, the /api/auth mount) accept a session only
+ * when `isMfaSession` holds: default-deny for every other session path.
  */
 
 export const AUTH_METHOD = {
@@ -16,7 +16,33 @@ export const AUTH_METHOD = {
   none: "none",
 } as const;
 
-const METHOD_BY_PATH: Record<string, string> = {
+export type AuthMethod = (typeof AUTH_METHOD)[keyof typeof AUTH_METHOD];
+
+/** Sign-in methods that passed a second factor (or a user-verified passkey). */
+export const MFA_METHODS: ReadonlySet<string> = new Set<AuthMethod>([
+  AUTH_METHOD.passwordTotp,
+  AUTH_METHOD.passwordBackupCode,
+  AUTH_METHOD.passkey,
+  AUTH_METHOD.legacyMfa,
+]);
+
+/**
+ * PAY-240 + PAY-259: the user has TOTP on and this session was signed in
+ * with an MFA method. "none", NULL (written by an image older than 0030)
+ * and anything unknown are refused.
+ */
+export function isMfaSession(
+  user: { twoFactorEnabled?: boolean | null | undefined },
+  session: { authMethod?: string | null | undefined },
+): boolean {
+  return (
+    user.twoFactorEnabled === true &&
+    typeof session.authMethod === "string" &&
+    MFA_METHODS.has(session.authMethod)
+  );
+}
+
+const METHOD_BY_PATH: Record<string, AuthMethod> = {
   "/two-factor/verify-totp": AUTH_METHOD.passwordTotp,
   "/backup-code/verify": AUTH_METHOD.passwordBackupCode,
   "/passkey/verify-authentication": AUTH_METHOD.passkey,
