@@ -8,7 +8,9 @@
  *   so expiresAt is fixed at creation); idle 12h enforced by the app's
  *   requireAuth guard (see plugins/guards.ts).
  * - Plugins: twoFactor() (TOTP), admin() (user management; impersonation
- *   paths disabled), payrollBackupCodes() (hashed-at-rest backup codes).
+ *   paths disabled), payrollBackupCodes() (hashed-at-rest backup codes),
+ *   passkey() (PAY-259; registered for its schema, every path disabled).
+ * - session."authMethod" records how each session was signed in (PAY-259).
  * - after-hook writes auth_events + applies lockout.
  *
  * `buildAuthOptions` is shared with the schema-generation script
@@ -19,10 +21,12 @@
 import { betterAuth, type BetterAuthOptions } from "better-auth";
 import { twoFactor } from "better-auth/plugins";
 import { admin } from "better-auth/plugins";
+import { passkey } from "@better-auth/passkey";
 import type { Dialect } from "kysely";
 import { hashPassword, verifyPassword } from "./password.js";
 import { payrollBackupCodes } from "./backup-codes.js";
 import { createAuditHook, lockoutUser } from "./hooks.js";
+import { setAuthMethod } from "./session-method.js";
 import type { AppConfig } from "../config.js";
 import type { Db } from "../db.js";
 
@@ -44,6 +48,15 @@ const DISABLED_PATHS = [
   // No email/SMS OTP is configured; keep a weaker second factor from appearing.
   "/two-factor/send-otp",
   "/two-factor/verify-otp",
+  // PAY-259 PR 1: the passkey plugin is registered for its schema only.
+  // Its endpoints open in a later PR, with user verification enforced.
+  "/passkey/generate-register-options",
+  "/passkey/verify-registration",
+  "/passkey/generate-authenticate-options",
+  "/passkey/verify-authentication",
+  "/passkey/list-user-passkeys",
+  "/passkey/update-passkey",
+  "/passkey/delete-passkey",
 ];
 
 export interface AuthDeps {
@@ -55,6 +68,7 @@ export interface AuthDeps {
 export function buildAuthOptions(deps: AuthDeps): BetterAuthOptions {
   const { config, db } = deps;
   const secure = config.nodeEnv === "production";
+  const base = new URL(config.baseUrl);
   return {
     appName: config.totpIssuer,
     baseURL: config.baseUrl,
@@ -76,6 +90,13 @@ export function buildAuthOptions(deps: AuthDeps): BetterAuthOptions {
       expiresIn: 7 * 24 * 60 * 60,
       disableSessionRefresh: true,
       freshAge: 60 * 60,
+      additionalFields: {
+        // PAY-259: set only by setAuthMethod, never from a request body.
+        authMethod: { type: "string", required: false, input: false },
+      },
+    },
+    databaseHooks: {
+      session: { create: { before: setAuthMethod } },
     },
     advanced: {
       useSecureCookies: secure,
@@ -104,6 +125,12 @@ export function buildAuthOptions(deps: AuthDeps): BetterAuthOptions {
         adminRoles: ["admin"],
       }),
       payrollBackupCodes({ db }),
+      passkey({
+        // Explicit, so the plugin never falls back to the request's Origin header.
+        rpID: base.hostname,
+        rpName: config.totpIssuer,
+        origin: base.origin,
+      }),
     ],
     hooks: {
       after: createAuditHook({
