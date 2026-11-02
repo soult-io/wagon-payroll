@@ -37,7 +37,26 @@ const FORMER_EMPLOYEE_AUTH_PATHS: ReadonlySet<string> = new Set([
   ...NO_MFA_SESSION_AUTH_PATHS,
   "POST /two-factor/verify-totp",
   "POST /backup-code/verify",
+  // PAY-259 (S7): sign in with an existing passkey during the W-2 window;
+  // passkey management stays refused (w2_access_only).
+  "GET /passkey/generate-authenticate-options",
+  "POST /passkey/verify-authentication",
 ]);
+
+/** PAY-259: passkey sign-in options, limited in their own bucket (one per login page load). */
+const PASSKEY_OPTIONS_URL = "/api/auth/passkey/generate-authenticate-options";
+
+/** Credential / MFA endpoints: 10 per minute per address (spec 3). */
+function isCredentialUrl(url: string): boolean {
+  return (
+    url.includes("/api/auth/sign-in") ||
+    url.includes("/api/auth/forget-password") ||
+    url.includes("/api/auth/reset-password") ||
+    url.includes("/api/auth/two-factor") ||
+    url.includes("/api/auth/backup-code") ||
+    url.includes("/api/auth/passkey/verify-authentication")
+  );
+}
 
 /** "METHOD /path" of a request under /api/auth, without the query string. */
 function authPathKey(req: FastifyRequest): string {
@@ -101,19 +120,17 @@ export function mountBetterAuth(
     url: "/api/auth/*",
     config: {
       rateLimit: {
-        max: 10,
-        timeWindow: "1 minute",
         // Rate limit applies to credential/MFA endpoints only (spec 3:
         // login + reset + invite-accept). Session reads stay unlimited.
+        // PAY-259: passkey sign-in options (each writes a verification row)
+        // get 30 per minute in a bucket of their own.
+        max: (req) => ((req.raw.url ?? "").includes(PASSKEY_OPTIONS_URL) ? 30 : 10),
+        timeWindow: "1 minute",
+        keyGenerator: (req) =>
+          (req.raw.url ?? "").includes(PASSKEY_OPTIONS_URL) ? `${req.ip}:passkey-options` : req.ip,
         allowList: (req) => {
           const url = req.raw.url ?? "";
-          const sensitive =
-            url.includes("/api/auth/sign-in") ||
-            url.includes("/api/auth/forget-password") ||
-            url.includes("/api/auth/reset-password") ||
-            url.includes("/api/auth/two-factor") ||
-            url.includes("/api/auth/backup-code");
-          return !sensitive;
+          return !(isCredentialUrl(url) || url.includes(PASSKEY_OPTIONS_URL));
         },
       },
     },

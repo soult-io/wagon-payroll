@@ -9,9 +9,9 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import { desc, eq } from "drizzle-orm";
+import { count, desc, eq } from "drizzle-orm";
 import { z } from "zod";
-import { authTwoFactor, notificationSettings, w4Elections } from "@payroll/db";
+import { authPasskey, authTwoFactor, notificationSettings, w4Elections } from "@payroll/db";
 import { WORKFLOW_EVENTS, workflowEventsFor } from "@payroll/notifications";
 import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
@@ -96,9 +96,14 @@ export function registerMyRoutes(app: FastifyInstance, deps: Deps): void {
       .where(eq(authTwoFactor.userId, req.authUser!.id))
       .limit(1);
     const twoFactor = rows[0];
+    const passkeys = await db
+      .select({ n: count() })
+      .from(authPasskey)
+      .where(eq(authPasskey.userId, req.authUser!.id));
     return {
       twoFactorEnabled: Boolean(req.authUser!.twoFactorEnabled),
       backupCodesRemaining: twoFactor ? decodeCodeHashes(twoFactor.backupCodes).length : 0,
+      passkeyCount: passkeys[0]?.n ?? 0,
     };
   });
 

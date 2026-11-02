@@ -4,6 +4,7 @@
 
 import Fastify, { type FastifyInstance } from "fastify";
 import rateLimit from "@fastify/rate-limit";
+import { passkeysAvailable } from "./auth/passkey-config.js";
 import fastifyStatic from "@fastify/static";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
@@ -92,6 +93,8 @@ export async function buildApp(deps: BuildAppDeps = {}) {
   app.get("/api/runtime-config", async () => ({
     appEnv: config.appEnv,
     brandName: config.brandName,
+    // PAY-259: false where BASE_URL cannot serve WebAuthn (IP address, plain http).
+    passkeysAvailable: passkeysAvailable(config.baseUrl),
   }));
 
   mountBetterAuth(app, { auth, db, config, ...(deps.clock ? { clock: deps.clock } : {}) });

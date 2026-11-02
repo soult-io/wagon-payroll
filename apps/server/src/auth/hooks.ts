@@ -11,6 +11,11 @@ import { writeAuthEvent, AUTH_EVENT, requestContext } from "./audit.js";
 import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
 import { trackDevice } from "../notify/device.js";
+import {
+  assertionSignCount,
+  passkeyByCredential,
+  withRequiredUserVerification,
+} from "./passkey-policy.js";
 
 export const LOCKOUT_THRESHOLD = 10;
 
@@ -49,6 +54,8 @@ async function findUserIdByEmail(db: Db, email: string): Promise<string | null> 
 
 /**
  * after-hook: writes audit events for BA-owned flows and applies lockout.
+ * Passkey events never touch the password lockout counter (PAY-259):
+ * consecutiveFailures reads only login_success / login_failure.
  * Failure detection: BA's dispatcher catches endpoint APIErrors into
  * `ctx.context.returned` and still runs after-hooks (see dispatch.mjs).
  */
@@ -124,6 +131,48 @@ export function createAuditHook(deps: {
         // here we only track the device on a completed sign-in.
         const returnedUser = (returned as { user?: { id?: string } } | undefined)?.user;
         if (!isFailure) await trackNewDevice(sessionUser?.id ?? returnedUser?.id ?? null, auditCtx);
+        break;
+      }
+      case "/passkey/generate-authenticate-options": {
+        // PAY-259: ask the authenticator for a PIN or biometric.
+        const options = isFailure ? null : withRequiredUserVerification(returned);
+        if (options) return ctx.json(options);
+        break;
+      }
+      case "/passkey/verify-authentication": {
+        if (!isFailure) {
+          const returnedUser = (returned as { user?: { id?: string } } | undefined)?.user;
+          const userId = returnedUser?.id ?? null;
+          await writeAuthEvent(db, AUTH_EVENT.passkeyLoginSuccess, userId, auditCtx);
+          await trackNewDevice(userId, auditCtx);
+          break;
+        }
+        const response = body.response as { id?: unknown } | undefined;
+        const owner = await passkeyByCredential(db, response?.id);
+        await writeAuthEvent(db, AUTH_EVENT.passkeyLoginFailure, owner?.userId ?? null, auditCtx);
+        // A counter that did not move forward may mean a cloned authenticator.
+        // Synced passkeys report 0, so the passkey stays usable (S6).
+        const signCount = assertionSignCount(response);
+        if (owner && owner.counter > 0 && signCount !== null && signCount <= owner.counter) {
+          await writeAuthEvent(db, AUTH_EVENT.passkeyCounterRegression, owner.userId, auditCtx);
+        }
+        break;
+      }
+      case "/passkey/verify-registration": {
+        const event = isFailure ? AUTH_EVENT.passkeyAddFailed : AUTH_EVENT.passkeyAdded;
+        await writeAuthEvent(db, event, sessionUser?.id ?? null, auditCtx);
+        break;
+      }
+      case "/passkey/update-passkey": {
+        if (!isFailure) {
+          await writeAuthEvent(db, AUTH_EVENT.passkeyRenamed, sessionUser?.id ?? null, auditCtx);
+        }
+        break;
+      }
+      case "/passkey/delete-passkey": {
+        if (!isFailure) {
+          await writeAuthEvent(db, AUTH_EVENT.passkeyRemoved, sessionUser?.id ?? null, auditCtx);
+        }
         break;
       }
       case "/change-password": {

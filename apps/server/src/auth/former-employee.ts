@@ -27,6 +27,7 @@ import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import {
   auditEvents,
   authEvents,
+  authPasskey,
   authSession,
   authUser,
   employees,
@@ -237,7 +238,11 @@ async function applyChange(
       .where(sameBanState(user))
       .returning({ id: authUser.id });
     if (written.length === 0) return false;
-    if (change === "ended") await tx.delete(authSession).where(eq(authSession.userId, userId));
+    if (change === "ended") {
+      await tx.delete(authSession).where(eq(authSession.userId, userId));
+      // PAY-259 (S7): the W-2 window closed; passkeys go with the sessions.
+      await tx.delete(authPasskey).where(eq(authPasskey.userId, userId));
+    }
     await tx.insert(authEvents).values({
       userId,
       event: change === "ended" ? AUTH_EVENT.userDisabled : AUTH_EVENT.userEnabled,

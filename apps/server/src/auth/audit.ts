@@ -20,6 +20,15 @@ export const AUTH_EVENT = {
   userDisabled: "user_disabled",
   userEnabled: "user_enabled",
   lockout: "lockout",
+  // PAY-259 passkeys. Never carry the credential ID, public key or name.
+  passkeyAdded: "passkey_added",
+  passkeyAddFailed: "passkey_add_failed",
+  passkeyRenamed: "passkey_renamed",
+  passkeyRemoved: "passkey_removed",
+  passkeyLoginSuccess: "passkey_login_success",
+  passkeyLoginFailure: "passkey_login_failure",
+  passkeyCounterRegression: "passkey_counter_regression",
+  passkeysReset: "passkeys_reset",
 } as const;
 
 export type AuthEventName = (typeof AUTH_EVENT)[keyof typeof AUTH_EVENT];

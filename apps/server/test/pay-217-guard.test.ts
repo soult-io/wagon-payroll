@@ -198,13 +198,16 @@ describe("PAY-217 guard: deny by default for a former employee", () => {
     }).toEqual({ calledMany: true, wrong: [], me: [200, "w2_only"], list: 200 });
   });
 
-  it("T-1c Better Auth surface: with a former session every endpoint but sign-in, TOTP/backup verify, get-session and sign-out answers 403 w2_access_only (incl. /change-password and an unknown plugin path)", async () => {
+  it("T-1c Better Auth surface: with a former session every endpoint but sign-in, TOTP/backup verify, passkey sign-in (generate-authenticate-options, verify-authentication), get-session and sign-out answers 403 w2_access_only (incl. /change-password and an unknown plugin path)", async () => {
     const s = await signIn(env, former.email!); // own session: some refused calls would end it on the old code
     if (!s.session) throw new Error(`former sign-in refused (${s.status} ${s.code})`);
     const allowed = new Set([
       "POST /sign-in/email",
       "POST /two-factor/verify-totp",
       "POST /backup-code/verify",
+      // PAY-259 PR 3 (contract I): passkey sign-in joins the former-employee allowlist.
+      "GET /passkey/generate-authenticate-options",
+      "POST /passkey/verify-authentication",
       "GET /get-session",
       "POST /sign-out",
     ]);
@@ -233,6 +236,16 @@ describe("PAY-217 guard: deny by default for a former employee", () => {
       }
     }
     expect({ checkedMany: checked > 20, wrong }).toEqual({ checkedMany: true, wrong: [] });
+    // Every other passkey path stays in the refused set.
+    const keys = new Set(paths.map((e) => `${e.method} ${e.path}`));
+    const refusedPasskey = [
+      "GET /passkey/generate-register-options",
+      "POST /passkey/verify-registration",
+      "GET /passkey/list-user-passkeys",
+      "POST /passkey/update-passkey",
+      "POST /passkey/delete-passkey",
+    ];
+    expect(refusedPasskey.filter((k) => !keys.has(k) || allowed.has(k))).toEqual([]);
   });
 
   it("T-2 a former employee who held the admin role: admin routes 403 (W-2 only, not admin); /api/me access w2_only", async () => {

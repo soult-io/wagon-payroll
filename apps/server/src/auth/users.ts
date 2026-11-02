@@ -16,6 +16,7 @@ import {
 } from "./tokens.js";
 import { writeAuthEvent, AUTH_EVENT, type AuthEventContext } from "./audit.js";
 import { templateContext } from "../notify/outbox.js";
+import { wipePasskeys } from "./passkey-policy.js";
 
 export interface UserServiceDeps {
   auth: Auth;
@@ -125,9 +126,8 @@ export async function initiateReset(
   deps: UserServiceDeps,
   userId: string,
   actorId: string | null,
-  // Reserved for parity with inviteUser (which audits invite_created); a reset
-  // currently writes no auth event. Kept so both call sites share one shape.
-  _auditCtx: AuthEventContext = {},
+  // Request context for passkeys_reset (PAY-259) when the reset deleted passkeys.
+  auditCtx: AuthEventContext = {},
 ): Promise<InviteResult> {
   const { auth, db, config } = deps;
   const ctx = await auth.$context;
@@ -144,6 +144,8 @@ export async function initiateReset(
     model: "twoFactor",
     where: [{ field: "userId", value: userId }],
   });
+  // PAY-259: passkeys go with the reset too.
+  await wipePasskeys(db, userId, auditCtx);
 
   await revokeOutstandingSetupTokens(db, userId);
   const { token } = await createSetupToken(db, userId, "reset");

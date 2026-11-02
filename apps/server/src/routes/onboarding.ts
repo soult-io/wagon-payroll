@@ -22,6 +22,7 @@ import { consumeSetupToken, findValidSetupToken } from "../auth/tokens.js";
 import { PASSWORD_MIN_LENGTH, PASSWORD_MIN_ZXCVBN_SCORE, hashPassword } from "../auth/password.js";
 import { encodeCodeHashes, generateBackupCodes } from "../auth/backup-codes.js";
 import { writeAuthEvent, AUTH_EVENT, requestContext } from "../auth/audit.js";
+import { wipePasskeys } from "../auth/passkey-policy.js";
 import { toHeaders, type Guards } from "../plugins/guards.js";
 
 const tokenBody = z.object({ token: z.string().min(1) });
@@ -116,6 +117,8 @@ export function registerOnboardingRoutes(app: FastifyInstance, deps: OnboardingD
         model: "twoFactor",
         where: [{ field: "userId", value: resolved.user.id }],
       });
+      // PAY-259: and the passkeys (a passkey added after the reset was issued).
+      await wipePasskeys(db, resolved.user.id, requestContext(toHeaders(req)));
     }
     return { ok: true, next: "totp" };
   });
