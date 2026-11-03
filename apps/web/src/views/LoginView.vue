@@ -1,8 +1,11 @@
 <script setup lang="ts">
 /**
  * Login (spec 7): password step → TOTP challenge, with backup-code fallback.
+ * PAY-259: or a passkey, from the "Sign in with a passkey" button or from the
+ * email field's suggestions (autofill). A passkey checked with fingerprint,
+ * face or device PIN is a full sign-in; no code is asked.
  */
-import { ref } from "vue";
+import { onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import Button from "primevue/button";
 import InputText from "primevue/inputtext";
@@ -11,19 +14,28 @@ import Message from "primevue/message";
 import { authClient } from "../lib/auth-client";
 import { useAuthStore } from "../stores/auth";
 import { pinia } from "../stores/pinia";
-import { useRuntimeConfig } from "../composables/useRuntimeConfig";
+import { canUsePasskeys, useRuntimeConfig } from "../composables/useRuntimeConfig";
+import {
+  canAutofillPasskeys,
+  type PasskeySignIn,
+  signInWithPasskey,
+  TOO_MANY_ATTEMPTS,
+} from "../lib/passkeys";
 
 const route = useRoute();
 const router = useRouter();
 const auth = useAuthStore(pinia);
-const { brandName } = useRuntimeConfig();
+const { brandName, loaded } = useRuntimeConfig();
 
 const email = ref("");
 const password = ref("");
 const code = ref("");
 const step = ref<"password" | "totp" | "backup">("password");
 const error = ref("");
+const info = ref("");
 const busy = ref(false);
+const passkeyBusy = ref(false);
+const passkeysShown = ref(false);
 
 function destination(): string {
   const redirect = route.query.redirect;
@@ -41,8 +53,42 @@ async function finish() {
   await router.push(destination());
 }
 
+async function passkeyResult(result: PasskeySignIn) {
+  if (result.kind === "signed-in") {
+    await finish();
+  } else if (result.kind === "cancelled") {
+    info.value = "Passkey sign-in was cancelled. You can try again, or sign in with your password.";
+  } else if (result.kind === "error") {
+    error.value = result.text;
+  }
+}
+
+async function submitPasskey() {
+  error.value = "";
+  info.value = "";
+  passkeyBusy.value = true;
+  try {
+    await passkeyResult(await signInWithPasskey());
+  } finally {
+    passkeyBusy.value = false;
+  }
+}
+
+/** Offer saved passkeys in the email field's suggestions; never awaited by the form. */
+async function startAutofill() {
+  if (!(await canAutofillPasskeys())) return;
+  await passkeyResult(await signInWithPasskey(true));
+}
+
+onMounted(async () => {
+  await loaded;
+  passkeysShown.value = canUsePasskeys();
+  if (passkeysShown.value) void startAutofill();
+});
+
 async function submitPassword() {
   error.value = "";
+  info.value = "";
   busy.value = true;
   try {
     const { data, error: err } = await authClient.signIn.email({
@@ -50,10 +96,11 @@ async function submitPassword() {
       password: password.value,
     });
     if (err) {
-      error.value =
-        err.status === 403
-          ? "This account is disabled. Contact your administrator."
-          : "Invalid email or password.";
+      // 429: password and passkey sign-in share one rate limit, so a
+      // throttle must not read as a wrong password.
+      if (err.status === 403) error.value = "This account is disabled. Contact your administrator.";
+      else if (err.status === 429) error.value = TOO_MANY_ATTEMPTS;
+      else error.value = "Invalid email or password.";
       return;
     }
     if (data && (data as { twoFactorRedirect?: boolean }).twoFactorRedirect) {
@@ -109,7 +156,8 @@ async function submitBackup() {
 
     <form v-if="step === 'password'" @submit.prevent="submitPassword">
       <label for="email">Email</label>
-      <InputText id="email" v-model="email" type="email" required autocomplete="email" />
+      <!-- "webauthn" must be the last token: it lets the field offer saved passkeys. -->
+      <InputText id="email" v-model="email" type="email" required autocomplete="username webauthn" />
       <label for="password">Password</label>
       <Password
         id="password"
@@ -120,6 +168,25 @@ async function submitBackup() {
         autocomplete="current-password"
       />
       <Button type="submit" label="Sign in" :loading="busy" />
+      <template v-if="passkeysShown">
+        <div class="or-divider" aria-hidden="true"><span>or</span></div>
+        <Button
+          type="button"
+          label="Sign in with a passkey"
+          icon="pi pi-key"
+          severity="secondary"
+          outlined
+          aria-describedby="passkeyHelp"
+          :loading="passkeyBusy"
+          @click="submitPasskey"
+        />
+        <small id="passkeyHelp" class="muted">
+          Use your fingerprint, face, or device PIN. No password or code needed.
+        </small>
+        <span class="visually-hidden" aria-live="polite">
+          {{ passkeyBusy ? "Waiting for your device…" : "" }}
+        </span>
+      </template>
     </form>
 
     <form v-else-if="step === 'totp'" @submit.prevent="submitTotp">
@@ -149,6 +216,7 @@ async function submitBackup() {
     </form>
 
     <Message v-if="error" severity="error" :closable="false">{{ error }}</Message>
+    <Message v-else-if="info" severity="info" :closable="false">{{ info }}</Message>
   </section>
 </template>
 
@@ -171,6 +239,27 @@ async function submitBackup() {
 }
 .auth-card h2 {
   margin-top: 0;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.or-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--p-text-muted-color);
+  font-size: 0.875rem;
+}
+.or-divider::before,
+.or-divider::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--p-content-border-color);
 }
 form {
   display: flex;

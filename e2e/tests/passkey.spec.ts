@@ -1,10 +1,18 @@
 /**
- * PAY-259 PR 4: manage passkeys in My settings (spec §9, journeys J1 + J3).
+ * PAY-259: passkeys end to end (spec §9, journeys J1–J5).
+ * PR 4: manage passkeys in My settings (J1 add, J3 rename + remove, the
+ * sessions label). PR 5: sign in with a passkey on /login (J2 button, J4 user
+ * verification refused, J3 removed passkey, J5 autofill).
  *
- * One sign-in for the whole file: the credential endpoints are rate-limited
- * (10/min/IP) and a password + TOTP login costs two requests. Changing a
- * passkey also needs the server's 5-minute step-up window (passkey-policy.ts),
- * so every test shares the one fresh session and runs straight after it.
+ * Order (serial, one browser page, one virtual authenticator):
+ *   J1 password + TOTP sign-in, add "CI key" → sessions label "Password + code"
+ *   → J2 sign out, passkey button → J4 UV off, refused → J5 autofill sign-in
+ *   → J3 rename + remove → J3 removed passkey refused.
+ * Credential endpoints allow 10 requests/min/IP: a password + TOTP login costs
+ * two, a passkey sign-in one verify (its options call is in a separate
+ * 30/min bucket). This order costs at most five. Removing a passkey needs the
+ * server's 5-minute step-up window (passkey-policy.ts); a passkey sign-in
+ * counts, so J3 runs right after the J5 (or a fallback button) sign-in.
  *
  * Runs in both modes. Ephemeral boot and live QA (E2E_BASE_URL) both carry the
  * seeded QA employee. The file cleans up after itself: right after sign-in
@@ -12,21 +20,36 @@
  * (named "CI key*", or unnamed: an add that succeeded before its rename), and
  * afterAll removes every passkey this run added, inside the same session.
  * Any other passkey on the account is kept and recorded as the baseline;
- * assertions compare against it rather than requiring an empty account.
+ * assertions compare against it rather than requiring an empty account. When
+ * a failure leaves the page signed out with the passkey still on the account,
+ * afterAll warns and the next run's leftover step deletes it.
  *
- * The Passkeys card is hidden when /api/runtime-config says
- * `passkeysAvailable: false`. That is a FAILURE here, never a skip: the e2e
- * boot serves on http://localhost:9898 precisely so passkeys are available.
+ * The Passkeys card and the sign-in button are hidden when
+ * /api/runtime-config says `passkeysAvailable: false`. That is a FAILURE
+ * here, never a skip: the e2e boot serves on http://localhost:9898 precisely
+ * so passkeys are available. The hidden state itself is not tested here: the
+ * server flag cannot be flipped from e2e, and faking the response would test
+ * nothing real.
+ *
+ * Passkey autofill on /login is held for the whole file (holdPasskeyAutofill
+ * in support/webauthn.ts): the virtual authenticator would otherwise answer
+ * it at once and sign in before any button is clicked. J5 releases it.
  *
  * Spec S11: no credential material (ids, keys) is logged or attached. Ids
  * only travel between the API and the delete call; assertions compare counts.
  */
 
 import { type BrowserContext, expect, type Page, test } from "@playwright/test";
-import { loginAs, QA_EMPLOYEE } from "./qa.js";
+import { loginAs, QA_EMPLOYEE, retryOnRateLimit } from "./qa.js";
 import { step } from "./support/journey.js";
 import { newContext } from "./support/walkthrough.js";
-import { addVirtualAuthenticator, type VirtualAuthenticator } from "./support/webauthn.js";
+import {
+  addVirtualAuthenticator,
+  autofillRequests,
+  holdPasskeyAutofill,
+  releaseAutofill,
+  type VirtualAuthenticator,
+} from "./support/webauthn.js";
 
 test.describe.configure({ mode: "serial" });
 // S11: a retry trace would carry the attestation and credential data (request
@@ -54,6 +77,13 @@ let authenticator: VirtualAuthenticator | undefined;
 let signedInAt = 0;
 /** Passkey ids present before this run added any; null until known. */
 let baseline: Set<string> | null = null;
+/** True once J3 has removed this run's passkey and the server list equals the baseline. */
+let ownRemoved = false;
+
+const PASSKEY_VERIFY_PATH = "/api/auth/passkey/verify-authentication";
+const PASSKEY_OPTIONS_PATH = "/api/auth/passkey/generate-authenticate-options";
+const VERIFY_TOTP_PATH = "/api/auth/two-factor/verify-totp";
+const SIGN_IN_BUTTON = "Sign in with a passkey";
 
 async function listPasskeys(p: Page): Promise<PasskeyRecord[]> {
   const res = await p.request.get("/api/auth/passkey/list-user-passkeys");
@@ -109,10 +139,76 @@ function expectWithinStepUp(): void {
   ).toBeLessThan(STEP_UP_BUDGET_MS);
 }
 
+/** The signed-in session's id, or null when signed out. */
+async function currentSessionId(p: Page): Promise<string | null> {
+  const res = await p.request.get("/api/auth/get-session");
+  if (res.status() === 401) return null;
+  expect(res.status(), "GET /api/auth/get-session").toBe(200);
+  const body = (await res.json()) as { session?: { id?: string } } | null;
+  return body?.session?.id ?? null;
+}
+
+/** How the current session signed in, from list-sessions (the column's source). */
+async function currentAuthMethod(p: Page): Promise<unknown> {
+  const id = await currentSessionId(p);
+  expect(id, "signed in").not.toBeNull();
+  const list = await p.request.get("/api/auth/list-sessions");
+  expect(list.status(), "GET /api/auth/list-sessions").toBe(200);
+  const sessions = (await list.json()) as { id: string; authMethod?: unknown }[];
+  return sessions.find((s) => s.id === id)?.authMethod;
+}
+
+/** Counts requests to `path` (pathname match) from now until `stop()`. */
+function countRequests(p: Page, path: string): { count: () => number; stop: () => void } {
+  let seen = 0;
+  const listener = (req: { url(): string }) => {
+    if (new URL(req.url()).pathname === path) seen++;
+  };
+  p.on("request", listener);
+  return { count: () => seen, stop: () => p.off("request", listener) };
+}
+
+/** Sign out from the app header; the app returns to /login. */
+async function signOut(p: Page): Promise<void> {
+  await p.getByRole("button", { name: "Sign out", exact: true }).click();
+  await p.waitForURL("**/login");
+  expect(await currentSessionId(p), "no session after sign-out").toBeNull();
+}
+
+/** Click "Sign in with a passkey" once; the verify response's HTTP status. */
+async function clickPasskeySignIn(p: Page): Promise<{ status: number }> {
+  const response = p.waitForResponse(
+    (res) =>
+      res.request().method() === "POST" && new URL(res.url()).pathname === PASSKEY_VERIFY_PATH,
+  );
+  await p.getByRole("button", { name: SIGN_IN_BUTTON, exact: true }).click();
+  return { status: (await response).status() };
+}
+
+/** The PrimeVue Message on /login that contains `text`. */
+function loginMessage(p: Page, text: string) {
+  return p.getByRole("alert").filter({ hasText: text });
+}
+
+/** Signed out on /login, the password step showing the passkey button. */
+async function expectLoginWithPasskeyButton(p: Page): Promise<void> {
+  await expect(p).toHaveURL(/\/login/);
+  await expect(p.getByText("or", { exact: true })).toBeVisible();
+  await expect(p.getByRole("button", { name: SIGN_IN_BUTTON, exact: true })).toBeVisible();
+}
+
+/** Signed in with a passkey: employee dashboard, session method "passkey". */
+async function expectPasskeySession(p: Page): Promise<void> {
+  await p.waitForURL(/\/my\/dashboard/, { timeout: 10_000 });
+  await expect(p.getByRole("heading", { name: "Dashboard" })).toBeVisible();
+  expect(await currentAuthMethod(p), "current session authMethod").toBe("passkey");
+}
+
 test.beforeAll(async ({ browser }) => {
   context = await newContext(browser);
   page = await context.newPage();
   authenticator = await addVirtualAuthenticator(page);
+  await holdPasskeyAutofill(page);
 });
 
 /**
@@ -123,6 +219,14 @@ test.beforeAll(async ({ browser }) => {
  */
 async function cleanUpCreated(): Promise<void> {
   if (baseline === null) return;
+  if ((await currentSessionId(page)) === null) {
+    if (!ownRemoved) {
+      console.warn(
+        "passkey.spec cleanup: signed out before this run's passkey was removed; the next run's leftover step deletes it",
+      );
+    }
+    return;
+  }
   const known = baseline;
   const created = (await listPasskeys(page)).filter((r) => !known.has(r.id));
   const refused = await deleteAll(page, created);
@@ -192,7 +296,138 @@ test("J1: add a passkey from My settings; it is listed", async () => {
   });
 });
 
+test("Active sessions: 'Signed in with' shows Password + code for this session", async () => {
+  await step(page, "Sessions table has a 'Signed in with' column", async () => {
+    await page.goto("/my/settings");
+    await expect(page.getByRole("columnheader", { name: "Signed in with" })).toBeVisible();
+  });
+
+  await step(page, "This session was signed in with Password + code", async () => {
+    expect(await currentAuthMethod(page), "current session authMethod").toBe("password_totp");
+    await expect(
+      page.getByRole("row").filter({ hasText: "Password + code" }).first(),
+    ).toBeVisible();
+  });
+});
+
+test("J2: sign out, then sign in with the passkey button; no code prompt", async () => {
+  await step(page, "Sign out", async () => {
+    await signOut(page);
+    await expectLoginWithPasskeyButton(page);
+  });
+
+  await step(page, `Click "${SIGN_IN_BUTTON}"`, async () => {
+    const totpCalls = countRequests(page, VERIFY_TOTP_PATH);
+    try {
+      const { status } = await retryOnRateLimit(page, () => clickPasskeySignIn(page));
+      expect(status, `POST ${PASSKEY_VERIFY_PATH}`).toBe(200);
+      await expectPasskeySession(page);
+      signedInAt = Date.now();
+      expect(totpCalls.count(), "no authenticator-code step").toBe(0);
+    } finally {
+      totpCalls.stop();
+    }
+    await expect(page.locator("#totp")).toHaveCount(0);
+  });
+
+  await step(page, "Active sessions: this session reads Passkey", async () => {
+    await page.goto("/my/settings");
+    await expect(page.getByRole("columnheader", { name: "Signed in with" })).toBeVisible();
+    await expect(page.getByRole("cell", { name: "Passkey", exact: true }).first()).toBeVisible();
+  });
+});
+
+/*
+ * J4, probed 2026-11-03 on Playwright's chromium 1243: with the virtual
+ * authenticator's user verification set to fail, Chrome refuses the ceremony
+ * itself. navigator.credentials.get rejects with NotAllowedError within a few
+ * milliseconds, for userVerification "required" and "preferred" alike, and no
+ * assertion (UV=0) is ever produced. So the browser never calls
+ * verify-authentication, and the login page shows its calm "cancelled" info.
+ * The server's own refusal of a UV=0 assertion (PASSKEY_USER_VERIFICATION_
+ * REQUIRED, the "fingerprint, face, or device PIN" message) cannot be reached
+ * from a real browser here; apps/server/test/passkey.test.ts (T4) covers it
+ * with a soft authenticator.
+ */
+test("J4: user verification fails; the browser refuses, still signed out on /login", async () => {
+  await step(page, "Sign out", async () => {
+    await signOut(page);
+    await expectLoginWithPasskeyButton(page);
+  });
+
+  await step(
+    page,
+    "Device check fails: calm cancelled info, no verify call, no session",
+    async () => {
+      const verifyCalls = countRequests(page, PASSKEY_VERIFY_PATH);
+      await authenticator?.setUserVerified(false);
+      try {
+        const options = page.waitForResponse(
+          (res) => new URL(res.url()).pathname === PASSKEY_OPTIONS_PATH,
+        );
+        await page.getByRole("button", { name: SIGN_IN_BUTTON, exact: true }).click();
+        expect((await options).status(), `GET ${PASSKEY_OPTIONS_PATH}`).toBe(200);
+        const info = loginMessage(page, "cancelled");
+        await expect(info).toBeVisible();
+        await expect(info).toHaveClass(/p-message-info/);
+        await expect(loginMessage(page, "fingerprint, face, or device PIN")).toHaveCount(0);
+        expect(verifyCalls.count(), "the browser sent no assertion").toBe(0);
+      } finally {
+        verifyCalls.stop();
+        await authenticator?.setUserVerified(true);
+      }
+      await expect(page).toHaveURL(/\/login/);
+      expect(await currentSessionId(page), "no session").toBeNull();
+    },
+  );
+});
+
+test("J5: the email field offers passkey autofill; picking the passkey signs in", async () => {
+  await step(page, 'Email field has autocomplete "username webauthn"', async () => {
+    await page.goto("/login");
+    await expect(page.locator("#email")).toHaveAttribute("autocomplete", "username webauthn");
+  });
+
+  const conditional = await page.evaluate(
+    async () => (await window.PublicKeyCredential?.isConditionalMediationAvailable?.()) === true,
+  );
+  test.skip(
+    !conditional,
+    "PublicKeyCredential.isConditionalMediationAvailable() is false in this browser: the autofill ceremony cannot run (a test item, not a blocker)",
+  );
+
+  await step(page, "The page asked for autofill on load", async () => {
+    await expect.poll(() => autofillRequests(page), { timeout: 10_000 }).toBeGreaterThan(0);
+  });
+
+  await step(page, "Pick the passkey from the email suggestions", async () => {
+    // The suggestion list is browser UI, out of the page's reach; releasing
+    // the held request is the stand-in for the pick (support/webauthn.ts).
+    const verify = page.waitForResponse(
+      (res) =>
+        res.request().method() === "POST" && new URL(res.url()).pathname === PASSKEY_VERIFY_PATH,
+    );
+    expect(await releaseAutofill(page), "held autofill requests").toBeGreaterThan(0);
+    expect((await verify).status(), `POST ${PASSKEY_VERIFY_PATH}`).toBe(200);
+    await expectPasskeySession(page);
+    signedInAt = Date.now();
+  });
+});
+
 test("J3: rename the passkey, then remove it; the list is empty", async () => {
+  await step(page, "Signed in with the passkey (fresh step-up)", async () => {
+    if ((await currentSessionId(page)) === null) {
+      // J5 skipped: sign in with the button instead.
+      await page.goto("/login");
+      const { status } = await retryOnRateLimit(page, () => clickPasskeySignIn(page));
+      expect(status, `POST ${PASSKEY_VERIFY_PATH}`).toBe(200);
+      await expectPasskeySession(page);
+      signedInAt = Date.now();
+    }
+    await page.goto("/my/settings");
+    await expect(rowNamed(page, KEY_NAME)).toHaveCount(1);
+  });
+
   await step(page, `Rename "${KEY_NAME}" to "${RENAMED}"`, async () => {
     expectWithinStepUp();
     await page.getByRole("button", { name: `Rename ${KEY_NAME}`, exact: true }).click();
@@ -224,26 +459,26 @@ test("J3: rename the passkey, then remove it; the list is empty", async () => {
     await expect(passkeyRows(page)).toHaveCount(known.length);
     // On the ephemeral boot and a clean QA account the baseline is empty: [].
     expect(sortedIds(await listPasskeys(page)), "server list equals the baseline").toEqual(known);
+    ownRemoved = true;
   });
 });
 
-test("Active sessions: 'Signed in with' shows Password + code for this session", async () => {
-  await step(page, "Sessions table has a 'Signed in with' column", async () => {
-    await page.goto("/my/settings");
-    await expect(page.getByRole("columnheader", { name: "Signed in with" })).toBeVisible();
+test("J3: the removed passkey no longer signs in", async () => {
+  await step(page, "Sign out; the authenticator still holds the credential", async () => {
+    await signOut(page);
+    await expectLoginWithPasskeyButton(page);
+    // Count only (S11).
+    expect(
+      (await authenticator?.credentials())?.length,
+      "virtual authenticator credential count",
+    ).toBe(1);
   });
 
-  await step(page, "This session was signed in with Password + code", async () => {
-    const current = await page.request.get("/api/auth/get-session");
-    expect(current.status(), "GET /api/auth/get-session").toBe(200);
-    const { session } = (await current.json()) as { session: { id: string } };
-    const list = await page.request.get("/api/auth/list-sessions");
-    expect(list.status(), "GET /api/auth/list-sessions").toBe(200);
-    const sessions = (await list.json()) as { id: string; authMethod?: unknown }[];
-    const mine = sessions.find((s) => s.id === session.id);
-    expect(mine?.authMethod, "current session authMethod").toBe("password_totp");
-    await expect(
-      page.getByRole("row").filter({ hasText: "Password + code" }).first(),
-    ).toBeVisible();
+  await step(page, `Click "${SIGN_IN_BUTTON}": "no longer linked", still on /login`, async () => {
+    const { status } = await retryOnRateLimit(page, () => clickPasskeySignIn(page));
+    expect(status, `POST ${PASSKEY_VERIFY_PATH} refuses the removed passkey`).not.toBe(200);
+    await expect(loginMessage(page, "no longer linked")).toBeVisible();
+    await expect(page).toHaveURL(/\/login/);
+    expect(await currentSessionId(page), "no session").toBeNull();
   });
 });

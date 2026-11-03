@@ -124,7 +124,9 @@ async function logout() {
   <div class="shell">
     <!-- In-flow block (not fixed/absolute): pushes the topbar down instead of
          overlapping it, so no layout breaks and no duplicated headers. -->
-    <div v-if="appEnv === 'qa'" class="qa-banner" role="status">QA — synthetic data</div>
+    <div v-if="appEnv === 'qa'" class="qa-banner" role="status">
+      QA — synthetic data. Passkeys saved here won't work on the real site.
+    </div>
     <header v-if="signedIn" class="topbar">
       <div class="brand-row">
         <RouterLink
