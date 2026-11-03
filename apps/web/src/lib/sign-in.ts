@@ -65,25 +65,8 @@ async function attempt(autoFill: boolean): Promise<{ error: PasskeyError | null 
   }
 }
 
-/**
- * Sign in with a passkey. `autoFill` starts the email field's passkey
- * suggestions (conditional UI): it waits until the person picks one. A
- * newer attempt (the button, or the next autofill) aborts it, which ends
- * silently.
- */
-export async function signInWithPasskey(autoFill = false, retried = false): Promise<PasskeySignIn> {
-  const result = await attempt(autoFill);
-  if (result === "network") {
-    return autoFill ? { kind: "silent" } : { kind: "error", text: NETWORK_ERROR };
-  }
-  const { error } = result;
-  if (!error) return { kind: "signed-in" };
-  // A session left over from before (not a full sign-in) makes the gateway
-  // refuse passkey requests: clear it and try once more.
-  if (isStaleSession(error) && !retried) {
-    await authClient.signOut();
-    return signInWithPasskey(autoFill, true);
-  }
+/** The result for a refused attempt (not a stale session). */
+function refusal(error: PasskeyError, autoFill: boolean): PasskeySignIn {
   // Aborted by a newer attempt.
   if (error.code === "ERROR_CEREMONY_ABORTED") return { kind: "silent" };
   // NotAllowedError (cancelled or timed out on the device), or the plugin's own cancel.
@@ -92,6 +75,32 @@ export async function signInWithPasskey(autoFill = false, retried = false): Prom
   }
   if (autoFill && !PICKED_PASSKEY_ERRORS[error.code ?? ""]) return { kind: "silent" };
   return { kind: "error", text: errorText(error) };
+}
+
+function networkFailure(autoFill: boolean): PasskeySignIn {
+  return autoFill ? { kind: "silent" } : { kind: "error", text: NETWORK_ERROR };
+}
+
+/**
+ * Sign in with a passkey. `autoFill` starts the email field's passkey
+ * suggestions (conditional UI): it waits until the person picks one. A
+ * newer attempt (the button, or the next autofill) aborts it, which ends
+ * silently.
+ */
+export async function signInWithPasskey(autoFill = false, retried = false): Promise<PasskeySignIn> {
+  const result = await attempt(autoFill);
+  if (result === "network") return networkFailure(autoFill);
+  const { error } = result;
+  if (!error) return { kind: "signed-in" };
+  if (!isStaleSession(error) || retried) return refusal(error, autoFill);
+  // A session left over from before (not a full sign-in) makes the gateway
+  // refuse passkey requests: clear it and try once more.
+  try {
+    await authClient.signOut();
+  } catch {
+    return networkFailure(autoFill);
+  }
+  return signInWithPasskey(autoFill, true);
 }
 
 /** True when the browser can offer passkeys from the email field's suggestions. */

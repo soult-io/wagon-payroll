@@ -24,10 +24,12 @@ import {
 } from "../lib/sign-in";
 
 /**
- * The server's sign-in challenge lasts 5 minutes; autofill starts a fresh
- * one before then, so a passkey picked from the suggestions later still works.
+ * The server's sign-in challenge lasts 5 minutes. When the person comes back
+ * to the email field (or the tab) and the suggestions request is older than
+ * this, it is started again so a passkey picked later still works. Never on a
+ * timer: a restart while the device prompt is open would cancel it.
  */
-const AUTOFILL_RESTART_MS = 4 * 60 * 1000;
+const AUTOFILL_STALE_MS = 4 * 60 * 1000;
 
 const route = useRoute();
 const router = useRouter();
@@ -43,7 +45,8 @@ const info = ref("");
 const busy = ref(false);
 const passkeyBusy = ref(false);
 const passkeysShown = ref(false);
-let autofillTimer: ReturnType<typeof setInterval> | undefined;
+let autofillStartedAt = 0;
+let unmounted = false;
 
 function destination(): string {
   const redirect = route.query.redirect;
@@ -82,8 +85,20 @@ async function handlePasskeyResult(result: PasskeySignIn) {
  */
 async function startAutofill() {
   // Never while the button's attempt is open: a new request would abort it.
-  if (step.value !== "password" || passkeyBusy.value || !(await canAutofillPasskeys())) return;
+  if (unmounted || step.value !== "password" || passkeyBusy.value) return;
+  if (!(await canAutofillPasskeys())) return;
+  autofillStartedAt = Date.now();
   await handlePasskeyResult(await signInWithPasskey(true));
+}
+
+function refreshStaleAutofill() {
+  if (passkeysShown.value && Date.now() - autofillStartedAt > AUTOFILL_STALE_MS) {
+    void startAutofill();
+  }
+}
+
+function onVisibilityChange() {
+  if (document.visibilityState === "visible") refreshStaleAutofill();
 }
 
 async function submitPasskey() {
@@ -105,10 +120,13 @@ onMounted(async () => {
   passkeysShown.value = canUsePasskeys();
   if (!passkeysShown.value) return;
   void startAutofill();
-  autofillTimer = setInterval(() => void startAutofill(), AUTOFILL_RESTART_MS);
+  document.addEventListener("visibilitychange", onVisibilityChange);
 });
 
-onBeforeUnmount(() => clearInterval(autofillTimer));
+onBeforeUnmount(() => {
+  unmounted = true;
+  document.removeEventListener("visibilitychange", onVisibilityChange);
+});
 
 async function submitPassword() {
   clearMessages();
@@ -181,7 +199,14 @@ async function submitBackup() {
     <form v-if="step === 'password'" @submit.prevent="submitPassword">
       <label for="email">Email</label>
       <!-- "webauthn" must be the last token: it lets the field offer saved passkeys. -->
-      <InputText id="email" v-model="email" type="email" required autocomplete="username webauthn" />
+      <InputText
+        id="email"
+        v-model="email"
+        type="email"
+        required
+        autocomplete="username webauthn"
+        @focus="refreshStaleAutofill"
+      />
       <label for="password">Password</label>
       <Password
         id="password"
