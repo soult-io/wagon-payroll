@@ -166,6 +166,10 @@ async function copyCodes() {
         <ol class="codes">
           <li v-for="c in backupCodes" :key="c"><code>{{ c }}</code></li>
         </ol>
+        <p class="muted small">
+          After you sign in, you can add a passkey in My settings to sign in with your fingerprint, face,
+          or device PIN.
+        </p>
         <div class="backup-actions">
           <Button label="Copy codes" icon="pi pi-copy" @click="copyCodes" />
           <Button label="Continue to sign in" @click="router.push({ name: 'login' })" />

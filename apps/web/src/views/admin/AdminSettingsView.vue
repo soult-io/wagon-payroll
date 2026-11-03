@@ -177,7 +177,7 @@ async function invite() {
 
 function resetUser(u: AdminUser) {
   confirm.require({
-    message: `Reset ${u.email}? They must re-enroll (new password and two-factor).`,
+    message: `Reset ${u.email}? This signs them out everywhere and removes their authenticator app and passkeys. Their current password stops working. They can't sign in until they set up again from the new link. This can't be undone.`,
     header: "Reset user",
     icon: "pi pi-exclamation-triangle",
     rejectProps: { label: "Cancel", severity: "secondary", text: true },
