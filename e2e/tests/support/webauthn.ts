@@ -71,9 +71,10 @@ interface AutofillHold {
  * the request pending; this reproduces that.
  *
  * Every `navigator.credentials.get({ mediation: "conditional" })` is counted
- * and held. It rejects with the signal's reason when the page aborts it (a
- * button ceremony aborts the autofill one, as a real browser does). The page
- * function `__e2eReleaseAutofill()` sends the held requests on to the browser
+ * and held. When the page aborts one (a button ceremony, or a newer autofill
+ * request replacing it) it rejects with the signal's reason, as a real browser
+ * does, and is dropped from the hold. The page function
+ * `__e2eReleaseAutofill()` sends the requests still held on to the browser
  * unchanged: the stand-in for the user picking the passkey, which is browser
  * UI no test can click. Other `get` calls pass straight through.
  *
@@ -83,11 +84,12 @@ export async function holdPasskeyAutofill(page: Page): Promise<void> {
   await page.addInitScript(() => {
     const container = navigator.credentials;
     const original = container.get.bind(container);
-    const held: Array<() => void> = [];
+    const held = new Set<() => void>();
     const hold = window as unknown as AutofillHold;
     hold.__e2eAutofillRequests = 0;
     hold.__e2eReleaseAutofill = () => {
-      const pending = held.splice(0);
+      const pending = [...held];
+      held.clear();
       for (const send of pending) send();
       return pending.length;
     };
@@ -96,23 +98,37 @@ export async function holdPasskeyAutofill(page: Page): Promise<void> {
       hold.__e2eAutofillRequests++;
       return new Promise<Credential | null>((resolve, reject) => {
         const signal = options.signal;
-        const aborted = () =>
-          reject(signal?.reason ?? new DOMException("The operation was aborted.", "AbortError"));
-        if (signal?.aborted) return aborted();
-        signal?.addEventListener("abort", aborted, { once: true });
-        held.push(() => {
-          if (signal?.aborted) return;
+        const send = () => {
           signal?.removeEventListener("abort", aborted);
           original(options).then(resolve, reject);
-        });
+        };
+        const aborted = () => {
+          held.delete(send);
+          reject(signal?.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+        };
+        if (signal?.aborted) return aborted();
+        signal?.addEventListener("abort", aborted, { once: true });
+        held.add(send);
       });
     };
   });
 }
 
-/** How many autofill requests the page has made since it loaded. */
+/** How many autofill requests the page has made since it loaded or since {@link resetAutofillRequests}. */
 export function autofillRequests(page: Page): Promise<number> {
   return page.evaluate(() => (window as unknown as AutofillHold).__e2eAutofillRequests ?? 0);
+}
+
+/**
+ * Zero the autofill request count. Call it before an action that remounts the
+ * login page in place (sign-out is an in-app navigation, not a page load), then
+ * wait for the count to rise.
+ */
+export async function resetAutofillRequests(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const hold = window as unknown as Partial<AutofillHold>;
+    if (hold.__e2eAutofillRequests !== undefined) hold.__e2eAutofillRequests = 0;
+  });
 }
 
 /** Send the held autofill requests to the browser; returns how many there were. */

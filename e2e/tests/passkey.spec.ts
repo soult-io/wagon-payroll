@@ -40,7 +40,7 @@
  */
 
 import { type BrowserContext, expect, type Page, test } from "@playwright/test";
-import { loginAs, QA_EMPLOYEE, retryOnRateLimit } from "./qa.js";
+import { loginAs, nextPost, QA_EMPLOYEE, retryOnRateLimit, VERIFY_TOTP_PATH } from "./qa.js";
 import { step } from "./support/journey.js";
 import { newContext } from "./support/walkthrough.js";
 import {
@@ -48,6 +48,7 @@ import {
   autofillRequests,
   holdPasskeyAutofill,
   releaseAutofill,
+  resetAutofillRequests,
   type VirtualAuthenticator,
 } from "./support/webauthn.js";
 
@@ -82,7 +83,6 @@ let ownRemoved = false;
 
 const PASSKEY_VERIFY_PATH = "/api/auth/passkey/verify-authentication";
 const PASSKEY_OPTIONS_PATH = "/api/auth/passkey/generate-authenticate-options";
-const VERIFY_TOTP_PATH = "/api/auth/two-factor/verify-totp";
 const SIGN_IN_BUTTON = "Sign in with a passkey";
 
 async function listPasskeys(p: Page): Promise<PasskeyRecord[]> {
@@ -168,21 +168,53 @@ function countRequests(p: Page, path: string): { count: () => number; stop: () =
   return { count: () => seen, stop: () => p.off("request", listener) };
 }
 
-/** Sign out from the app header; the app returns to /login. */
+/**
+ * Wait until the login page has made its autofill request for this mount.
+ * The request first fetches its own sign-in options, which set the challenge
+ * cookie; clicking the button before then lets the two challenges cross.
+ * Count from a page load or from {@link resetAutofillRequests}. Browsers
+ * without conditional mediation never start autofill, so there is no wait.
+ */
+async function waitForAutofill(p: Page, why: string): Promise<void> {
+  const available = await p.evaluate(
+    async () => (await window.PublicKeyCredential?.isConditionalMediationAvailable?.()) === true,
+  );
+  if (!available) return;
+  await expect
+    .poll(() => autofillRequests(p), {
+      message: `passkey autofill started ${why}`,
+      timeout: 10_000,
+    })
+    .toBeGreaterThan(0);
+}
+
+/** Sign out from the app header; the app returns to /login and starts autofill. */
 async function signOut(p: Page): Promise<void> {
+  await resetAutofillRequests(p);
   await p.getByRole("button", { name: "Sign out", exact: true }).click();
   await p.waitForURL("**/login");
   expect(await currentSessionId(p), "no session after sign-out").toBeNull();
+  await waitForAutofill(p, "after sign-out");
 }
 
-/** Click "Sign in with a passkey" once; the verify response's HTTP status. */
+/** Open /login fresh and wait for its autofill request. */
+async function openLogin(p: Page): Promise<void> {
+  await p.goto("/login");
+  await waitForAutofill(p, "on load");
+}
+
+/**
+ * Click "Sign in with a passkey" once; the verify response's HTTP status.
+ * A refused attempt makes the page restart autofill; this waits for that, so
+ * a retry (or the next click) cannot cross challenges with it either.
+ */
 async function clickPasskeySignIn(p: Page): Promise<{ status: number }> {
-  const response = p.waitForResponse(
-    (res) =>
-      res.request().method() === "POST" && new URL(res.url()).pathname === PASSKEY_VERIFY_PATH,
-  );
+  await resetAutofillRequests(p);
+  const response = nextPost(p, PASSKEY_VERIFY_PATH);
   await p.getByRole("button", { name: SIGN_IN_BUTTON, exact: true }).click();
-  return { status: (await response).status() };
+  const status = (await response).status();
+  if (status !== 200) await waitForAutofill(p, "again after the refused attempt");
+  return { status };
 }
 
 /** The PrimeVue Message on /login that contains `text`. */
@@ -197,11 +229,16 @@ async function expectLoginWithPasskeyButton(p: Page): Promise<void> {
   await expect(p.getByRole("button", { name: SIGN_IN_BUTTON, exact: true })).toBeVisible();
 }
 
-/** Signed in with a passkey: employee dashboard, session method "passkey". */
-async function expectPasskeySession(p: Page): Promise<void> {
+/**
+ * A passkey sign-in completed: verify answered 200, the employee dashboard
+ * shows, the session method is "passkey". Restarts the step-up clock.
+ */
+async function expectPasskeySignedIn(p: Page, verifyStatus: number): Promise<void> {
+  expect(verifyStatus, `POST ${PASSKEY_VERIFY_PATH}`).toBe(200);
   await p.waitForURL(/\/my\/dashboard/, { timeout: 10_000 });
   await expect(p.getByRole("heading", { name: "Dashboard" })).toBeVisible();
   expect(await currentAuthMethod(p), "current session authMethod").toBe("passkey");
+  signedInAt = Date.now();
 }
 
 test.beforeAll(async ({ browser }) => {
@@ -320,9 +357,7 @@ test("J2: sign out, then sign in with the passkey button; no code prompt", async
     const totpCalls = countRequests(page, VERIFY_TOTP_PATH);
     try {
       const { status } = await retryOnRateLimit(page, () => clickPasskeySignIn(page));
-      expect(status, `POST ${PASSKEY_VERIFY_PATH}`).toBe(200);
-      await expectPasskeySession(page);
-      signedInAt = Date.now();
+      await expectPasskeySignedIn(page, status);
       expect(totpCalls.count(), "no authenticator-code step").toBe(0);
     } finally {
       totpCalls.stop();
@@ -403,14 +438,9 @@ test("J5: the email field offers passkey autofill; picking the passkey signs in"
   await step(page, "Pick the passkey from the email suggestions", async () => {
     // The suggestion list is browser UI, out of the page's reach; releasing
     // the held request is the stand-in for the pick (support/webauthn.ts).
-    const verify = page.waitForResponse(
-      (res) =>
-        res.request().method() === "POST" && new URL(res.url()).pathname === PASSKEY_VERIFY_PATH,
-    );
-    expect(await releaseAutofill(page), "held autofill requests").toBeGreaterThan(0);
-    expect((await verify).status(), `POST ${PASSKEY_VERIFY_PATH}`).toBe(200);
-    await expectPasskeySession(page);
-    signedInAt = Date.now();
+    const verify = nextPost(page, PASSKEY_VERIFY_PATH);
+    expect(await releaseAutofill(page), "held autofill requests").toBe(1);
+    await expectPasskeySignedIn(page, (await verify).status());
   });
 });
 
@@ -418,11 +448,9 @@ test("J3: rename the passkey, then remove it; the list is empty", async () => {
   await step(page, "Signed in with the passkey (fresh step-up)", async () => {
     if ((await currentSessionId(page)) === null) {
       // J5 skipped: sign in with the button instead.
-      await page.goto("/login");
+      await openLogin(page);
       const { status } = await retryOnRateLimit(page, () => clickPasskeySignIn(page));
-      expect(status, `POST ${PASSKEY_VERIFY_PATH}`).toBe(200);
-      await expectPasskeySession(page);
-      signedInAt = Date.now();
+      await expectPasskeySignedIn(page, status);
     }
     await page.goto("/my/settings");
     await expect(rowNamed(page, KEY_NAME)).toHaveCount(1);

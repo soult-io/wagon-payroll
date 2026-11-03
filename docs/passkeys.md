@@ -9,7 +9,7 @@ in: your password and authenticator app keep working as before.
 
 1. Open **My settings → Sign-in and security → Passkeys**.
 2. Choose **Add a passkey**.
-   - If you signed in more than a few minutes ago, you'll be asked to sign in
+   - If you signed in more than 5 minutes ago, you'll be asked to sign in
      again first. This keeps someone who finds your computer unlocked from
      adding their own passkey.
    - If you signed in with a backup code, you can't add a passkey. Sign out
@@ -32,7 +32,8 @@ sign-in: no password or code is asked.
 ## Rename or remove a passkey
 
 Both are on the same **Passkeys** card. Removing a passkey also needs a recent
-sign-in. If you lost the device, tick **Also sign me out on all other
+sign-in with your authenticator code or a passkey, not a backup code. If you
+lost the device, tick **Also sign me out on all other
 devices** when you remove it.
 
 Removing a passkey here doesn't delete it from your device. To stop your
@@ -41,19 +42,22 @@ too.
 
 ## Lost a device?
 
-Sign in with your password and authenticator code (or a backup code), remove
-the lost device's passkey, and sign out your other devices. If you've lost
-everything, ask your administrator to reset your account. A reset also
-removes your passkeys.
+Sign in with your password and authenticator code, or with another passkey.
+Then remove the lost device's passkey and tick **Also sign me out on all
+other devices**. If you lost your authenticator app too, you can sign in with
+a backup code, but you can't remove passkeys that way. Ask your administrator
+to reset your account instead. A reset removes all your passkeys and signs
+you out everywhere.
 
 ## If something goes wrong
 
 | You see | What to do |
 |---|---|
 | This passkey is no longer linked to your account. | It was removed from your account. Sign in with your password, then delete it from your device. |
-| Your device didn't confirm it's you (fingerprint, face, or device PIN). | Turn on a screen lock on the device, then try again. |
+| Your device didn't confirm it's you (fingerprint, face, or device PIN). | Try again. If your device has no screen lock, turn one on first. |
 | Passkey sign-in was cancelled. | Nothing went wrong. Try again, or sign in with your password. |
 | Too many sign-in attempts. | Wait a minute, then try again. |
+| We couldn't sign you in with a passkey. | Try again, or sign in with your password and code. |
 | Passkeys aren't available here. | Use an up-to-date browser and the app's https address. |
 
 ## For people who host Wagon Payroll themselves

@@ -5,7 +5,7 @@
  * email field's suggestions (autofill). A passkey checked with fingerprint,
  * face or device PIN is a full sign-in; no code is asked.
  */
-import { onMounted, ref } from "vue";
+import { onBeforeUnmount, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import Button from "primevue/button";
 import InputText from "primevue/inputtext";
@@ -17,10 +17,17 @@ import { pinia } from "../stores/pinia";
 import { canUsePasskeys, useRuntimeConfig } from "../composables/useRuntimeConfig";
 import {
   canAutofillPasskeys,
+  credentialStatusText,
   type PasskeySignIn,
   signInWithPasskey,
   TOO_MANY_ATTEMPTS,
-} from "../lib/passkeys";
+} from "../lib/sign-in";
+
+/**
+ * The server's sign-in challenge lasts 5 minutes; autofill starts a fresh
+ * one before then, so a passkey picked from the suggestions later still works.
+ */
+const AUTOFILL_RESTART_MS = 4 * 60 * 1000;
 
 const route = useRoute();
 const router = useRouter();
@@ -36,6 +43,7 @@ const info = ref("");
 const busy = ref(false);
 const passkeyBusy = ref(false);
 const passkeysShown = ref(false);
+let autofillTimer: ReturnType<typeof setInterval> | undefined;
 
 function destination(): string {
   const redirect = route.query.redirect;
@@ -53,42 +61,57 @@ async function finish() {
   await router.push(destination());
 }
 
-async function passkeyResult(result: PasskeySignIn) {
+function clearMessages() {
+  error.value = "";
+  info.value = "";
+}
+
+async function handlePasskeyResult(result: PasskeySignIn) {
   if (result.kind === "signed-in") {
     await finish();
   } else if (result.kind === "cancelled") {
-    info.value = "Passkey sign-in was cancelled. You can try again, or sign in with your password.";
+    info.value = result.text;
   } else if (result.kind === "error") {
     error.value = result.text;
   }
 }
 
+/**
+ * Offer saved passkeys in the email field's suggestions; never awaited by
+ * the form. Each call aborts the previous suggestions request (silently).
+ */
+async function startAutofill() {
+  // Never while the button's attempt is open: a new request would abort it.
+  if (step.value !== "password" || passkeyBusy.value || !(await canAutofillPasskeys())) return;
+  await handlePasskeyResult(await signInWithPasskey(true));
+}
+
 async function submitPasskey() {
-  error.value = "";
-  info.value = "";
+  clearMessages();
   passkeyBusy.value = true;
+  let result: PasskeySignIn;
   try {
-    await passkeyResult(await signInWithPasskey());
+    result = await signInWithPasskey();
+    await handlePasskeyResult(result);
   } finally {
     passkeyBusy.value = false;
   }
-}
-
-/** Offer saved passkeys in the email field's suggestions; never awaited by the form. */
-async function startAutofill() {
-  if (!(await canAutofillPasskeys())) return;
-  await passkeyResult(await signInWithPasskey(true));
+  // The button's attempt aborted the suggestions: offer them again.
+  if (result.kind !== "signed-in" && passkeysShown.value) void startAutofill();
 }
 
 onMounted(async () => {
   await loaded;
   passkeysShown.value = canUsePasskeys();
-  if (passkeysShown.value) void startAutofill();
+  if (!passkeysShown.value) return;
+  void startAutofill();
+  autofillTimer = setInterval(() => void startAutofill(), AUTOFILL_RESTART_MS);
 });
 
+onBeforeUnmount(() => clearInterval(autofillTimer));
+
 async function submitPassword() {
-  error.value = "";
-  info.value = "";
+  clearMessages();
   busy.value = true;
   try {
     const { data, error: err } = await authClient.signIn.email({
@@ -98,9 +121,7 @@ async function submitPassword() {
     if (err) {
       // 429: password and passkey sign-in share one rate limit, so a
       // throttle must not read as a wrong password.
-      if (err.status === 403) error.value = "This account is disabled. Contact your administrator.";
-      else if (err.status === 429) error.value = TOO_MANY_ATTEMPTS;
-      else error.value = "Invalid email or password.";
+      error.value = credentialStatusText(err.status) ?? "Invalid email or password.";
       return;
     }
     if (data && (data as { twoFactorRedirect?: boolean }).twoFactorRedirect) {
@@ -119,7 +140,10 @@ async function submitTotp() {
   try {
     const { error: err } = await authClient.twoFactor.verifyTotp({ code: code.value });
     if (err) {
-      error.value = "Invalid code — check your authenticator and try again.";
+      error.value =
+        err.status === 429
+          ? TOO_MANY_ATTEMPTS
+          : "Invalid code — check your authenticator and try again.";
       return;
     }
     await finish();
@@ -137,7 +161,7 @@ async function submitBackup() {
       body: { code: code.value },
     });
     if (err) {
-      error.value = "Invalid or already-used backup code.";
+      error.value = err.status === 429 ? TOO_MANY_ATTEMPTS : "Invalid or already-used backup code.";
       return;
     }
     await finish();
