@@ -7,7 +7,7 @@
  * a device with a built-in fingerprint/face/PIN unlock, and no "Not now"
  * (30 days) or "Don't ask again" on file. Copy is product-ux-designer's.
  */
-import { onMounted, ref } from "vue";
+import { nextTick, onMounted, ref } from "vue";
 import { RouterLink } from "vue-router";
 import Button from "primevue/button";
 import Message from "primevue/message";
@@ -65,6 +65,9 @@ async function add() {
       close();
     } else if (isNotFresh(failure)) {
       notRecent.value = true;
+      // The Add button is gone: keep keyboard focus on the way forward.
+      await nextTick();
+      document.querySelector<HTMLElement>(".not-recent-link")?.focus();
     } else if (isCancelled(failure)) {
       info.value = "No passkey was added. You can try again whenever you're ready.";
     } else {
@@ -113,12 +116,19 @@ onMounted(async () => {
     <Message v-if="notRecent" severity="info" :closable="false">
       It's been a few minutes since you signed in, so the passkey wasn't added. You can add one in My
       settings. You'll be asked to sign in again first.
-      <RouterLink :to="{ name: 'my-settings' }">Go to My settings</RouterLink>
+      <RouterLink class="not-recent-link" :to="{ name: 'my-settings' }">Go to My settings</RouterLink>
     </Message>
     <Message v-else-if="info" severity="info" :closable="false">{{ info }}</Message>
     <Message v-else-if="error" severity="error" :closable="false">{{ error }}</Message>
     <div class="row prompt-actions">
-      <Button v-if="!notRecent" label="Add a passkey" size="small" :loading="busy" @click="add" />
+      <Button
+        v-if="!notRecent"
+        class="prompt-add"
+        label="Add a passkey"
+        size="small"
+        :loading="busy"
+        @click="add"
+      />
       <Button
         label="Not now"
         severity="secondary"
@@ -142,12 +152,13 @@ onMounted(async () => {
 <style scoped>
 .prompt-actions {
   flex-wrap: wrap;
+  margin-top: 0.75rem;
 }
 @media (max-width: 575px) {
-  .prompt-actions > :first-child {
+  .prompt-actions > .prompt-add {
     flex: 1 0 100%;
   }
-  .prompt-actions > :not(:first-child) {
+  .prompt-actions > :not(.prompt-add) {
     flex: 1 1 0;
   }
 }

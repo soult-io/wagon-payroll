@@ -29,6 +29,7 @@ import {
   type OutboxHealth,
 } from "../../lib/api";
 import { authClient } from "../../lib/auth-client";
+import { PASSWORD_CODE_LABEL } from "../../lib/passkeys";
 import { useDates } from "../../composables/useDates";
 import { useNotify } from "../../composables/useNotify";
 
@@ -220,8 +221,8 @@ async function unlock(u: AdminUser) {
 function signInOf(u: AdminUser): string {
   if (!u.twoFactorEnabled) return "Not set up yet";
   const n = passkeyCounts.value[u.id] ?? 0;
-  if (n === 0) return "Password + code";
-  return `Password + code, ${n} ${n === 1 ? "passkey" : "passkeys"}`;
+  if (n === 0) return PASSWORD_CODE_LABEL;
+  return `${PASSWORD_CODE_LABEL}, ${n} ${n === 1 ? "passkey" : "passkeys"}`;
 }
 
 function statusOf(u: AdminUser): string {

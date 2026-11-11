@@ -7,15 +7,19 @@
 import { eq, sql } from "drizzle-orm";
 import { authPasskey, passkeyPromptState } from "@payroll/db";
 import type { Db } from "../db.js";
-import { passkeyCount } from "./passkey-policy.js";
 
 export const PASSKEY_PROMPT_SNOOZE_MS = 30 * 24 * 60 * 60 * 1000;
 
 export type PasskeyPromptChoice = "not_now" | "never";
 
-/** True when the user has no passkey and has not put the offer off. */
-export async function passkeyPromptDue(db: Db, userId: string, now: Date): Promise<boolean> {
-  if ((await passkeyCount(db, userId)) > 0) return false;
+/** True when the user (with `count` passkeys) has none and has not put the offer off. */
+export async function passkeyPromptDue(
+  db: Db,
+  userId: string,
+  count: number,
+  now: Date,
+): Promise<boolean> {
+  if (count > 0) return false;
   const rows = await db
     .select()
     .from(passkeyPromptState)

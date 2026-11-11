@@ -70,7 +70,13 @@ export async function removePasskey(id: string): Promise<PasskeyResult> {
 export async function addPasskey(
   name: string,
 ): Promise<PasskeyResult & { nameSaveError?: PasskeyError }> {
-  const res = await authClient.passkey.addPasskey();
+  let res: Awaited<ReturnType<typeof authClient.passkey.addPasskey>>;
+  try {
+    res = await authClient.passkey.addPasskey();
+  } catch {
+    // The plugin's first request rejects when the network is down.
+    return { error: { status: 0 } };
+  }
   if (res.error) return { error: res.error };
   if (name === "") return { error: null };
   const { error } = await renamePasskey(res.data.id, name);
@@ -136,9 +142,11 @@ export const NAME_NOT_SAVED =
 export const REMOVE_ERROR =
   "Something went wrong and the passkey wasn't removed. Please try again.";
 
+export const PASSWORD_CODE_LABEL = "Password + code";
+
 /** Active sessions "Signed in with" cell, from session.authMethod. */
 const AUTH_METHOD_LABELS: Record<AuthMethod, string | null> = {
-  [AUTH_METHOD.passwordTotp]: "Password + code",
+  [AUTH_METHOD.passwordTotp]: PASSWORD_CODE_LABEL,
   [AUTH_METHOD.passwordBackupCode]: "Backup code",
   [AUTH_METHOD.passkey]: "Passkey",
   [AUTH_METHOD.legacyMfa]: "Earlier sign-in",

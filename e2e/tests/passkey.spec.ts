@@ -484,6 +484,15 @@ test("J2: sign out, then sign in with the passkey button; no code prompt", async
     await expect(page.locator("#totp")).toHaveCount(0);
   });
 
+  await step(page, "The dashboard shows no passkey prompt", async () => {
+    // Two gates are closed here, and this cannot tell them apart: the session
+    // is "passkey" (not password + TOTP), and the account holds a passkey, so
+    // the server already answers due=false. This proves a user signing in with
+    // a passkey sees no card, not that the session-method gate alone hides it.
+    expect(await promptDue(page), "passkeyPromptDue with a passkey").toBe(false);
+    await expectPromptAbsentOnceSettled(page);
+  });
+
   await step(page, "Active sessions: this session reads Passkey", async () => {
     await page.goto("/my/settings");
     await expect(page.getByRole("columnheader", { name: "Signed in with" })).toBeVisible();
@@ -735,6 +744,15 @@ test('Admin users table: "Sign-in" column reads Password + code for a TOTP user'
       const row = admin.getByRole("row").filter({ hasText: email });
       await expect(row).toHaveCount(1);
       await expect(row.getByRole("cell", { name: /^Password \+ code/ })).toBeVisible();
+    });
+
+    // J7's passkey is still on the account: its cleanup runs in afterAll.
+    await step(admin, "J7's user (one passkey) reads Password + code, 1 passkey", async () => {
+      const row = admin.getByRole("row").filter({ hasText: QA_CONTRACTOR.email });
+      await expect(row).toHaveCount(1);
+      await expect(
+        row.getByRole("cell", { name: "Password + code, 1 passkey", exact: true }),
+      ).toBeVisible();
     });
   } finally {
     await admin.context().close();

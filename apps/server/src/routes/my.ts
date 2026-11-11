@@ -101,11 +101,12 @@ export function registerMyRoutes(app: FastifyInstance, deps: Deps): void {
       .where(eq(authTwoFactor.userId, req.authUser!.id))
       .limit(1);
     const twoFactor = rows[0];
+    const passkeys = await passkeyCount(db, req.authUser!.id);
     return {
       twoFactorEnabled: Boolean(req.authUser!.twoFactorEnabled),
       backupCodesRemaining: twoFactor ? decodeCodeHashes(twoFactor.backupCodes).length : 0,
-      passkeyCount: await passkeyCount(db, req.authUser!.id),
-      passkeyPromptDue: await passkeyPromptDue(db, req.authUser!.id, now()),
+      passkeyCount: passkeys,
+      passkeyPromptDue: await passkeyPromptDue(db, req.authUser!.id, passkeys, now()),
     };
   });
 
