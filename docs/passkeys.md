@@ -24,9 +24,9 @@ Right after you sign in with your password and code, the dashboard may offer
 to add a passkey. It's optional: **Not now** hides the offer for 30 days, and
 **Don't ask again** hides it for good. You can still add one in My settings.
 
-We email you whenever a passkey is added to or removed from your account. You
-can't turn these emails off. If you didn't make the change, follow the steps in
-the email.
+We email you when a passkey is added to your account or removed in My
+settings. You can't turn these emails off. If you didn't make the change,
+follow the steps in the email.
 
 ## Sign in with a passkey
 
