@@ -53,12 +53,19 @@ export async function writeAuthEvent(
 }
 
 /** Extract client IP / UA from Fastify request or Better Auth headers. */
+/**
+ * The address if Postgres inet will accept it, else null. Client-supplied
+ * (X-Forwarded-For): `isIP` also accepts IPv6 zone IDs ("fe80::1%a"), which
+ * inet rejects, and a rejected value would make the audit write throw.
+ */
+export function usableIp(ip: string | null | undefined): string | null {
+  return ip && !ip.includes("%") && isIP(ip) ? ip : null;
+}
+
 export function requestContext(headers: { get(name: string): string | null }): AuthEventContext {
   const fwd = headers.get("x-forwarded-for");
-  const ip = fwd?.split(",")[0]?.trim() ?? headers.get("x-real-ip");
   return {
-    // Client-supplied: auth_events.ip is inet, so a non-address would make the audit write throw.
-    ip: ip && isIP(ip) ? ip : null,
+    ip: usableIp(fwd?.split(",")[0]?.trim() ?? headers.get("x-real-ip")),
     userAgent: headers.get("user-agent") ?? null,
   };
 }

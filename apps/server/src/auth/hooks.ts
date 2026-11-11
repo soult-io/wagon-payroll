@@ -88,6 +88,22 @@ export function createAuditHook(deps: {
     }
   }
 
+  /**
+   * The audit row for a passkey change that has already happened. A failed
+   * write is logged and must not stop the security email that follows.
+   */
+  async function auditPasskeyChange(
+    event: (typeof AUTH_EVENT)[keyof typeof AUTH_EVENT],
+    userId: string | null,
+    auditCtx: { ip?: string | null; userAgent?: string | null },
+  ) {
+    try {
+      await writeAuthEvent(db, event, userId, auditCtx);
+    } catch (err) {
+      console.error("[passkey-audit] failed:", (err as { cause?: { code?: string } }).cause?.code);
+    }
+  }
+
   /** The always-on passkey security email (PAY-259); never fails the request. */
   async function emailPasskeyChange(
     userId: string | null | undefined,
@@ -170,7 +186,7 @@ export function createAuditHook(deps: {
       }
       case "/passkey/verify-registration": {
         const event = isFailure ? AUTH_EVENT.passkeyAddFailed : AUTH_EVENT.passkeyAdded;
-        await writeAuthEvent(db, event, sessionUser?.id ?? null, auditCtx);
+        await auditPasskeyChange(event, sessionUser?.id ?? null, auditCtx);
         if (!isFailure) await emailPasskeyChange(sessionUser?.id, "added", auditCtx);
         break;
       }
@@ -182,7 +198,7 @@ export function createAuditHook(deps: {
       }
       case "/passkey/delete-passkey": {
         if (!isFailure) {
-          await writeAuthEvent(db, AUTH_EVENT.passkeyRemoved, sessionUser?.id ?? null, auditCtx);
+          await auditPasskeyChange(AUTH_EVENT.passkeyRemoved, sessionUser?.id ?? null, auditCtx);
           await emailPasskeyChange(sessionUser?.id, "removed", auditCtx);
         }
         break;

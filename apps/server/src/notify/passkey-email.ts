@@ -4,11 +4,11 @@
  * email, and never the passkey's name or anything from the key itself.
  */
 
-import { isIP } from "node:net";
 import { emailOutbox } from "@payroll/db";
 import { EVENT_TYPE, securityPasskeyAdded, securityPasskeyRemoved } from "@payroll/notifications";
 import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
+import { usableIp } from "../auth/audit.js";
 import { templateContext } from "./outbox.js";
 
 const KINDS = {
@@ -45,7 +45,7 @@ export async function queuePasskeyEmail(
   const { eventType, render } = KINDS[input.kind];
   const rendered = render(await templateContext(deps.db, deps.config), {
     userAgent: input.userAgent?.slice(0, MAX_USER_AGENT_CHARS) ?? null,
-    ip: input.ip && isIP(input.ip) ? input.ip : null,
+    ip: usableIp(input.ip),
     at: readableTime(new Date()),
   });
   await deps.db.insert(emailOutbox).values({

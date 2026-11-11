@@ -28,6 +28,7 @@ import {
 } from "@payroll/notifications";
 import { createTestApp, type TestContext } from "./helpers.js";
 import { sessionHeader } from "./flow-helpers.js";
+import { usableIp } from "../src/auth/audit.js";
 import { initiateReset } from "../src/auth/users.js";
 import { drainOutbox, type MailTransport } from "../src/notify/outbox.js";
 import { queuePasskeyEmail } from "../src/notify/passkey-email.js";
@@ -182,12 +183,23 @@ describe.each(TEMPLATES)("B template %s", (_name, render) => {
     }
   });
 
-  it("names Settings and the admin path, never 'My settings'", () => {
+  it("gives the settings page as a full address, with no menu names", () => {
     const r = render(CTX, DATA);
     for (const part of [r.html, r.text]) {
+      expect(part).toContain(
+        "Go to http://localhost/my/settings, then Sign-in and security → Passkeys.",
+      );
       expect(part).not.toContain("My settings");
-      expect(part).toContain("Open Settings");
-      expect(part).toContain("My payroll → Settings");
+      expect(part).not.toContain("Open Settings");
+      expect(part).not.toContain("My payroll → Settings");
+    }
+  });
+
+  it("a trailing slash on the app address gives no double slash", () => {
+    const r = render({ ...CTX, appUrl: "https://pay.example.com/" }, DATA);
+    for (const part of [r.html, r.text]) {
+      expect(part).toContain("Go to https://pay.example.com/my/settings, then");
+      expect(part).not.toContain("//my/settings");
     }
   });
 
@@ -447,15 +459,19 @@ describe("E no passkey details in the email", () => {
 // ---------------------------------------------------------------- F
 
 /**
- * Makes every insert of a passkey email fail in Postgres for the length of
- * `fn`, whichever code path queues it. Console output is captured, not shown.
+ * Makes matching inserts into `table` fail in Postgres for the length of
+ * `fn`, whichever code path writes them. Console output is captured, not shown.
  */
-async function withOutboxFailing(fn: (logged: () => string) => Promise<void>): Promise<void> {
+async function withInsertFailing(
+  table: string,
+  when: string,
+  fn: (logged: () => string) => Promise<void>,
+): Promise<void> {
   await t.pglite.exec(`
-    create function pr6_fail_outbox() returns trigger language plpgsql as $$
-    begin raise exception 'pr6 synthetic outbox failure'; end $$;
-    create trigger pr6_fail_outbox before insert on email_outbox for each row
-      when (new.event_type like 'security_passkey_%') execute function pr6_fail_outbox();
+    create function pr6_fail_insert() returns trigger language plpgsql as $$
+    begin raise exception 'pr6 synthetic insert failure'; end $$;
+    create trigger pr6_fail_insert before insert on ${table} for each row
+      when (${when}) execute function pr6_fail_insert();
   `);
   const out: string[] = [];
   const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
@@ -468,10 +484,18 @@ async function withOutboxFailing(fn: (logged: () => string) => Promise<void>): P
   } finally {
     spy.mockRestore();
     await t.pglite.exec(`
-      drop trigger pr6_fail_outbox on email_outbox;
-      drop function pr6_fail_outbox();
+      drop trigger pr6_fail_insert on ${table};
+      drop function pr6_fail_insert();
     `);
   }
+}
+
+function withOutboxFailing(fn: (logged: () => string) => Promise<void>): Promise<void> {
+  return withInsertFailing("email_outbox", "new.event_type like 'security_passkey_%'", fn);
+}
+
+function withAuditFailing(fn: (logged: () => string) => Promise<void>): Promise<void> {
+  return withInsertFailing("auth_events", "new.event in ('passkey_added', 'passkey_removed')", fn);
 }
 
 describe("F a failed queue never fails the request", () => {
@@ -654,6 +678,42 @@ describe("I client-chosen request values are bounded", () => {
     }).toEqual({ status: 200, passkeys: 1, emails: 1, fallback: true });
   });
 
+  // node's isIP accepts an IPv6 zone ID; Postgres inet does not.
+  it.each(["fe80::1%a", "::1%x"])(
+    "through the request: X-Forwarded-For %s → 200, audit row with a null IP, email with the fallback",
+    async (ip) => {
+      const { userId, cookie } = await h.totpUser(`pr6-i-zone-${ip.length}@example.com`);
+      const res = await registerFrom(cookie, newAuthenticator(), "pr6", ip);
+      const audit = await t.pglite.query<{ ip: string | null }>(
+        `select ip from auth_events where user_id = $1 and event = 'passkey_added'`,
+        [userId],
+      );
+      const rows = await passkeyMail(userId);
+      expect({
+        status: res.statusCode,
+        auditIps: audit.rows.map((r) => r.ip),
+        emails: rows.length,
+        fallback: rows[0]?.body_html.includes("IP: unknown IP<") ?? false,
+      }).toEqual({ status: 200, auditIps: [null], emails: 1, fallback: true });
+    },
+  );
+
+  it("usableIp keeps a real address and drops everything else", () => {
+    for (const ip of ["203.0.113.9", "2001:db8::1", "::1"]) expect(usableIp(ip), ip).toBe(ip);
+    for (const ip of [
+      null,
+      undefined,
+      "",
+      "fe80::1%a",
+      "::1%x",
+      "attacker-chosen-text",
+      "999.1.1.1",
+      "203.0.113.9 extra",
+    ]) {
+      expect(usableIp(ip), String(ip)).toBeNull();
+    }
+  });
+
   it("a user agent of exactly 200 characters is kept whole", async () => {
     const { userId } = await h.onboard("pr6-i-boundary@example.com");
     const ua = "y".repeat(200);
@@ -668,6 +728,8 @@ describe("I client-chosen request values are bounded", () => {
       ["203.0.113.9", "203.0.113.9"],
       ["2001:db8::1", "2001:db8::1"],
       ["attacker-chosen-text", "unknown IP"],
+      ["fe80::1%a", "unknown IP"],
+      ["::1%x", "unknown IP"],
       ["999.1.1.1", "unknown IP"],
       ["203.0.113.9 extra", "unknown IP"],
       ["", "unknown IP"],
@@ -680,5 +742,42 @@ describe("I client-chosen request values are bounded", () => {
     cases.forEach(([ip, shown], i) => {
       expect(rows[i]!.body_html.includes(`IP: ${shown}<`), ip).toBe(true);
     });
+  });
+});
+
+// ---------------------------------------------------------------- J
+
+describe("J a failed audit write does not suppress the email", () => {
+  it("the failure seam really rejects a passkey audit insert", async () => {
+    const { userId } = await h.onboard("pr6-j-seam@example.com");
+    await withAuditFailing(async () => {
+      await expect(
+        t.pglite.query(`insert into auth_events (user_id, event) values ($1, 'passkey_added')`, [
+          userId,
+        ]),
+      ).rejects.toThrow();
+    });
+    expect(await h.events(userId, "passkey_added")).toEqual([]);
+  });
+
+  it("registration: 200, the passkey is saved, no audit row, the email is queued", async () => {
+    const { userId, cookie } = await h.totpUser("pr6-j-add@example.com");
+    await withAuditFailing(async () => {
+      expect((await h.register(cookie, newAuthenticator())).res?.statusCode).toBe(200);
+    });
+    expect((await h.passkeys(userId)).length).toBe(1);
+    expect(await h.events(userId, "passkey_added")).toEqual([]);
+    expect(await mailKinds(userId)).toEqual([ADDED]);
+  });
+
+  it("delete: 200, the passkey is gone, no audit row, the email is queued", async () => {
+    const { userId, cookie } = await h.totpUser("pr6-j-del@example.com");
+    const id = await h.seedPasskey(userId, newAuthenticator());
+    await withAuditFailing(async () => {
+      expect((await deletePasskey(cookie, id)).statusCode).toBe(200);
+    });
+    expect(await h.passkeys(userId)).toEqual([]);
+    expect(await h.events(userId, "passkey_removed")).toEqual([]);
+    expect(await mailKinds(userId)).toEqual([REMOVED]);
   });
 });

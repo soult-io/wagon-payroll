@@ -418,9 +418,12 @@ function passkeyChangeEmail(
  * Needed in both emails: a passkey signs in with no password, so changing the
  * password alone would leave an intruder's passkey working. Curly quotes
  * because the plain-text part is flattened from the HTML without decoding.
+ * The address, not a menu path: admins with no employee record have no menu
+ * item for this page.
  */
-const REVIEW_PASSKEYS_STEP =
-  "Open Settings (admins: My payroll → Settings), then Sign-in and security → Passkeys. Remove any passkey you don't recognize, and tick “Also sign me out on all other devices” when you do.";
+function reviewPasskeysStep(ctx: TemplateContext): string {
+  return `Go to ${ctx.appUrl.replace(/\/+$/, "")}/my/settings, then Sign-in and security → Passkeys. Remove any passkey you don't recognize, and tick “Also sign me out on all other devices” when you do.`;
+}
 
 export function securityPasskeyAdded(ctx: TemplateContext, data: PasskeyChangeData): RenderedEmail {
   return passkeyChangeEmail(ctx, data, {
@@ -430,7 +433,7 @@ export function securityPasskeyAdded(ctx: TemplateContext, data: PasskeyChangeDa
     ifNot:
       "If you didn't add it, someone else may have access to your account. Please do this right away:",
     steps: [
-      REVIEW_PASSKEYS_STEP,
+      reviewPasskeysStep(ctx),
       "On the same page, under Change password, choose a new password.",
     ],
   });
@@ -447,7 +450,7 @@ export function securityPasskeyRemoved(
     ifNot:
       "If you didn't remove it, someone else may have access to your account. Please do this right away:",
     steps: [
-      REVIEW_PASSKEYS_STEP,
+      reviewPasskeysStep(ctx),
       "On the same page, under Change password, choose a new password. This also signs you out on all your other devices.",
     ],
   });
