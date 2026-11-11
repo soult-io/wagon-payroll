@@ -21,11 +21,14 @@ import { maskLast4 } from "../crypto/field-encryption.js";
 import { decryptAddress } from "../crypto/address-encryption.js";
 import { decodeCodeHashes, encodeCodeHashes, generateBackupCodes } from "../auth/backup-codes.js";
 import { passkeyCount } from "../auth/passkey-policy.js";
+import { passkeyPromptDue, recordPasskeyPromptChoice } from "../auth/passkey-prompt.js";
 
 interface Deps {
   db: Db;
   config: AppConfig;
   guards: Guards;
+  /** Test override: the wall clock for the passkey prompt's 30-day snooze. */
+  clock?: () => Date;
 }
 
 interface BankDetailsStored {
@@ -36,6 +39,7 @@ interface BankDetailsStored {
 
 export function registerMyRoutes(app: FastifyInstance, deps: Deps): void {
   const { db, config, guards } = deps;
+  const now = deps.clock ?? (() => new Date());
 
   app.get("/api/my/profile", { preHandler: guards.requireAuth }, async (req, reply) => {
     const employee = await employeeForUser(db, req.authUser!.id);
@@ -101,7 +105,16 @@ export function registerMyRoutes(app: FastifyInstance, deps: Deps): void {
       twoFactorEnabled: Boolean(req.authUser!.twoFactorEnabled),
       backupCodesRemaining: twoFactor ? decodeCodeHashes(twoFactor.backupCodes).length : 0,
       passkeyCount: await passkeyCount(db, req.authUser!.id),
+      passkeyPromptDue: await passkeyPromptDue(db, req.authUser!.id, now()),
     };
+  });
+
+  /** PAY-267: the answer to the dashboard's "add a passkey" card. */
+  app.post("/api/my/passkey-prompt", { preHandler: guards.requireAuth }, async (req, reply) => {
+    const body = z.object({ choice: z.enum(["not_now", "never"]) }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid_body" });
+    await recordPasskeyPromptChoice(db, req.authUser!.id, body.data.choice, now());
+    return { ok: true };
   });
 
   /**

@@ -8,6 +8,7 @@ import Button from "primevue/button";
 import Skeleton from "primevue/skeleton";
 import Message from "primevue/message";
 import PageHeader from "../../components/PageHeader.vue";
+import PasskeyPromptCard from "../../components/PasskeyPromptCard.vue";
 import EmptyState from "../../components/EmptyState.vue";
 import StatusChip from "../../components/StatusChip.vue";
 import MissingTaxTablesBanner from "../../components/MissingTaxTablesBanner.vue";
@@ -159,6 +160,8 @@ function employeeName(id: number): string {
         </li>
       </ul>
     </Message>
+
+    <PasskeyPromptCard />
 
     <div v-if="loading" class="grid-2">
       <Skeleton height="12rem" />

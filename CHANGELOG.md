@@ -14,6 +14,10 @@ All notable changes to this project will be documented here. Format follows
   authenticator app still work as before, and an admin reset removes a
   user's passkeys. Passkeys need a secure (https) address; see
   [docs/passkeys.md](docs/passkeys.md).
+- **Passkey offer and sign-in column (PAY-267)** — right after signing in with
+  a password and code, the dashboard offers to add a passkey once. "Not now"
+  hides it for 30 days and "Don't ask again" hides it for good. Admins can see
+  who has passkeys in a new Sign-in column on the Users list.
 
 ## [1.30.2] - 2026-10-15
 

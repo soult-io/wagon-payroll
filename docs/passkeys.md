@@ -19,6 +19,10 @@ in: your password and authenticator app keep working as before.
 
 You can have up to 10 passkeys.
 
+Right after you sign in with your password and code, the dashboard may offer
+to add a passkey. It's optional: **Not now** hides the offer for 30 days, and
+**Don't ask again** hides it for good. You can still add one in My settings.
+
 ## Sign in with a passkey
 
 On the sign-in page, either:

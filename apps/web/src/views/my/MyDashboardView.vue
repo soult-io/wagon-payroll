@@ -7,6 +7,7 @@ import { onMounted, ref } from "vue";
 import Button from "primevue/button";
 import Skeleton from "primevue/skeleton";
 import PageHeader from "../../components/PageHeader.vue";
+import PasskeyPromptCard from "../../components/PasskeyPromptCard.vue";
 import EmptyState from "../../components/EmptyState.vue";
 import StatusChip from "../../components/StatusChip.vue";
 import {
@@ -47,6 +48,8 @@ onMounted(async () => {
 <template>
   <div class="page stack">
     <PageHeader title="Dashboard" />
+
+    <PasskeyPromptCard />
 
     <div v-if="loading" class="grid-2">
       <Skeleton height="10rem" />

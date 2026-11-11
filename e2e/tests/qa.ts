@@ -338,3 +338,6 @@ export async function serverHistoryDates(
 }
 
 export const EMPLOYEE_SESSION_PATH = resolve(STATE_DIR, "employee-storage.json");
+
+/** journeys.spec's saved admin session (ephemeral boot only; absent in a single-file run). */
+export const ADMIN_SESSION_PATH = resolve(STATE_DIR, "admin-storage.json");

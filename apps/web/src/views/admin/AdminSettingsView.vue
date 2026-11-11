@@ -123,6 +123,7 @@ interface AdminUser {
   role?: string | undefined;
   banned?: boolean | null | undefined;
   banReason?: string | null | undefined;
+  twoFactorEnabled?: boolean | null | undefined;
 }
 
 const users = ref<AdminUser[]>([]);
@@ -136,9 +137,20 @@ const roleOptions = [
 ];
 const inviteBusy = ref(false);
 const setupLink = ref("");
+/** PAY-267: passkeys per user id; users with none are absent. */
+const passkeyCounts = ref<Record<string, number>>({});
+
+async function loadPasskeyCounts() {
+  try {
+    passkeyCounts.value = (await adminUsersApi.passkeyCounts()).counts;
+  } catch (err) {
+    notify.error(err, "Could not load passkey counts");
+  }
+}
 
 async function loadUsers() {
   usersLoading.value = true;
+  void loadPasskeyCounts();
   try {
     const { data } = await authClient.admin.listUsers({ query: { limit: 100 } });
     users.value = ((data as { users?: AdminUser[] } | undefined)?.users ?? []) as AdminUser[];
@@ -203,6 +215,13 @@ async function unlock(u: AdminUser) {
   } catch (err) {
     notify.error(err, "Unlock failed");
   }
+}
+
+function signInOf(u: AdminUser): string {
+  if (!u.twoFactorEnabled) return "Not set up yet";
+  const n = passkeyCounts.value[u.id] ?? 0;
+  if (n === 0) return "Password + code";
+  return `Password + code, ${n} ${n === 1 ? "passkey" : "passkeys"}`;
 }
 
 function statusOf(u: AdminUser): string {
@@ -424,6 +443,9 @@ onMounted(() => {
                 <Column field="role" header="Role" style="width: 7rem" />
                 <Column header="Status">
                   <template #body="{ data }">{{ statusOf(data) }}</template>
+                </Column>
+                <Column header="Sign-in">
+                  <template #body="{ data }">{{ signInOf(data) }}</template>
                 </Column>
                 <Column header="Actions" style="width: 12rem">
                   <template #body="{ data }">

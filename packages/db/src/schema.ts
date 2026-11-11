@@ -391,6 +391,18 @@ export const notificationSettings = pgTable(
   (t) => [primaryKey({ columns: [t.userId, t.eventType] })],
 );
 
+/**
+ * PAY-267: the dashboard's "add a passkey" card. One row per user who chose
+ * "Not now" (snoozed_until) or "Don't ask again" (dismissed_at); no row means
+ * neither. FK → user.id with cascade, added in the migration.
+ */
+export const passkeyPromptState = pgTable("passkey_prompt_state", {
+  userId: text("user_id").primaryKey(),
+  snoozedUntil: timestamp("snoozed_until", { withTimezone: true }),
+  dismissedAt: timestamp("dismissed_at", { withTimezone: true }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 /** Outbox pattern; a pg-boss worker drains it. */
 export const emailOutbox = pgTable(
   "email_outbox",
