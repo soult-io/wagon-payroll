@@ -6,6 +6,15 @@ All notable changes to this project will be documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Sign in with a passkey (PAY-259)** — use your fingerprint, face, or
+  device PIN instead of typing a password and code. Add, rename, or remove
+  passkeys under My settings → Sign-in and security. Your password and
+  authenticator app still work as before, and an admin reset removes a
+  user's passkeys. Passkeys need a secure (https) address; see
+  [docs/passkeys.md](docs/passkeys.md).
+
 ## [1.30.2] - 2026-10-15
 
 ### Fixed

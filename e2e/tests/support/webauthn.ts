@@ -53,3 +53,85 @@ export async function addVirtualAuthenticator(page: Page): Promise<VirtualAuthen
     },
   };
 }
+
+/** What {@link holdPasskeyAutofill} adds to the page's window. */
+interface AutofillHold {
+  __e2eAutofillRequests: number;
+  __e2eReleaseAutofill: () => number;
+}
+
+/**
+ * Hold the page's passkey autofill (conditional mediation) requests.
+ *
+ * Why: with `automaticPresenceSimulation`, Chrome's virtual authenticator
+ * answers a conditional request at once, as if the user had picked the
+ * passkey from the email field's suggestions (probed 2026-11-03, chromium
+ * 1243). Left alone, every visit to /login would sign in by itself before a
+ * test could click anything. A real user who ignores the suggestions leaves
+ * the request pending; this reproduces that.
+ *
+ * Every `navigator.credentials.get({ mediation: "conditional" })` is counted
+ * and held. When the page aborts one (a button ceremony, or a newer autofill
+ * request replacing it) it rejects with the signal's reason, as a real browser
+ * does, and is dropped from the hold. The page function
+ * `__e2eReleaseAutofill()` sends the requests still held on to the browser
+ * unchanged: the stand-in for the user picking the passkey, which is browser
+ * UI no test can click. Other `get` calls pass straight through.
+ *
+ * Call before the first navigation (an init script runs on every page load).
+ */
+export async function holdPasskeyAutofill(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const container = navigator.credentials;
+    const original = container.get.bind(container);
+    const held = new Set<() => void>();
+    const hold = window as unknown as AutofillHold;
+    hold.__e2eAutofillRequests = 0;
+    hold.__e2eReleaseAutofill = () => {
+      const pending = [...held];
+      held.clear();
+      for (const send of pending) send();
+      return pending.length;
+    };
+    container.get = (options?: CredentialRequestOptions) => {
+      if (options?.mediation !== "conditional") return original(options);
+      hold.__e2eAutofillRequests++;
+      return new Promise<Credential | null>((resolve, reject) => {
+        const signal = options.signal;
+        const send = () => {
+          signal?.removeEventListener("abort", aborted);
+          original(options).then(resolve, reject);
+        };
+        const aborted = () => {
+          held.delete(send);
+          reject(signal?.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+        };
+        if (signal?.aborted) return aborted();
+        signal?.addEventListener("abort", aborted, { once: true });
+        held.add(send);
+      });
+    };
+  });
+}
+
+/** How many autofill requests the page has made since it loaded or since {@link resetAutofillRequests}. */
+export function autofillRequests(page: Page): Promise<number> {
+  return page.evaluate(() => (window as unknown as AutofillHold).__e2eAutofillRequests ?? 0);
+}
+
+/**
+ * Zero the autofill request count. Call it before an action that remounts the
+ * login page in place (sign-out is an in-app navigation, not a page load), then
+ * wait for the count to rise.
+ */
+export async function resetAutofillRequests(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const hold = window as unknown as Partial<AutofillHold>;
+    if (hold.__e2eAutofillRequests !== undefined) hold.__e2eAutofillRequests = 0;
+  });
+}
+
+/** Send the held autofill requests to the browser; returns how many there were. */
+export function releaseAutofill(page: Page): Promise<number> {
+  return page.evaluate(() => (window as unknown as AutofillHold).__e2eReleaseAutofill?.() ?? 0);
+}

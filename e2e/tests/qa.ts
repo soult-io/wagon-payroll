@@ -90,10 +90,10 @@ export function extendedTimeoutMs(currentMs: number, backoffMs: number): number 
 const MAX_RATE_LIMIT_BACKOFFS = 2;
 
 const SIGN_IN_PATH = "/api/auth/sign-in/email";
-const VERIFY_TOTP_PATH = "/api/auth/two-factor/verify-totp";
+export const VERIFY_TOTP_PATH = "/api/auth/two-factor/verify-totp";
 
 /** Resolves with the next response to POST `path` (pathname match, query ignored). */
-function nextPost(page: Page, path: string) {
+export function nextPost(page: Page, path: string) {
   return page.waitForResponse(
     (res) => res.request().method() === "POST" && new URL(res.url()).pathname === path,
   );

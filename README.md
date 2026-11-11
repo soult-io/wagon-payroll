@@ -218,7 +218,7 @@ apps/web/           Vue 3 + Vite SPA (PrimeVue 4.x, Material preset)
 packages/engine/    vendored payroll.ts + money.ts + tests (from an internal accounting codebase)
 packages/db/        Drizzle schema + migrations
 packages/shared/    Zod schemas, types shared by server+web
-docs/               operations docs (deployment, QA, export API)
+docs/               operations and user docs (deployment, QA, export API, passkeys)
 Dockerfile          multi-stage: build web → build server → runtime
 compose.example.yml reference deployment: app + migrate one-shot + postgres
 .github/workflows/  CI: test → build image → push ghcr (main); release.yml: tags → release images + GitHub release
