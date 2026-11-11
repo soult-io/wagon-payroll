@@ -11,6 +11,7 @@ import type { AppConfig } from "../config.js";
 import type { Guards } from "../plugins/guards.js";
 import { inviteUser, initiateReset, unlockUser, UserServiceError } from "../auth/users.js";
 import { requestContext } from "../auth/audit.js";
+import { passkeyCountsByUser } from "../auth/passkey-prompt.js";
 import { toHeaders } from "../plugins/guards.js";
 import { w2AccessEnded } from "../auth/former-employee.js";
 import { localDate } from "../payroll/run-dates.js";
@@ -37,6 +38,11 @@ export function registerAdminRoutes(app: FastifyInstance, deps: AdminDeps): void
     const now = deps.clock ?? (() => new Date());
     return w2AccessEnded(db, userId, localDate(now(), config.appTz), config.appTz);
   }
+
+  /** PAY-267: passkeys per user for the Users table; counts only. */
+  app.get("/api/admin/users/passkey-counts", { preHandler: admin }, async () => ({
+    counts: await passkeyCountsByUser(db),
+  }));
 
   app.post("/api/admin/users", { preHandler: admin }, async (req, reply) => {
     const body = z

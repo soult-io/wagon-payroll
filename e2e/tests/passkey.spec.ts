@@ -37,10 +37,29 @@
  *
  * Spec S11: no credential material (ids, keys) is logged or attached. Ids
  * only travel between the API and the delete call; assertions compare counts.
+ *
+ * PAY-267 (the prompt after a password + TOTP sign-in) adds J6, J7 and the
+ * admin "Sign-in" column after J3, ephemeral boot only: "Not now" persists 30
+ * days on the shared QA account, and J7 needs a second seeded user. They add
+ * up to eight credential requests (J6 two sign-ins, J7 one, admin one when no
+ * saved session), so a run can cross the 10/min budget; loginAs waits it out.
+ * CI retries once and the in-memory database survives the retry: J6 skips on a
+ * retry that finds the first attempt's "Not now" still in force.
  */
 
-import { type BrowserContext, expect, type Page, test } from "@playwright/test";
-import { loginAs, nextPost, QA_EMPLOYEE, retryOnRateLimit, VERIFY_TOTP_PATH } from "./qa.js";
+import { existsSync } from "node:fs";
+import { type Browser, type BrowserContext, expect, type Page, test } from "@playwright/test";
+import {
+  ADMIN_SESSION_PATH,
+  LIVE_QA,
+  loadEphemeralState,
+  loginAs,
+  nextPost,
+  QA_CONTRACTOR,
+  QA_EMPLOYEE,
+  retryOnRateLimit,
+  VERIFY_TOTP_PATH,
+} from "./qa.js";
 import { step } from "./support/journey.js";
 import { newContext } from "./support/walkthrough.js";
 import {
@@ -287,6 +306,106 @@ test.afterAll(async () => {
   }
 });
 
+const PROMPT_PATH = "/api/my/passkey-prompt";
+const PASSKEY_REGISTER_PATH = "/api/auth/passkey/verify-registration";
+const LIVE_QA_SKIP =
+  "ephemeral only: the prompt choice persists 30 days on the shared QA account, and this test needs seeded users with no passkeys";
+
+/** J7's own browser, so its user and virtual authenticator stay apart from `page`. */
+let enrollContext: BrowserContext | undefined;
+let enrollPage: Page | undefined;
+let enrollAuthenticator: VirtualAuthenticator | undefined;
+let enrollSignedInAt = 0;
+
+/** Delete J7's passkey in its still-fresh session, then drop its browser. */
+async function cleanUpEnrollment(p: Page): Promise<void> {
+  if ((await currentSessionId(p)) === null) return;
+  const held = await listPasskeys(p);
+  const refused = await deleteAll(p, held);
+  if (refused === 0) return;
+  const message = `passkey.spec J7 cleanup: the server refused ${refused} of ${held.length} delete(s)`;
+  if (Date.now() - enrollSignedInAt > STEP_UP_WINDOW_MS) {
+    console.warn(`${message}; the 5-minute step-up window had expired`);
+    return;
+  }
+  throw new Error(`${message} inside the step-up window`);
+}
+
+test.afterAll(async () => {
+  try {
+    if (enrollPage) await cleanUpEnrollment(enrollPage);
+  } finally {
+    await enrollAuthenticator?.remove();
+    await enrollContext?.close();
+  }
+});
+
+function promptCard(p: Page) {
+  return p.getByTestId("passkey-prompt");
+}
+
+function promptButton(p: Page, name: string) {
+  return promptCard(p).getByRole("button", { name, exact: true });
+}
+
+/** The server's prompt flag for the signed-in user. */
+async function promptDue(p: Page): Promise<unknown> {
+  const res = await p.request.get("/api/my/security");
+  expect(res.status(), "GET /api/my/security").toBe(200);
+  return ((await res.json()) as { passkeyPromptDue?: unknown }).passkeyPromptDue;
+}
+
+/** The virtual authenticator makes the browser report a platform authenticator; the card needs one. */
+async function expectPlatformAuthenticator(p: Page): Promise<void> {
+  const available = await p.evaluate(
+    async () =>
+      (await window.PublicKeyCredential?.isUserVerifyingPlatformAuthenticatorAvailable?.()) ===
+      true,
+  );
+  expect(available, "isUserVerifyingPlatformAuthenticatorAvailable()").toBe(true);
+}
+
+/** Every gate of the card except the user's own choice: 0 passkeys, password + TOTP, a platform authenticator. */
+async function expectPromptGatesOpen(p: Page): Promise<void> {
+  expect((await listPasskeys(p)).length, "passkeys on the account").toBe(0);
+  expect(await currentAuthMethod(p), "current session authMethod").toBe("password_totp");
+  await expectPlatformAuthenticator(p);
+}
+
+async function expectPromptShown(p: Page): Promise<void> {
+  await expect(promptCard(p)).toBeVisible();
+  await expect(
+    promptCard(p).getByRole("heading", { name: "Sign in faster with a passkey" }),
+  ).toBeVisible();
+  await expect(promptButton(p, "Add a passkey")).toBeVisible();
+  await expect(promptButton(p, "Not now")).toBeVisible();
+  await expect(promptButton(p, "Don't ask again")).toBeVisible();
+  // Inline on the dashboard, never a dialog.
+  await expect(p.getByRole("dialog")).toHaveCount(0);
+}
+
+/** The dashboard has finished its requests and still shows no card. */
+async function expectPromptAbsentOnceSettled(p: Page): Promise<void> {
+  await p.waitForLoadState("networkidle");
+  await expect(promptCard(p)).toHaveCount(0);
+}
+
+/** A page signed in as the boot's admin: journeys.spec's saved session if it still works. */
+async function adminPage(browser: Browser): Promise<{ admin: Page; email: string }> {
+  const state = loadEphemeralState();
+  if (!state) throw new Error("ephemeral state missing: e2e:serve writes it");
+  if (existsSync(ADMIN_SESSION_PATH)) {
+    const saved = await newContext(browser, { storageState: ADMIN_SESSION_PATH });
+    const admin = await saved.newPage();
+    if ((await currentSessionId(admin)) !== null) return { admin, email: state.admin.email };
+    await saved.close();
+  }
+  const fresh = await newContext(browser);
+  const admin = await fresh.newPage();
+  await loginAs(admin, state.admin);
+  return { admin, email: state.admin.email };
+}
+
 test("J1: add a passkey from My settings; it is listed", async () => {
   await step(page, "Sign in with password + TOTP", async () => {
     await loginAs(page, QA_EMPLOYEE);
@@ -363,6 +482,15 @@ test("J2: sign out, then sign in with the passkey button; no code prompt", async
       totpCalls.stop();
     }
     await expect(page.locator("#totp")).toHaveCount(0);
+  });
+
+  await step(page, "The dashboard shows no passkey prompt", async () => {
+    // Two gates are closed here, and this cannot tell them apart: the session
+    // is "passkey" (not password + TOTP), and the account holds a passkey, so
+    // the server already answers due=false. This proves a user signing in with
+    // a passkey sees no card, not that the session-method gate alone hides it.
+    expect(await promptDue(page), "passkeyPromptDue with a passkey").toBe(false);
+    await expectPromptAbsentOnceSettled(page);
   });
 
   await step(page, "Active sessions: this session reads Passkey", async () => {
@@ -509,4 +637,124 @@ test("J3: the removed passkey no longer signs in", async () => {
     await expect(page).toHaveURL(/\/login/);
     expect(await currentSessionId(page), "no session").toBeNull();
   });
+});
+
+test('J6: the prompt shows after a password + TOTP sign-in; "Not now" keeps it away next time', async () => {
+  test.skip(LIVE_QA, LIVE_QA_SKIP);
+
+  await step(page, "Sign in with password + TOTP, 0 passkeys on the account", async () => {
+    await loginAs(page, QA_EMPLOYEE);
+    signedInAt = Date.now();
+    await expectPromptGatesOpen(page);
+  });
+
+  const due = await promptDue(page);
+  test.skip(
+    test.info().retry > 0 && due !== true,
+    "this boot already holds the first attempt's Not now (30 days); the database survives a CI retry",
+  );
+  expect(due, "passkeyPromptDue").toBe(true);
+
+  await step(page, "The dashboard shows the prompt card", async () => {
+    await expectPromptShown(page);
+  });
+
+  await step(page, 'Click "Not now"; the card goes and the choice is stored', async () => {
+    const saved = nextPost(page, PROMPT_PATH);
+    await promptButton(page, "Not now").click();
+    const response = await saved;
+    expect(response.status(), `POST ${PROMPT_PATH}`).toBe(200);
+    expect(response.request().postDataJSON()).toEqual({ choice: "not_now" });
+    await expect(promptCard(page)).toHaveCount(0);
+    // "Don't ask again" confirms with a toast; "Not now" stays quiet.
+    await expect(page.locator(".p-toast-message")).toHaveCount(0);
+    expect(await promptDue(page), "passkeyPromptDue after Not now").toBe(false);
+  });
+
+  await step(page, "Sign out, sign in with password + TOTP: no card", async () => {
+    await signOut(page);
+    await loginAs(page, QA_EMPLOYEE);
+    signedInAt = Date.now();
+    await expectPromptGatesOpen(page);
+    expect(await promptDue(page), "passkeyPromptDue").toBe(false);
+    await expectPromptAbsentOnceSettled(page);
+  });
+});
+
+test("J7: Add a passkey from the prompt card, no dialog; the card goes", async ({ browser }) => {
+  test.skip(LIVE_QA, LIVE_QA_SKIP);
+  enrollContext = await newContext(browser);
+  const p = await enrollContext.newPage();
+  enrollPage = p;
+  enrollAuthenticator = await addVirtualAuthenticator(p);
+  await holdPasskeyAutofill(p);
+
+  await step(p, "Second user signs in with password + TOTP", async () => {
+    await loginAs(p, QA_CONTRACTOR);
+    enrollSignedInAt = Date.now();
+    // A failed earlier attempt in this boot may have left its passkey.
+    const leftovers = await listPasskeys(p);
+    expect(await deleteAll(p, leftovers), "leftover passkeys deleted").toBe(0);
+    if (leftovers.length > 0) await p.goto("/my/dashboard");
+    await expectPromptGatesOpen(p);
+    expect(await promptDue(p), "passkeyPromptDue").toBe(true);
+  });
+
+  await step(p, "The dashboard shows the prompt card", async () => {
+    await expectPromptShown(p);
+  });
+
+  await step(p, 'Click "Add a passkey": registers with no dialog; the card goes', async () => {
+    // A name dialog would stop the ceremony before this response ever comes.
+    const registered = p.waitForResponse(
+      (res) =>
+        res.request().method() === "POST" && new URL(res.url()).pathname === PASSKEY_REGISTER_PATH,
+      { timeout: 15_000 },
+    );
+    await promptButton(p, "Add a passkey").click();
+    expect((await registered).status(), `POST ${PASSKEY_REGISTER_PATH}`).toBe(200);
+    await expect(p.getByRole("dialog")).toHaveCount(0);
+    await expect(promptCard(p)).toHaveCount(0);
+  });
+
+  await step(p, "The account holds one unnamed passkey", async () => {
+    const records = await listPasskeys(p);
+    expect(records.length, "passkeys on the account").toBe(1);
+    expect((records[0]?.name ?? "").trim(), "added without a name").toBe("");
+    // Count only (S11).
+    const held = await enrollAuthenticator?.credentials();
+    expect(held?.length, "virtual authenticator credential count").toBe(1);
+    expect(await promptDue(p), "passkeyPromptDue with a passkey").toBe(false);
+  });
+});
+
+test('Admin users table: "Sign-in" column reads Password + code for a TOTP user', async ({
+  browser,
+}) => {
+  test.skip(LIVE_QA, LIVE_QA_SKIP);
+  const { admin, email } = await adminPage(browser);
+  try {
+    await step(admin, "Open Settings, Users tab", async () => {
+      await admin.goto("/admin/settings");
+      await admin.getByRole("tab", { name: "Users", exact: true }).click();
+      await expect(admin.getByRole("columnheader", { name: "Sign-in", exact: true })).toBeVisible();
+    });
+
+    await step(admin, "The admin's own row (TOTP on) starts with Password + code", async () => {
+      const row = admin.getByRole("row").filter({ hasText: email });
+      await expect(row).toHaveCount(1);
+      await expect(row.getByRole("cell", { name: /^Password \+ code/ })).toBeVisible();
+    });
+
+    // J7's passkey is still on the account: its cleanup runs in afterAll.
+    await step(admin, "J7's user (one passkey) reads Password + code, 1 passkey", async () => {
+      const row = admin.getByRole("row").filter({ hasText: QA_CONTRACTOR.email });
+      await expect(row).toHaveCount(1);
+      await expect(
+        row.getByRole("cell", { name: "Password + code, 1 passkey", exact: true }),
+      ).toBeVisible();
+    });
+  } finally {
+    await admin.context().close();
+  }
 });

@@ -218,6 +218,13 @@
       "when": 1793580729736,
       "tag": "0030_passkey",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1794363146876,
+      "tag": "0031_passkey_prompt_state",
+      "breakpoints": true
     }
   ]
 }

@@ -117,7 +117,7 @@ export async function buildApp(deps: BuildAppDeps = {}) {
     guards,
     ...(deps.clock ? { clock: deps.clock } : {}),
   });
-  registerMyRoutes(app, { db, config, guards });
+  registerMyRoutes(app, { db, config, guards, ...clockDep });
   registerMyInvoiceRoutes(app, { db, guards });
   registerAdminNotificationRoutes(app, { db, config, guards });
   registerAdminEmployeeRoutes(app, { auth, db, config, guards, ...clockDep });

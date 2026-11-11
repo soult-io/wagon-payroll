@@ -719,7 +719,14 @@ export const changeRequestsApi = {
 export const myApi = {
   profile: () => get<{ profile: MyProfile }>("/api/my/profile"),
   security: () =>
-    get<{ twoFactorEnabled: boolean; backupCodesRemaining: number }>("/api/my/security"),
+    get<{
+      twoFactorEnabled: boolean;
+      backupCodesRemaining: number;
+      passkeyCount: number;
+      passkeyPromptDue: boolean;
+    }>("/api/my/security"),
+  passkeyPrompt: (choice: "not_now" | "never") =>
+    post<{ ok: true }>("/api/my/passkey-prompt", { choice }),
   regenerateBackupCodes: () => post<{ backupCodes: string[] }>("/api/my/backup-codes"),
   notificationSettings: () =>
     get<{ settings: NotificationSetting[] }>("/api/my/notification-settings"),
@@ -899,6 +906,7 @@ export const adminEmployeesApi = {
 };
 
 export const adminUsersApi = {
+  passkeyCounts: () => get<{ counts: Record<string, number> }>("/api/admin/users/passkey-counts"),
   invite: (input: { name: string; email: string; role: "admin" | "employee" }) =>
     post<InviteResult>("/api/admin/users", input),
   reset: (userId: string) => post<InviteResult>(`/api/admin/users/${userId}/reset`),
