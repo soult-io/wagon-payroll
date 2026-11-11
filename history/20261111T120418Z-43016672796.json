@@ -1,17 +1,17 @@
 {
   "schemaVersion": 2,
-  "runId": "37616677439",
+  "runId": "43016672796",
   "source": "nightly",
-  "gitSha": "f74b51b5500d3ba12acd6e84c1e23d2274a27b2c",
+  "gitSha": "f51ef0173071b32d68d5c70f2c08d359f4b6e375",
   "gitRef": "refs/heads/main",
-  "generatedAt": "2026-10-07T11:51:11.438Z",
+  "generatedAt": "2026-11-11T12:04:11.565Z",
   "overallStatus": "passed",
   "counts": {
-    "passed": 41,
+    "passed": 48,
     "failed": 0,
-    "skipped": 23,
-    "executed": 41,
-    "total": 64,
+    "skipped": 26,
+    "executed": 48,
+    "total": 74,
     "flaky": 0
   },
   "suites": [
@@ -19,21 +19,21 @@
       "key": "e2e",
       "name": "Playwright journeys",
       "status": "passed",
-      "durationMs": 89329,
+      "durationMs": 176866,
       "counts": {
-        "passed": 41,
+        "passed": 48,
         "failed": 0,
         "flaky": 0,
-        "skipped": 23,
-        "executed": 41,
-        "total": 64
+        "skipped": 26,
+        "executed": 48,
+        "total": 74
       },
       "tests": [
         {
           "name": "login page shows the product name in the tab title and the card",
           "fullName": "brand.spec.ts login page shows the product name in the tab title and the card",
           "status": "passed",
-          "durationMs": 344,
+          "durationMs": 425,
           "file": "brand.spec.ts",
           "attempts": 1
         },
@@ -41,7 +41,7 @@
           "name": "clock-shift job: runner and server both run at PAYROLL_CLOCK_TARGET (PAY-225)",
           "fullName": "clock-shift-boot.spec.ts clock-shift job: runner and server both run at PAYROLL_CLOCK_TARGET (PAY-225)",
           "status": "skipped",
-          "durationMs": 0,
+          "durationMs": 1,
           "file": "clock-shift-boot.spec.ts",
           "attempts": 1,
           "skipReason": "only in the clock-shift job (CLOCK_SHIFT_REQUIRED=1)"
@@ -58,7 +58,7 @@
           "name": "readStillMeta: accepts a valid meta, rejects missing or malformed ones",
           "fullName": "evidence-reporter.spec.ts harness · evidence reporter readStillMeta: accepts a valid meta, rejects missing or malformed ones",
           "status": "passed",
-          "durationMs": 3,
+          "durationMs": 1,
           "file": "evidence-reporter.spec.ts",
           "attempts": 1
         },
@@ -66,7 +66,7 @@
           "name": "collectSteps: one record per top-level step, with its own still",
           "fullName": "evidence-reporter.spec.ts harness · evidence reporter collectSteps: one record per top-level step, with its own still",
           "status": "passed",
-          "durationMs": 0,
+          "durationMs": 1,
           "file": "evidence-reporter.spec.ts",
           "attempts": 1
         },
@@ -274,9 +274,92 @@
           "name": "login form keeps a gutter and never overflows horizontally at 375px",
           "fullName": "mobile-login.spec.ts login form keeps a gutter and never overflows horizontally at 375px",
           "status": "passed",
-          "durationMs": 167,
+          "durationMs": 161,
           "file": "mobile-login.spec.ts",
           "attempts": 1
+        },
+        {
+          "name": "J1: add a passkey from My settings; it is listed",
+          "fullName": "passkey.spec.ts J1: add a passkey from My settings; it is listed",
+          "status": "passed",
+          "durationMs": 1902,
+          "file": "passkey.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "Active sessions: 'Signed in with' shows Password + code for this session",
+          "fullName": "passkey.spec.ts Active sessions: 'Signed in with' shows Password + code for this session",
+          "status": "passed",
+          "durationMs": 166,
+          "file": "passkey.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "J2: sign out, then sign in with the passkey button; no code prompt",
+          "fullName": "passkey.spec.ts J2: sign out, then sign in with the passkey button; no code prompt",
+          "status": "passed",
+          "durationMs": 939,
+          "file": "passkey.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "J4: user verification fails; the browser refuses, still signed out on /login",
+          "fullName": "passkey.spec.ts J4: user verification fails; the browser refuses, still signed out on /login",
+          "status": "passed",
+          "durationMs": 280,
+          "file": "passkey.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "J5: the email field offers passkey autofill; picking the passkey signs in",
+          "fullName": "passkey.spec.ts J5: the email field offers passkey autofill; picking the passkey signs in",
+          "status": "passed",
+          "durationMs": 271,
+          "file": "passkey.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "J3: rename the passkey, then remove it; the list is empty",
+          "fullName": "passkey.spec.ts J3: rename the passkey, then remove it; the list is empty",
+          "status": "passed",
+          "durationMs": 2709,
+          "file": "passkey.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "J3: the removed passkey no longer signs in",
+          "fullName": "passkey.spec.ts J3: the removed passkey no longer signs in",
+          "status": "passed",
+          "durationMs": 348,
+          "file": "passkey.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "J6: the prompt shows after a password + TOTP sign-in; \"Not now\" keeps it away next time",
+          "fullName": "passkey.spec.ts J6: the prompt shows after a password + TOTP sign-in; \"Not now\" keeps it away next time",
+          "status": "skipped",
+          "durationMs": 0,
+          "file": "passkey.spec.ts",
+          "attempts": 1,
+          "skipReason": "ephemeral only: the prompt choice persists 30 days on the shared QA account, and this test needs seeded users with no passkeys"
+        },
+        {
+          "name": "J7: Add a passkey from the prompt card, no dialog; the card goes",
+          "fullName": "passkey.spec.ts J7: Add a passkey from the prompt card, no dialog; the card goes",
+          "status": "skipped",
+          "durationMs": 0,
+          "file": "passkey.spec.ts",
+          "attempts": 1,
+          "skipReason": "ephemeral only: the prompt choice persists 30 days on the shared QA account, and this test needs seeded users with no passkeys"
+        },
+        {
+          "name": "Admin users table: \"Sign-in\" column reads Password + code for a TOTP user",
+          "fullName": "passkey.spec.ts Admin users table: \"Sign-in\" column reads Password + code for a TOTP user",
+          "status": "skipped",
+          "durationMs": 0,
+          "file": "passkey.spec.ts",
+          "attempts": 1,
+          "skipReason": "ephemeral only: the prompt choice persists 30 days on the shared QA account, and this test needs seeded users with no passkeys"
         },
         {
           "name": "PAY-217 T-27 former employee: TOTP sign-in lands on the W-2 card only, downloads, cannot reach other screens; a closed window refuses sign-in; the admin sees and marks paper",
@@ -308,7 +391,7 @@
           "name": "login: password + TOTP (fixed seeded credentials in live QA)",
           "fullName": "qa.spec.ts login: password + TOTP (fixed seeded credentials in live QA)",
           "status": "passed",
-          "durationMs": 393,
+          "durationMs": 406,
           "file": "qa.spec.ts",
           "attempts": 1
         },
@@ -316,7 +399,7 @@
           "name": "payslip PDF download round-trip (%PDF magic, non-trivial bytes)",
           "fullName": "qa.spec.ts payslip PDF download round-trip (%PDF magic, non-trivial bytes)",
           "status": "passed",
-          "durationMs": 1786,
+          "durationMs": 1617,
           "file": "qa.spec.ts",
           "attempts": 1
         },
@@ -324,7 +407,7 @@
           "name": "scheduler draft: seeded current-period run shows in admin approvals (read-only)",
           "fullName": "qa.spec.ts scheduler draft: seeded current-period run shows in admin approvals (read-only)",
           "status": "passed",
-          "durationMs": 631,
+          "durationMs": 732,
           "file": "qa.spec.ts",
           "attempts": 1
         },
@@ -332,7 +415,7 @@
           "name": "contractor My Invoices: Dave sees approved+paid invoices, PDF round-trips (PAY-7)",
           "fullName": "qa.spec.ts contractor My Invoices: Dave sees approved+paid invoices, PDF round-trips (PAY-7)",
           "status": "passed",
-          "durationMs": 70879,
+          "durationMs": 65958,
           "file": "qa.spec.ts",
           "attempts": 1
         },
@@ -340,7 +423,7 @@
           "name": "PAY-8 scoped UI: contractor sees Invoices, not Payslips; /my/payslips redirects",
           "fullName": "qa.spec.ts PAY-8 scoped UI: contractor sees Invoices, not Payslips; /my/payslips redirects",
           "status": "passed",
-          "durationMs": 383,
+          "durationMs": 377,
           "file": "qa.spec.ts",
           "attempts": 1
         },
@@ -348,7 +431,7 @@
           "name": "tax deposits: admin sees the computed schedule incl. last month (PAY-9)",
           "fullName": "qa.spec.ts tax deposits: admin sees the computed schedule incl. last month (PAY-9)",
           "status": "passed",
-          "durationMs": 404,
+          "durationMs": 494,
           "file": "qa.spec.ts",
           "attempts": 1
         },
@@ -356,7 +439,7 @@
           "name": "W-2/W-3 filing detail: full headers, Documents column, W-3 action placement (PAY-23)",
           "fullName": "qa.spec.ts W-2/W-3 filing detail: full headers, Documents column, W-3 action placement (PAY-23)",
           "status": "passed",
-          "durationMs": 493,
+          "durationMs": 594,
           "file": "qa.spec.ts",
           "attempts": 1
         },
@@ -364,7 +447,7 @@
           "name": "email capture: admin test email lands in Mailpit (via /api/qa/mailbox)",
           "fullName": "qa.spec.ts email capture: admin test email lands in Mailpit (via /api/qa/mailbox)",
           "status": "passed",
-          "durationMs": 197,
+          "durationMs": 85541,
           "file": "qa.spec.ts",
           "attempts": 1
         },
@@ -372,7 +455,7 @@
           "name": "ephemeral only: save a state account number and see only its mask",
           "fullName": "state-ids.spec.ts ephemeral only: save a state account number and see only its mask",
           "status": "skipped",
-          "durationMs": 1,
+          "durationMs": 0,
           "file": "state-ids.spec.ts",
           "attempts": 1,
           "skipReason": "mutating — live QA is read-only (spec 14 §3)"
@@ -381,7 +464,7 @@
           "name": "config page: State taxes tab renders",
           "fullName": "state-taxes.spec.ts config page: State taxes tab renders",
           "status": "passed",
-          "durationMs": 266,
+          "durationMs": 372,
           "file": "state-taxes.spec.ts",
           "attempts": 1
         },
@@ -389,7 +472,7 @@
           "name": "employee detail: State tax tab renders work-state and election tables",
           "fullName": "state-taxes.spec.ts employee detail: State tax tab renders work-state and election tables",
           "status": "passed",
-          "durationMs": 675,
+          "durationMs": 755,
           "file": "state-taxes.spec.ts",
           "attempts": 1
         },
@@ -424,7 +507,7 @@
           "name": "at the click, the cursor is inside the ring and the caption names the target",
           "fullName": "walkthrough-overlay.spec.ts harness · walkthrough overlay at the click, the cursor is inside the ring and the caption names the target",
           "status": "passed",
-          "durationMs": 1094,
+          "durationMs": 1140,
           "file": "walkthrough-overlay.spec.ts",
           "attempts": 1
         },
@@ -432,7 +515,7 @@
           "name": "a field being typed into keeps a dashed focus ring",
           "fullName": "walkthrough-overlay.spec.ts harness · walkthrough overlay a field being typed into keeps a dashed focus ring",
           "status": "passed",
-          "durationMs": 1286,
+          "durationMs": 1317,
           "file": "walkthrough-overlay.spec.ts",
           "attempts": 1
         },
@@ -440,7 +523,7 @@
           "name": "the caption is invisible to text locators: no strict-mode double match",
           "fullName": "walkthrough-overlay.spec.ts harness · walkthrough overlay the caption is invisible to text locators: no strict-mode double match",
           "status": "passed",
-          "durationMs": 2033,
+          "durationMs": 2058,
           "file": "walkthrough-overlay.spec.ts",
           "attempts": 1
         },
@@ -448,7 +531,7 @@
           "name": "an unregistered page never gets the overlay",
           "fullName": "walkthrough-overlay.spec.ts harness · walkthrough overlay an unregistered page never gets the overlay",
           "status": "passed",
-          "durationMs": 79,
+          "durationMs": 100,
           "file": "walkthrough-overlay.spec.ts",
           "attempts": 1
         },
@@ -456,7 +539,7 @@
           "name": "pointing is not a screen change: no extra hold on the same screen",
           "fullName": "walkthrough-overlay.spec.ts harness · walkthrough overlay pointing is not a screen change: no extra hold on the same screen",
           "status": "passed",
-          "durationMs": 2041,
+          "durationMs": 2087,
           "file": "walkthrough-overlay.spec.ts",
           "attempts": 1
         },
@@ -464,7 +547,7 @@
           "name": "a changed screen is held before the next action; an unchanged one is not",
           "fullName": "walkthrough-pacing.spec.ts harness · walkthrough pacing a changed screen is held before the next action; an unchanged one is not",
           "status": "passed",
-          "durationMs": 4575,
+          "durationMs": 4521,
           "file": "walkthrough-pacing.spec.ts",
           "attempts": 1
         },
@@ -472,7 +555,7 @@
           "name": "fill on a registered page types one character at a time",
           "fullName": "walkthrough-pacing.spec.ts harness · walkthrough pacing fill on a registered page types one character at a time",
           "status": "passed",
-          "durationMs": 1481,
+          "durationMs": 1479,
           "file": "walkthrough-pacing.spec.ts",
           "attempts": 1
         },
@@ -488,7 +571,7 @@
           "name": "a page that is not being recorded is refused, never silently skipped",
           "fullName": "walkthrough-pacing.spec.ts harness · walkthrough pacing a page that is not being recorded is refused, never silently skipped",
           "status": "passed",
-          "durationMs": 43,
+          "durationMs": 41,
           "file": "walkthrough-pacing.spec.ts",
           "attempts": 1
         },
@@ -496,7 +579,7 @@
           "name": "one page: title card, then the clip cut at its first step",
           "fullName": "walkthrough-plan.spec.ts harness · walkthrough plan one page: title card, then the clip cut at its first step",
           "status": "passed",
-          "durationMs": 2,
+          "durationMs": 1,
           "file": "walkthrough-plan.spec.ts",
           "attempts": 1
         },
@@ -512,7 +595,7 @@
           "name": "an exact recording start wins over the close-based estimate",
           "fullName": "walkthrough-plan.spec.ts harness · walkthrough plan an exact recording start wins over the close-based estimate",
           "status": "passed",
-          "durationMs": 1,
+          "durationMs": 0,
           "file": "walkthrough-plan.spec.ts",
           "attempts": 1
         },
@@ -520,7 +603,7 @@
           "name": "a stamped start with no close time is still usable",
           "fullName": "walkthrough-plan.spec.ts harness · walkthrough plan a stamped start with no close time is still usable",
           "status": "passed",
-          "durationMs": 1,
+          "durationMs": 0,
           "file": "walkthrough-plan.spec.ts",
           "attempts": 1
         },
@@ -536,7 +619,7 @@
           "name": "a clip that could not be measured gives no plan — never a wrong video",
           "fullName": "walkthrough-plan.spec.ts harness · walkthrough plan a clip that could not be measured gives no plan — never a wrong video",
           "status": "passed",
-          "durationMs": 0,
+          "durationMs": 1,
           "file": "walkthrough-plan.spec.ts",
           "attempts": 1
         },
