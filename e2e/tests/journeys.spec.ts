@@ -398,6 +398,51 @@ test("journey 6: admin user visiting /my/dashboard is redirected to /admin/dashb
     },
   );
 
+  // PAY-269: the e2e admin has no employee record, so "My payroll" never
+  // appears and this link is the only menu route to their own settings.
+  const nav = page.locator(".topbar .nav");
+  const mySettings = nav.getByRole("link", { name: "My settings", exact: true });
+  const myPayroll = nav.getByRole("button", { name: "My payroll" });
+
+  await step(page, "Admin with no employee record opens My settings from the menu", async () => {
+    await expect(mySettings).toBeVisible();
+    await expect(myPayroll).toHaveCount(0);
+    await mySettings.click();
+    await page.waitForURL("**/my/settings");
+    await expect(page.getByRole("heading", { name: "My settings", exact: true })).toBeVisible();
+    await expect(
+      page.getByText(
+        "Your email notifications and how you sign in. Changes here apply only to you.",
+      ),
+    ).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Sign-in and security" })).toBeVisible();
+  });
+
+  await step(page, "Admin with an employee record keeps the My payroll menu instead", async () => {
+    // Hold the employee check open: until it answers, neither item may show.
+    let answerProfile = () => {};
+    const profileHeld = new Promise<void>((resolve) => {
+      answerProfile = resolve;
+    });
+    await page.route("**/api/my/profile", async (route) => {
+      await profileHeld;
+      await route.fulfill({ json: { profile: { employmentType: "w2" } } });
+    });
+    await page.goto("/admin/dashboard");
+    await expect(nav.getByRole("link", { name: "Payroll", exact: true })).toBeVisible();
+    await expect(mySettings).toHaveCount(0);
+    await expect(myPayroll).toHaveCount(0);
+
+    answerProfile();
+    await expect(myPayroll).toBeVisible();
+    await expect(mySettings).toHaveCount(0);
+
+    await myPayroll.click();
+    await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
+    await page.waitForURL("**/my/settings");
+    await page.unroute("**/api/my/profile");
+  });
+
   await ctx.close();
 });
 

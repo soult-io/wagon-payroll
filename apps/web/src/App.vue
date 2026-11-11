@@ -8,12 +8,15 @@
  * links (an admin is not necessarily an employee; the dropdown only appears
  * when a linked employee record exists). This avoids the duplicated
  * Dashboard/Requests/Settings labels of the original side-by-side layout.
+ * An admin with no employee record gets a single "My settings" link in the
+ * dropdown's place (PAY-269).
  */
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import Button from "primevue/button";
 import Badge from "primevue/badge";
-import type Menu from "primevue/menu";
+// biome-ignore lint/style/useImportType: the template renders <Menu>; Biome cannot see that, and a type-only import leaves the dropdown dead.
+import Menu from "primevue/menu";
 import Toast from "primevue/toast";
 import ConfirmDialog from "primevue/confirmdialog";
 import { PAYSLIPS_NAV_LABEL } from "@payroll/shared";
@@ -181,6 +184,13 @@ async function logout() {
               <i class="pi pi-chevron-down my-menu-caret" aria-hidden="true" />
             </button>
             <Menu ref="myMenu" :model="myMenuItems" popup />
+          </template>
+          <!-- PAY-269: an admin with no employee record still has personal
+               settings. Waits for the employee check so "My payroll" users
+               never see this link flash first. -->
+          <template v-else-if="auth.employeeLoaded">
+            <span class="nav-divider" aria-hidden="true" />
+            <RouterLink :to="{ name: 'my-settings' }" class="nav-link">My settings</RouterLink>
           </template>
         </template>
       </nav>
