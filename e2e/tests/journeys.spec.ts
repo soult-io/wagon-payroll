@@ -410,16 +410,36 @@ test("journey 6: admin user visiting /my/dashboard is redirected to /admin/dashb
     await mySettings.click();
     await page.waitForURL("**/my/settings");
     await expect(page.getByRole("heading", { name: "My settings", exact: true })).toBeVisible();
+    await expect(
+      page.getByText(
+        "Your email notifications and how you sign in. Changes here apply only to you.",
+      ),
+    ).toBeVisible();
     await expect(page.getByRole("heading", { name: "Sign-in and security" })).toBeVisible();
   });
 
   await step(page, "Admin with an employee record keeps the My payroll menu instead", async () => {
-    await page.route("**/api/my/profile", (route) =>
-      route.fulfill({ json: { profile: { employmentType: "w2" } } }),
-    );
+    // Hold the employee check open: until it answers, neither item may show.
+    let answerProfile = () => {};
+    const profileHeld = new Promise<void>((resolve) => {
+      answerProfile = resolve;
+    });
+    await page.route("**/api/my/profile", async (route) => {
+      await profileHeld;
+      await route.fulfill({ json: { profile: { employmentType: "w2" } } });
+    });
     await page.goto("/admin/dashboard");
+    await expect(nav.getByRole("link", { name: "Payroll", exact: true })).toBeVisible();
+    await expect(mySettings).toHaveCount(0);
+    await expect(myPayroll).toHaveCount(0);
+
+    answerProfile();
     await expect(myPayroll).toBeVisible();
     await expect(mySettings).toHaveCount(0);
+
+    await myPayroll.click();
+    await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
+    await page.waitForURL("**/my/settings");
     await page.unroute("**/api/my/profile");
   });
 

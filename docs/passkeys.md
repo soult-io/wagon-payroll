@@ -8,7 +8,7 @@ in: your password and authenticator app keep working as before.
 ## Add a passkey
 
 1. Open **Settings** (admins: **My payroll → Settings**; if you don't see My
-   payroll, go to `/my/settings`), then **Sign-in and security → Passkeys**.
+   payroll, choose **My settings**), then **Sign-in and security → Passkeys**.
 2. Choose **Add a passkey**.
    - If you signed in more than 5 minutes ago, you'll be asked to sign in
      again first. This keeps someone who finds your computer unlocked from
