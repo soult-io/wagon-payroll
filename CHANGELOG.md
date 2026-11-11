@@ -6,6 +6,8 @@ All notable changes to this project will be documented here. Format follows
 
 ## [Unreleased]
 
+## [1.31.0] - 2026-11-11
+
 ### Added
 
 - **Sign in with a passkey (PAY-259)** — use your fingerprint, face, or
@@ -18,6 +20,45 @@ All notable changes to this project will be documented here. Format follows
   a password and code, the dashboard offers to add a passkey. "Not now" hides
   it for 30 days and "Don't ask again" hides it for good. Admins can see who
   has passkeys in a new Sign-in column under Settings → Users.
+- **Emails when a passkey changes (PAY-259)** — you get an email when a
+  passkey is added to your account or removed in My settings, showing the
+  device, network address, and time. If it wasn't you, the email says what to
+  do.
+  These emails can't be turned off.
+- **My settings link for admins (PAY-269)** — an admin who isn't on payroll
+  now has a My settings link in the menu, for email notifications, passkeys,
+  password, and sessions. The page is now titled "My settings" for everyone,
+  so it's easy to tell apart from the admin Settings page.
+
+### Changed
+
+- **Recompute worksheet dialog (PAY-251)** — the dialog now names the form and
+  quarter you're about to change, and lists each changed figure by its form
+  line, such as "Line 5c — Taxable Medicare wages", in dollars.
+
+### Fixed
+
+- **Form 941 line 1 (PAY-254)** — the number of employees now comes from the
+  pay period that includes the 12th of the quarter's last month (March 12,
+  June 12, September 12, or December 12), as the form asks. It used to look at
+  the quarter's first month.
+- **Form 941 line 5d (PAY-98)** — Additional Medicare Tax now appears on line
+  5d. It was always withheld correctly, but the form showed it on line 7
+  instead. This only affects employees paid more than $200,000 in a year.
+- **The My payroll menu (PAY-269)** — clicking My payroll now opens the menu.
+  Before, it did nothing.
+
+Form 941 fixes apply to returns not yet marked as filed. Returns you've
+already marked as filed stay exactly as they are.
+
+### Security
+
+- **Sign-in checks (PAY-259, PAY-261)** — every session must now have come
+  through a full sign-in with a code or a passkey. "Remember this device"
+  requests can no longer skip the authenticator code. If you're signed in
+  during the update, you may need to sign in once more.
+- **Sign-in library update (PAY-258)** — updated to a version with a security
+  fix. Wagon Payroll doesn't use the affected feature.
 
 ## [1.30.2] - 2026-10-15
 
