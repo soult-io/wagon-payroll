@@ -422,7 +422,9 @@ function passkeyChangeEmail(
  * item for this page.
  */
 function reviewPasskeysStep(ctx: TemplateContext): string {
-  return `Go to ${ctx.appUrl.replace(/\/+$/, "")}/my/settings, then Sign-in and security → Passkeys. Remove any passkey you don't recognize, and tick “Also sign me out on all other devices” when you do.`;
+  let base = ctx.appUrl;
+  while (base.endsWith("/")) base = base.slice(0, -1);
+  return `Go to ${base}/my/settings, then Sign-in and security → Passkeys. Remove any passkey you don't recognize, and tick “Also sign me out on all other devices” when you do.`;
 }
 
 export function securityPasskeyAdded(ctx: TemplateContext, data: PasskeyChangeData): RenderedEmail {
