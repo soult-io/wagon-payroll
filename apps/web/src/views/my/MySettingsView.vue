@@ -216,7 +216,10 @@ onMounted(() => {
 
 <template>
   <div class="page stack">
-    <PageHeader title="Settings" />
+    <PageHeader
+      title="My settings"
+      subtitle="Your email notifications and how you sign in. Changes here apply only to you."
+    />
 
     <section class="card">
       <h3>Email notifications</h3>

@@ -182,6 +182,13 @@ async function logout() {
             </button>
             <Menu ref="myMenu" :model="myMenuItems" popup />
           </template>
+          <!-- PAY-269: an admin with no employee record still has personal
+               settings. Waits for the employee check so "My payroll" users
+               never see this link flash first. -->
+          <template v-else-if="auth.employeeLoaded">
+            <span class="nav-divider" aria-hidden="true" />
+            <RouterLink :to="{ name: 'my-settings' }" class="nav-link">My settings</RouterLink>
+          </template>
         </template>
       </nav>
     </header>
