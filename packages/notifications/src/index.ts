@@ -414,6 +414,14 @@ function passkeyChangeEmail(
   return email(ctx, copy.subject, html, text);
 }
 
+/**
+ * Needed in both emails: a passkey signs in with no password, so changing the
+ * password alone would leave an intruder's passkey working. Curly quotes
+ * because the plain-text part is flattened from the HTML without decoding.
+ */
+const REVIEW_PASSKEYS_STEP =
+  "Open Settings (admins: My payroll → Settings), then Sign-in and security → Passkeys. Remove any passkey you don't recognize, and tick “Also sign me out on all other devices” when you do.";
+
 export function securityPasskeyAdded(ctx: TemplateContext, data: PasskeyChangeData): RenderedEmail {
   return passkeyChangeEmail(ctx, data, {
     subject: "passkey added",
@@ -422,7 +430,7 @@ export function securityPasskeyAdded(ctx: TemplateContext, data: PasskeyChangeDa
     ifNot:
       "If you didn't add it, someone else may have access to your account. Please do this right away:",
     steps: [
-      'Go to My settings → Sign-in and security → Passkeys. Remove any passkey you don\'t recognize, and tick "Also sign me out on all other devices" when you do.',
+      REVIEW_PASSKEYS_STEP,
       "On the same page, under Change password, choose a new password.",
     ],
   });
@@ -439,7 +447,8 @@ export function securityPasskeyRemoved(
     ifNot:
       "If you didn't remove it, someone else may have access to your account. Please do this right away:",
     steps: [
-      "Go to My settings → Sign-in and security → Change password and choose a new password. This also signs you out on all your other devices.",
+      REVIEW_PASSKEYS_STEP,
+      "On the same page, under Change password, choose a new password. This also signs you out on all your other devices.",
     ],
   });
 }

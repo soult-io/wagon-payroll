@@ -4,6 +4,7 @@
  * email, and never the passkey's name or anything from the key itself.
  */
 
+import { isIP } from "node:net";
 import { emailOutbox } from "@payroll/db";
 import { EVENT_TYPE, securityPasskeyAdded, securityPasskeyRemoved } from "@payroll/notifications";
 import type { Db } from "../db.js";
@@ -14,6 +15,13 @@ const KINDS = {
   added: { eventType: EVENT_TYPE.securityPasskeyAdded, render: securityPasskeyAdded },
   removed: { eventType: EVENT_TYPE.securityPasskeyRemoved, render: securityPasskeyRemoved },
 } as const;
+
+/**
+ * The request's user agent and first X-Forwarded-For value are chosen by the
+ * client, who may be the intruder this email warns about: bound the text and
+ * show only a real IP address.
+ */
+const MAX_USER_AGENT_CHARS = 200;
 
 /** "Nov 11, 2026, 2:32 PM UTC": people read this, unlike an ISO timestamp. */
 function readableTime(at: Date): string {
@@ -36,8 +44,8 @@ export async function queuePasskeyEmail(
 ): Promise<void> {
   const { eventType, render } = KINDS[input.kind];
   const rendered = render(await templateContext(deps.db, deps.config), {
-    userAgent: input.userAgent,
-    ip: input.ip,
+    userAgent: input.userAgent?.slice(0, MAX_USER_AGENT_CHARS) ?? null,
+    ip: input.ip && isIP(input.ip) ? input.ip : null,
     at: readableTime(new Date()),
   });
   await deps.db.insert(emailOutbox).values({

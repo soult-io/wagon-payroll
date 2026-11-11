@@ -3,6 +3,7 @@
  * Every authentication-relevant event lands here with user, IP, user-agent.
  */
 
+import { isIP } from "node:net";
 import { authEvents } from "@payroll/db";
 import type { Db } from "../db.js";
 
@@ -54,8 +55,10 @@ export async function writeAuthEvent(
 /** Extract client IP / UA from Fastify request or Better Auth headers. */
 export function requestContext(headers: { get(name: string): string | null }): AuthEventContext {
   const fwd = headers.get("x-forwarded-for");
+  const ip = fwd?.split(",")[0]?.trim() ?? headers.get("x-real-ip");
   return {
-    ip: fwd?.split(",")[0]?.trim() ?? headers.get("x-real-ip") ?? null,
+    // Client-supplied: auth_events.ip is inet, so a non-address would make the audit write throw.
+    ip: ip && isIP(ip) ? ip : null,
     userAgent: headers.get("user-agent") ?? null,
   };
 }

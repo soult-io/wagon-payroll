@@ -30,6 +30,7 @@ import { createTestApp, type TestContext } from "./helpers.js";
 import { sessionHeader } from "./flow-helpers.js";
 import { initiateReset } from "../src/auth/users.js";
 import { drainOutbox, type MailTransport } from "../src/notify/outbox.js";
+import { queuePasskeyEmail } from "../src/notify/passkey-email.js";
 import { codeOf, harness, type Harness, newAuthenticator } from "./pay-259-pr3-harness.js";
 import {
   PASSKEY_CHALLENGE_COOKIE,
@@ -167,6 +168,27 @@ describe.each(TEMPLATES)("B template %s", (_name, render) => {
     const r = render(CTX, DATA);
     expect(r.html).toContain("contact Acme Co");
     expect(r.text).toContain("contact Acme Co");
+  });
+
+  // A passkey signs in with no password: a new password alone leaves an intruder's passkey working.
+  it("tells the reader to review their passkeys before the password step", () => {
+    const r = render(CTX, DATA);
+    for (const part of [r.html, r.text]) {
+      const review = part.indexOf("Remove any passkey you don");
+      const password = part.indexOf("choose a new password");
+      expect(review).toBeGreaterThanOrEqual(0);
+      expect(password).toBeGreaterThan(review);
+      expect(part.slice(0, review)).toContain("Passkeys");
+    }
+  });
+
+  it("names Settings and the admin path, never 'My settings'", () => {
+    const r = render(CTX, DATA);
+    for (const part of [r.html, r.text]) {
+      expect(part).not.toContain("My settings");
+      expect(part).toContain("Open Settings");
+      expect(part).toContain("My payroll → Settings");
+    }
   });
 
   it("another company and brand replace the names everywhere", () => {
@@ -584,5 +606,79 @@ describe("G notification settings do not suppress", () => {
       });
       expect(put.statusCode, eventType).toBe(400);
     }
+  });
+});
+
+// ---------------------------------------------------------------- H
+
+describe("H the plain text actually sent", () => {
+  it("the added email's flattened text holds the checkbox phrase and no HTML entity", async () => {
+    const email = "pr6-h-text@example.com";
+    const { cookie } = await h.totpUser(email);
+    await clearPending();
+    expect((await h.register(cookie, newAuthenticator())).res?.statusCode).toBe(200);
+
+    const transport = new StubTransport();
+    await drainOutbox({ db: t.db, config: t.config, transport, resolveRecipientEmail });
+    const sent = transport.messages.filter((m) => m.to === email);
+    expect(sent.length).toBe(1);
+    expect(sent[0]!.text).toContain("Also sign me out on all other devices");
+    expect(sent[0]!.text).not.toContain("&quot;");
+  });
+});
+
+// ---------------------------------------------------------------- I
+
+describe("I client-chosen request values are bounded", () => {
+  const deps = () => ({ db: t.db, config: t.config });
+
+  it("through the request: a user agent over 200 characters is cut to 200", async () => {
+    const { userId, cookie } = await h.totpUser("pr6-i-request@example.com");
+    const ua = `pr6-long-agent/${"x".repeat(300)}`;
+    const res = await registerFrom(cookie, newAuthenticator(), ua, h.ip());
+    expect(res.statusCode).toBe(200);
+    const [row] = await passkeyMail(userId);
+    expect(row?.body_html).toContain(`Device: ${ua.slice(0, 200)}<`);
+  });
+
+  // The client chooses X-Forwarded-For, so an intruder must not be able to skip the warning with it.
+  it("through the request: a non-IP X-Forwarded-For still answers 200, queues the email and shows the fallback", async () => {
+    const { userId, cookie } = await h.totpUser("pr6-i-non-ip@example.com");
+    const res = await registerFrom(cookie, newAuthenticator(), "pr6", "attacker-chosen-text");
+    const rows = await passkeyMail(userId);
+    expect({
+      status: res.statusCode,
+      passkeys: (await h.passkeys(userId)).length,
+      emails: rows.length,
+      fallback: rows[0]?.body_html.includes("IP: unknown IP<") ?? false,
+    }).toEqual({ status: 200, passkeys: 1, emails: 1, fallback: true });
+  });
+
+  it("a user agent of exactly 200 characters is kept whole", async () => {
+    const { userId } = await h.onboard("pr6-i-boundary@example.com");
+    const ua = "y".repeat(200);
+    await queuePasskeyEmail(deps(), { userId, kind: "added", userAgent: ua, ip: null });
+    const [row] = await passkeyMail(userId);
+    expect(row?.body_html).toContain(`Device: ${ua}<`);
+  });
+
+  it("only a real IPv4 or IPv6 address is shown", async () => {
+    const { userId } = await h.onboard("pr6-i-ip@example.com");
+    const cases = [
+      ["203.0.113.9", "203.0.113.9"],
+      ["2001:db8::1", "2001:db8::1"],
+      ["attacker-chosen-text", "unknown IP"],
+      ["999.1.1.1", "unknown IP"],
+      ["203.0.113.9 extra", "unknown IP"],
+      ["", "unknown IP"],
+    ] as const;
+    for (const [ip] of cases) {
+      await queuePasskeyEmail(deps(), { userId, kind: "removed", userAgent: "pr6", ip });
+    }
+    const rows = await passkeyMail(userId);
+    expect(rows.length).toBe(cases.length);
+    cases.forEach(([ip, shown], i) => {
+      expect(rows[i]!.body_html.includes(`IP: ${shown}<`), ip).toBe(true);
+    });
   });
 });
