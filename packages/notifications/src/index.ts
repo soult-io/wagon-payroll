@@ -29,6 +29,9 @@ export const EVENT_TYPE = {
   securityInvite: "security_invite",
   securityPasswordReset: "security_password_reset",
   securityLoginNewDevice: "security_login_new_device",
+  /** PAY-259 — a passkey was added to or removed from the account (always on). */
+  securityPasskeyAdded: "security_passkey_added",
+  securityPasskeyRemoved: "security_passkey_removed",
   /** Admin observability test email (spec admin settings page). */
   adminTestEmail: "admin_test_email",
   /** Spec 10 — contractor invoice workflow + W-8 form lifecycle. */
@@ -166,6 +169,8 @@ export const SECURITY_EVENTS: readonly EventType[] = [
   EVENT_TYPE.securityInvite,
   EVENT_TYPE.securityPasswordReset,
   EVENT_TYPE.securityLoginNewDevice,
+  EVENT_TYPE.securityPasskeyAdded,
+  EVENT_TYPE.securityPasskeyRemoved,
   EVENT_TYPE.adminTestEmail,
 ];
 
@@ -354,6 +359,103 @@ export function securityLoginNewDevice(
     body,
     `Your ${ctx.companyName} account in ${ctx.brandName} was just signed in to from a device we haven't seen before: Device: ${ua}; IP: ${ip}; Time: ${data.at}. If this wasn't you, contact ${ctx.companyName} right away.`,
   );
+}
+
+interface PasskeyChangeData {
+  userAgent: string | null;
+  ip: string | null;
+  at: string;
+}
+
+/**
+ * PAY-259: the two passkey security emails share everything but the opening
+ * line, the "it was you" line and the steps. The steps stay numbered
+ * paragraphs because the outbox flattens the HTML to make the plain-text part.
+ */
+function passkeyChangeEmail(
+  ctx: TemplateContext,
+  data: PasskeyChangeData,
+  copy: { subject: string; opening: string; ifYou: string; ifNot: string; steps: string[] },
+): RenderedEmail {
+  const ua = data.userAgent ?? "unknown device";
+  const ip = data.ip ?? "unknown IP";
+  const company = escapeHtml(ctx.companyName);
+  const url = escapeHtml(ctx.appUrl);
+  const signIn = "with your password and authenticator code.";
+  const details = "Details we recorded, which can look technical and aren't always exact:";
+  const help = (name: string) =>
+    `If you can't sign in or can't finish these steps, contact ${name} right away. An administrator there can reset your account.`;
+  const html = [
+    `<p>${escapeHtml(copy.opening)}</p>`,
+    `<p>${escapeHtml(details)}</p>`,
+    `<ul><li>Device: ${escapeHtml(ua)}</li><li>IP: ${escapeHtml(ip)}</li><li>Time: ${escapeHtml(data.at)}</li></ul>`,
+    `<p>${escapeHtml(copy.ifYou)}</p>`,
+    `<p>${escapeHtml(copy.ifNot)}</p>`,
+    `<p>1. Sign in at <a href="${url}">${url}</a> ${signIn}</p>`,
+    ...copy.steps.map((step, i) => `<p>${i + 2}. ${escapeHtml(step)}</p>`),
+    `<p>${help(company)}</p>`,
+  ].join("");
+  const text = [
+    copy.opening,
+    "",
+    details,
+    `Device: ${ua}`,
+    `IP: ${ip}`,
+    `Time: ${data.at}`,
+    "",
+    copy.ifYou,
+    "",
+    copy.ifNot,
+    `1. Sign in at ${ctx.appUrl} ${signIn}`,
+    ...copy.steps.map((step, i) => `${i + 2}. ${step}`),
+    "",
+    help(ctx.companyName),
+  ].join("\n");
+  return email(ctx, copy.subject, html, text);
+}
+
+/**
+ * Needed in both emails: a passkey signs in with no password, so changing the
+ * password alone would leave an intruder's passkey working. Curly quotes
+ * because the plain-text part is flattened from the HTML without decoding.
+ * The address, not a menu path: admins with no employee record have no menu
+ * item for this page.
+ */
+function reviewPasskeysStep(ctx: TemplateContext): string {
+  let base = ctx.appUrl;
+  while (base.endsWith("/")) base = base.slice(0, -1);
+  return `Go to ${base}/my/settings, then Sign-in and security → Passkeys. Remove any passkey you don't recognize, and tick “Also sign me out on all other devices” when you do.`;
+}
+
+export function securityPasskeyAdded(ctx: TemplateContext, data: PasskeyChangeData): RenderedEmail {
+  return passkeyChangeEmail(ctx, data, {
+    subject: "passkey added",
+    opening: `A passkey was added to your ${ctx.companyName} account in ${ctx.brandName}. A passkey is a way to sign in with a fingerprint, face, or device PIN, with no password or code.`,
+    ifYou: "If you added it, there's nothing else you need to do.",
+    ifNot:
+      "If you didn't add it, someone else may have access to your account. Please do this right away:",
+    steps: [
+      reviewPasskeysStep(ctx),
+      "On the same page, under Change password, choose a new password.",
+    ],
+  });
+}
+
+export function securityPasskeyRemoved(
+  ctx: TemplateContext,
+  data: PasskeyChangeData,
+): RenderedEmail {
+  return passkeyChangeEmail(ctx, data, {
+    subject: "passkey removed",
+    opening: `A passkey was removed from your ${ctx.companyName} account in ${ctx.brandName}. It can no longer be used to sign in to this account.`,
+    ifYou: "If you removed it, there's nothing else you need to do.",
+    ifNot:
+      "If you didn't remove it, someone else may have access to your account. Please do this right away:",
+    steps: [
+      reviewPasskeysStep(ctx),
+      "On the same page, under Change password, choose a new password. This also signs you out on all your other devices.",
+    ],
+  });
 }
 
 export function adminTestEmail(ctx: TemplateContext, data: { by: string }): RenderedEmail {

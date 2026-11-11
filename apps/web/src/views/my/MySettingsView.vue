@@ -220,7 +220,7 @@ onMounted(() => {
 
     <section class="card">
       <h3>Email notifications</h3>
-      <p class="muted small">Security emails (invites, resets, new-device alerts) are always on.</p>
+      <p class="muted small">Security emails (invites, resets, new-device alerts, passkey changes) are always on.</p>
       <div v-if="!settingsLoading" class="settings-list">
         <div v-for="row in settings" :key="row.eventType" class="setting-row">
           <div>

@@ -3,6 +3,7 @@
  * Every authentication-relevant event lands here with user, IP, user-agent.
  */
 
+import { isIP } from "node:net";
 import { authEvents } from "@payroll/db";
 import type { Db } from "../db.js";
 
@@ -52,10 +53,19 @@ export async function writeAuthEvent(
 }
 
 /** Extract client IP / UA from Fastify request or Better Auth headers. */
+/**
+ * The address if Postgres inet will accept it, else null. Client-supplied
+ * (X-Forwarded-For): `isIP` also accepts IPv6 zone IDs ("fe80::1%a"), which
+ * inet rejects, and a rejected value would make the audit write throw.
+ */
+export function usableIp(ip: string | null | undefined): string | null {
+  return ip && !ip.includes("%") && isIP(ip) ? ip : null;
+}
+
 export function requestContext(headers: { get(name: string): string | null }): AuthEventContext {
   const fwd = headers.get("x-forwarded-for");
   return {
-    ip: fwd?.split(",")[0]?.trim() ?? headers.get("x-real-ip") ?? null,
+    ip: usableIp(fwd?.split(",")[0]?.trim() ?? headers.get("x-real-ip")),
     userAgent: headers.get("user-agent") ?? null,
   };
 }

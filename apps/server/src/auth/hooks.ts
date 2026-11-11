@@ -12,6 +12,7 @@ import type { Db } from "../db.js";
 import type { AppConfig } from "../config.js";
 import { trackDevice } from "../notify/device.js";
 import { passkeyOwner, passkeyResponseOverride } from "./passkey-policy.js";
+import { queuePasskeyEmail } from "../notify/passkey-email.js";
 
 export const LOCKOUT_THRESHOLD = 10;
 
@@ -86,6 +87,41 @@ export function createAuditHook(deps: {
       console.error("[device-track] failed:", err);
     }
   }
+
+  /**
+   * The audit row for a passkey change that has already happened. A failed
+   * write is logged and must not stop the security email that follows.
+   */
+  async function auditPasskeyChange(
+    event: (typeof AUTH_EVENT)[keyof typeof AUTH_EVENT],
+    userId: string | null,
+    auditCtx: { ip?: string | null; userAgent?: string | null },
+  ) {
+    try {
+      await writeAuthEvent(db, event, userId, auditCtx);
+    } catch (err) {
+      console.error("[passkey-audit] failed:", (err as { cause?: { code?: string } }).cause?.code);
+    }
+  }
+
+  /** The always-on passkey security email (PAY-259); never fails the request. */
+  async function emailPasskeyChange(
+    userId: string | null | undefined,
+    kind: "added" | "removed",
+    auditCtx: { ip?: string | null; userAgent?: string | null },
+  ) {
+    if (!userId) return;
+    try {
+      await queuePasskeyEmail(
+        { db, config: deps.config },
+        { userId, kind, userAgent: auditCtx.userAgent ?? null, ip: auditCtx.ip ?? null },
+      );
+    } catch (err) {
+      // The error's message carries the query parameters (the email body, with IP and device).
+      console.error("[passkey-email] failed:", (err as { cause?: { code?: string } }).cause?.code);
+    }
+  }
+
   // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: auth middleware guard chain; kept linear intentionally
   return createAuthMiddleware(async (ctx) => {
     const auditCtx = requestContext(ctx.headers ?? new Headers());
@@ -150,7 +186,8 @@ export function createAuditHook(deps: {
       }
       case "/passkey/verify-registration": {
         const event = isFailure ? AUTH_EVENT.passkeyAddFailed : AUTH_EVENT.passkeyAdded;
-        await writeAuthEvent(db, event, sessionUser?.id ?? null, auditCtx);
+        await auditPasskeyChange(event, sessionUser?.id ?? null, auditCtx);
+        if (!isFailure) await emailPasskeyChange(sessionUser?.id, "added", auditCtx);
         break;
       }
       case "/passkey/update-passkey": {
@@ -161,7 +198,8 @@ export function createAuditHook(deps: {
       }
       case "/passkey/delete-passkey": {
         if (!isFailure) {
-          await writeAuthEvent(db, AUTH_EVENT.passkeyRemoved, sessionUser?.id ?? null, auditCtx);
+          await auditPasskeyChange(AUTH_EVENT.passkeyRemoved, sessionUser?.id ?? null, auditCtx);
+          await emailPasskeyChange(sessionUser?.id, "removed", auditCtx);
         }
         break;
       }
