@@ -1,17 +1,17 @@
 {
   "schemaVersion": 2,
-  "runId": "37774282940",
+  "runId": "43230830425",
   "source": "nightly",
-  "gitSha": "9cb9534626f85e6e9874c47eb3d924d7d9a90f49",
+  "gitSha": "f51ef0173071b32d68d5c70f2c08d359f4b6e375",
   "gitRef": "refs/heads/main",
-  "generatedAt": "2026-10-08T12:06:07.584Z",
+  "generatedAt": "2026-11-12T13:50:22.784Z",
   "overallStatus": "passed",
   "counts": {
-    "passed": 41,
+    "passed": 48,
     "failed": 0,
-    "skipped": 23,
-    "executed": 41,
-    "total": 64,
+    "skipped": 26,
+    "executed": 48,
+    "total": 74,
     "flaky": 0
   },
   "suites": [
@@ -19,21 +19,21 @@
       "key": "e2e",
       "name": "Playwright journeys",
       "status": "passed",
-      "durationMs": 89853,
+      "durationMs": 91519,
       "counts": {
-        "passed": 41,
+        "passed": 48,
         "failed": 0,
         "flaky": 0,
-        "skipped": 23,
-        "executed": 41,
-        "total": 64
+        "skipped": 26,
+        "executed": 48,
+        "total": 74
       },
       "tests": [
         {
           "name": "login page shows the product name in the tab title and the card",
           "fullName": "brand.spec.ts login page shows the product name in the tab title and the card",
           "status": "passed",
-          "durationMs": 386,
+          "durationMs": 322,
           "file": "brand.spec.ts",
           "attempts": 1
         },
@@ -82,7 +82,7 @@
           "name": "collectSteps: a failed step is failed and keeps its still",
           "fullName": "evidence-reporter.spec.ts harness · evidence reporter collectSteps: a failed step is failed and keeps its still",
           "status": "passed",
-          "durationMs": 2,
+          "durationMs": 0,
           "file": "evidence-reporter.spec.ts",
           "attempts": 1
         },
@@ -274,9 +274,92 @@
           "name": "login form keeps a gutter and never overflows horizontally at 375px",
           "fullName": "mobile-login.spec.ts login form keeps a gutter and never overflows horizontally at 375px",
           "status": "passed",
-          "durationMs": 190,
+          "durationMs": 169,
           "file": "mobile-login.spec.ts",
           "attempts": 1
+        },
+        {
+          "name": "J1: add a passkey from My settings; it is listed",
+          "fullName": "passkey.spec.ts J1: add a passkey from My settings; it is listed",
+          "status": "passed",
+          "durationMs": 1964,
+          "file": "passkey.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "Active sessions: 'Signed in with' shows Password + code for this session",
+          "fullName": "passkey.spec.ts Active sessions: 'Signed in with' shows Password + code for this session",
+          "status": "passed",
+          "durationMs": 174,
+          "file": "passkey.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "J2: sign out, then sign in with the passkey button; no code prompt",
+          "fullName": "passkey.spec.ts J2: sign out, then sign in with the passkey button; no code prompt",
+          "status": "passed",
+          "durationMs": 953,
+          "file": "passkey.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "J4: user verification fails; the browser refuses, still signed out on /login",
+          "fullName": "passkey.spec.ts J4: user verification fails; the browser refuses, still signed out on /login",
+          "status": "passed",
+          "durationMs": 290,
+          "file": "passkey.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "J5: the email field offers passkey autofill; picking the passkey signs in",
+          "fullName": "passkey.spec.ts J5: the email field offers passkey autofill; picking the passkey signs in",
+          "status": "passed",
+          "durationMs": 262,
+          "file": "passkey.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "J3: rename the passkey, then remove it; the list is empty",
+          "fullName": "passkey.spec.ts J3: rename the passkey, then remove it; the list is empty",
+          "status": "passed",
+          "durationMs": 2757,
+          "file": "passkey.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "J3: the removed passkey no longer signs in",
+          "fullName": "passkey.spec.ts J3: the removed passkey no longer signs in",
+          "status": "passed",
+          "durationMs": 335,
+          "file": "passkey.spec.ts",
+          "attempts": 1
+        },
+        {
+          "name": "J6: the prompt shows after a password + TOTP sign-in; \"Not now\" keeps it away next time",
+          "fullName": "passkey.spec.ts J6: the prompt shows after a password + TOTP sign-in; \"Not now\" keeps it away next time",
+          "status": "skipped",
+          "durationMs": 1,
+          "file": "passkey.spec.ts",
+          "attempts": 1,
+          "skipReason": "ephemeral only: the prompt choice persists 30 days on the shared QA account, and this test needs seeded users with no passkeys"
+        },
+        {
+          "name": "J7: Add a passkey from the prompt card, no dialog; the card goes",
+          "fullName": "passkey.spec.ts J7: Add a passkey from the prompt card, no dialog; the card goes",
+          "status": "skipped",
+          "durationMs": 0,
+          "file": "passkey.spec.ts",
+          "attempts": 1,
+          "skipReason": "ephemeral only: the prompt choice persists 30 days on the shared QA account, and this test needs seeded users with no passkeys"
+        },
+        {
+          "name": "Admin users table: \"Sign-in\" column reads Password + code for a TOTP user",
+          "fullName": "passkey.spec.ts Admin users table: \"Sign-in\" column reads Password + code for a TOTP user",
+          "status": "skipped",
+          "durationMs": 0,
+          "file": "passkey.spec.ts",
+          "attempts": 1,
+          "skipReason": "ephemeral only: the prompt choice persists 30 days on the shared QA account, and this test needs seeded users with no passkeys"
         },
         {
           "name": "PAY-217 T-27 former employee: TOTP sign-in lands on the W-2 card only, downloads, cannot reach other screens; a closed window refuses sign-in; the admin sees and marks paper",
@@ -308,7 +391,7 @@
           "name": "login: password + TOTP (fixed seeded credentials in live QA)",
           "fullName": "qa.spec.ts login: password + TOTP (fixed seeded credentials in live QA)",
           "status": "passed",
-          "durationMs": 537,
+          "durationMs": 393,
           "file": "qa.spec.ts",
           "attempts": 1
         },
@@ -316,7 +399,7 @@
           "name": "payslip PDF download round-trip (%PDF magic, non-trivial bytes)",
           "fullName": "qa.spec.ts payslip PDF download round-trip (%PDF magic, non-trivial bytes)",
           "status": "passed",
-          "durationMs": 1772,
+          "durationMs": 1795,
           "file": "qa.spec.ts",
           "attempts": 1
         },
@@ -324,7 +407,7 @@
           "name": "scheduler draft: seeded current-period run shows in admin approvals (read-only)",
           "fullName": "qa.spec.ts scheduler draft: seeded current-period run shows in admin approvals (read-only)",
           "status": "passed",
-          "durationMs": 710,
+          "durationMs": 757,
           "file": "qa.spec.ts",
           "attempts": 1
         },
@@ -332,7 +415,7 @@
           "name": "contractor My Invoices: Dave sees approved+paid invoices, PDF round-trips (PAY-7)",
           "fullName": "qa.spec.ts contractor My Invoices: Dave sees approved+paid invoices, PDF round-trips (PAY-7)",
           "status": "passed",
-          "durationMs": 70854,
+          "durationMs": 65960,
           "file": "qa.spec.ts",
           "attempts": 1
         },
@@ -340,7 +423,7 @@
           "name": "PAY-8 scoped UI: contractor sees Invoices, not Payslips; /my/payslips redirects",
           "fullName": "qa.spec.ts PAY-8 scoped UI: contractor sees Invoices, not Payslips; /my/payslips redirects",
           "status": "passed",
-          "durationMs": 406,
+          "durationMs": 350,
           "file": "qa.spec.ts",
           "attempts": 1
         },
@@ -348,7 +431,7 @@
           "name": "tax deposits: admin sees the computed schedule incl. last month (PAY-9)",
           "fullName": "qa.spec.ts tax deposits: admin sees the computed schedule incl. last month (PAY-9)",
           "status": "passed",
-          "durationMs": 449,
+          "durationMs": 498,
           "file": "qa.spec.ts",
           "attempts": 1
         },
@@ -356,7 +439,7 @@
           "name": "W-2/W-3 filing detail: full headers, Documents column, W-3 action placement (PAY-23)",
           "fullName": "qa.spec.ts W-2/W-3 filing detail: full headers, Documents column, W-3 action placement (PAY-23)",
           "status": "passed",
-          "durationMs": 545,
+          "durationMs": 523,
           "file": "qa.spec.ts",
           "attempts": 1
         },
@@ -364,7 +447,7 @@
           "name": "email capture: admin test email lands in Mailpit (via /api/qa/mailbox)",
           "fullName": "qa.spec.ts email capture: admin test email lands in Mailpit (via /api/qa/mailbox)",
           "status": "passed",
-          "durationMs": 244,
+          "durationMs": 173,
           "file": "qa.spec.ts",
           "attempts": 1
         },
@@ -372,7 +455,7 @@
           "name": "ephemeral only: save a state account number and see only its mask",
           "fullName": "state-ids.spec.ts ephemeral only: save a state account number and see only its mask",
           "status": "skipped",
-          "durationMs": 1,
+          "durationMs": 0,
           "file": "state-ids.spec.ts",
           "attempts": 1,
           "skipReason": "mutating — live QA is read-only (spec 14 §3)"
@@ -381,7 +464,7 @@
           "name": "config page: State taxes tab renders",
           "fullName": "state-taxes.spec.ts config page: State taxes tab renders",
           "status": "passed",
-          "durationMs": 295,
+          "durationMs": 251,
           "file": "state-taxes.spec.ts",
           "attempts": 1
         },
@@ -389,7 +472,7 @@
           "name": "employee detail: State tax tab renders work-state and election tables",
           "fullName": "state-taxes.spec.ts employee detail: State tax tab renders work-state and election tables",
           "status": "passed",
-          "durationMs": 665,
+          "durationMs": 718,
           "file": "state-taxes.spec.ts",
           "attempts": 1
         },
@@ -397,7 +480,7 @@
           "name": "ephemeral only: assign a work state and see it in the history",
           "fullName": "state-taxes.spec.ts ephemeral only: assign a work state and see it in the history",
           "status": "skipped",
-          "durationMs": 0,
+          "durationMs": 1,
           "file": "state-taxes.spec.ts",
           "attempts": 1,
           "skipReason": "mutating — live QA is read-only (spec 14 §3)"
@@ -406,7 +489,7 @@
           "name": "ephemeral only: employee state election flows request → approval → payslip",
           "fullName": "state-taxes.spec.ts ephemeral only: employee state election flows request → approval → payslip",
           "status": "skipped",
-          "durationMs": 0,
+          "durationMs": 1,
           "file": "state-taxes.spec.ts",
           "attempts": 1,
           "skipReason": "mutating — live QA is read-only (spec 14 §3)"
@@ -424,7 +507,7 @@
           "name": "at the click, the cursor is inside the ring and the caption names the target",
           "fullName": "walkthrough-overlay.spec.ts harness · walkthrough overlay at the click, the cursor is inside the ring and the caption names the target",
           "status": "passed",
-          "durationMs": 1125,
+          "durationMs": 1139,
           "file": "walkthrough-overlay.spec.ts",
           "attempts": 1
         },
@@ -432,7 +515,7 @@
           "name": "a field being typed into keeps a dashed focus ring",
           "fullName": "walkthrough-overlay.spec.ts harness · walkthrough overlay a field being typed into keeps a dashed focus ring",
           "status": "passed",
-          "durationMs": 1320,
+          "durationMs": 1312,
           "file": "walkthrough-overlay.spec.ts",
           "attempts": 1
         },
@@ -440,7 +523,7 @@
           "name": "the caption is invisible to text locators: no strict-mode double match",
           "fullName": "walkthrough-overlay.spec.ts harness · walkthrough overlay the caption is invisible to text locators: no strict-mode double match",
           "status": "passed",
-          "durationMs": 2065,
+          "durationMs": 2064,
           "file": "walkthrough-overlay.spec.ts",
           "attempts": 1
         },
@@ -448,7 +531,7 @@
           "name": "an unregistered page never gets the overlay",
           "fullName": "walkthrough-overlay.spec.ts harness · walkthrough overlay an unregistered page never gets the overlay",
           "status": "passed",
-          "durationMs": 96,
+          "durationMs": 102,
           "file": "walkthrough-overlay.spec.ts",
           "attempts": 1
         },
@@ -456,7 +539,7 @@
           "name": "pointing is not a screen change: no extra hold on the same screen",
           "fullName": "walkthrough-overlay.spec.ts harness · walkthrough overlay pointing is not a screen change: no extra hold on the same screen",
           "status": "passed",
-          "durationMs": 2055,
+          "durationMs": 2070,
           "file": "walkthrough-overlay.spec.ts",
           "attempts": 1
         },
@@ -464,7 +547,7 @@
           "name": "a changed screen is held before the next action; an unchanged one is not",
           "fullName": "walkthrough-pacing.spec.ts harness · walkthrough pacing a changed screen is held before the next action; an unchanged one is not",
           "status": "passed",
-          "durationMs": 4522,
+          "durationMs": 4568,
           "file": "walkthrough-pacing.spec.ts",
           "attempts": 1
         },
@@ -472,7 +555,7 @@
           "name": "fill on a registered page types one character at a time",
           "fullName": "walkthrough-pacing.spec.ts harness · walkthrough pacing fill on a registered page types one character at a time",
           "status": "passed",
-          "durationMs": 1486,
+          "durationMs": 1491,
           "file": "walkthrough-pacing.spec.ts",
           "attempts": 1
         },
@@ -480,7 +563,7 @@
           "name": "an unregistered page is untouched: fill is one input, no hold",
           "fullName": "walkthrough-pacing.spec.ts harness · walkthrough pacing an unregistered page is untouched: fill is one input, no hold",
           "status": "passed",
-          "durationMs": 57,
+          "durationMs": 73,
           "file": "walkthrough-pacing.spec.ts",
           "attempts": 1
         },
@@ -488,7 +571,7 @@
           "name": "a page that is not being recorded is refused, never silently skipped",
           "fullName": "walkthrough-pacing.spec.ts harness · walkthrough pacing a page that is not being recorded is refused, never silently skipped",
           "status": "passed",
-          "durationMs": 60,
+          "durationMs": 43,
           "file": "walkthrough-pacing.spec.ts",
           "attempts": 1
         },
@@ -520,7 +603,7 @@
           "name": "a stamped start with no close time is still usable",
           "fullName": "walkthrough-plan.spec.ts harness · walkthrough plan a stamped start with no close time is still usable",
           "status": "passed",
-          "durationMs": 1,
+          "durationMs": 0,
           "file": "walkthrough-plan.spec.ts",
           "attempts": 1
         },
